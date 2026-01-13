@@ -973,7 +973,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     rgb_arr = np.array(pil_rgba.convert("RGB"))
                     alpha_arr = np.array(pil_rgba.split()[-1]).astype("float32") / 255.0
                     
-                    from moviepy.editor import ImageClip
+                    # ImageClip is already imported at top of file
                     img_clip = ImageClip(rgb_arr).set_start(g_start).set_duration(g_dur)
                     mask_clip = ImageClip(alpha_arr, ismask=True).set_start(g_start).set_duration(g_dur)
                     img_clip = img_clip.set_mask(mask_clip)
