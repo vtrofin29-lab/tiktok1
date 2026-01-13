@@ -673,14 +673,14 @@ def generate_caption_image(text, preferred_font=None, log=None):
         sd_im = shadow.filter(ImageFilter.GaussianBlur(radius=6))
         img.paste(sd_im, (bubble_x0+0, bubble_y0+2), sd_im)
     
-    # Draw bubble background (FIXED: changed from transparent to visible semi-opaque white)
-    # Use semi-opaque white background for good contrast with text
-    bubble_fill = (255, 255, 255, 220)  # FIXED: was (0,0,0,0) - completely transparent!
+    # Draw bubble background - TRANSPARENT (user requested no white box, just text)
+    # Background is now transparent - text visibility comes from strong stroke outline
+    bubble_fill = (0, 0, 0, 0)  # Fully transparent - no white box behind text
     try:
         draw.rounded_rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], radius=int(padding_y*0.8), fill=bubble_fill)
         try:
             if log:
-                log(f"[caption] Bubble background drawn with fill={bubble_fill}")
+                log(f"[caption] Bubble background is transparent (no white box)")
         except Exception:
             pass
     except Exception as e:
@@ -701,10 +701,17 @@ def generate_caption_image(text, preferred_font=None, log=None):
     except Exception:
         stroke_w = max(1, int(CAPTION_FONT_SIZE * 0.05))
     
+    # Increase stroke width for better visibility without white background
+    # Make stroke at least 3 pixels for good visibility
+    stroke_w = max(3, stroke_w)
+    
     try:
         stroke_fill = normalize_color(tuple(CAPTION_STROKE_COLOR))
     except Exception:
         stroke_fill = (0,0,0,150)
+    
+    # Make stroke fully opaque (255 alpha) for better visibility without background
+    stroke_fill = (stroke_fill[0], stroke_fill[1], stroke_fill[2], 255)
     
     try:
         text_fill = normalize_color(tuple(CAPTION_TEXT_COLOR))
