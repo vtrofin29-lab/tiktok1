@@ -674,9 +674,9 @@ def generate_caption_image(text, preferred_font=None, log=None):
         img.paste(sd_im, (bubble_x0+0, bubble_y0+2), sd_im)
     
     # Draw bubble background (FIXED: changed from transparent to visible semi-opaque white)
+    # Use semi-opaque white background for good contrast with text
+    bubble_fill = (255, 255, 255, 220)  # FIXED: was (0,0,0,0) - completely transparent!
     try:
-        # Use semi-opaque white background for good contrast with text
-        bubble_fill = (255, 255, 255, 220)  # FIXED: was (0,0,0,0) - completely transparent!
         draw.rounded_rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], radius=int(padding_y*0.8), fill=bubble_fill)
         try:
             if log:
@@ -689,7 +689,6 @@ def generate_caption_image(text, preferred_font=None, log=None):
                 log(f"[caption WARNING] Rounded bubble failed, using rectangle: {e}")
         except Exception:
             pass
-        bubble_fill = (255, 255, 255, 220)  # FIXED: was (0,0,0,0) - completely transparent!
         draw.rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], fill=bubble_fill)
     
     # Normalize and validate color values (FIXED: ensure colors are in valid range)
@@ -958,7 +957,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     # Verify alpha channel is not completely transparent (FIXED: added validation)
                     alpha_channel = pil_rgba.split()[-1]
                     alpha_arr_check = np.array(alpha_channel)
-                    if alpha_arr_check.max() == 0:
+                    if not np.any(alpha_arr_check > 0):  # Performance: short-circuits on first non-zero
                         try:
                             log(f"[compose ERROR] Caption image for '{grp_text}' has completely transparent alpha channel!")
                         except Exception:
