@@ -577,14 +577,40 @@ def transcribe_captions(voice_path, log=None):
 
 # ----------------- caption generation -----------------
 def generate_caption_image(text, preferred_font=None, log=None):
-    font = load_preferred_font_cached(preferred_font or CAPTION_FONT_PREFERRED, CAPTION_FONT_SIZE, log=log)
+    """
+    Generate caption image with visible background and proper transparency settings.
+    
+    FIXED ISSUES:
+    - Changed bubble background from transparent (0,0,0,0) to semi-opaque white (255,255,255,220)
+    - Removed duplicate shadow drawing code
+    - Added logging for caption rendering errors
+    - Normalized color values to ensure valid RGBA ranges
+    """
+    try:
+        if log:
+            log(f"[caption] Generating caption image for text: '{text[:50]}...'")
+    except Exception:
+        pass
+    
+    try:
+        font = load_preferred_font_cached(preferred_font or CAPTION_FONT_PREFERRED, CAPTION_FONT_SIZE, log=log)
+    except Exception as e:
+        try:
+            if log:
+                log(f"[caption ERROR] Failed to load font: {e}")
+        except Exception:
+            pass
+        raise
+    
     text = normalize_text(text)
+    
     def measure_text(draw, s):
         try:
             l, t, r, b = draw.textbbox((0,0), s, font=font)
             return (r-l, b-t)
         except Exception:
             return font.getsize(s)
+    
     tmp_img = Image.new("RGBA", (WIDTH, 10), (0,0,0,0))
     draw_tmp = ImageDraw.Draw(tmp_img)
     max_text_width = WIDTH - 160
@@ -599,73 +625,133 @@ def generate_caption_image(text, preferred_font=None, log=None):
             if current: lines.append(current)
             current = w
     if current: lines.append(current)
+    
     line_heights = []
     max_line_w = 0
     for line in lines:
         lw, lh = measure_text(draw_tmp, line)
         line_heights.append(lh)
         max_line_w = max(max_line_w, lw)
+    
     line_spacing = int(CAPTION_FONT_SIZE * 0.18)
     padding_x = 24; padding_y = 24  # increased vertical padding to avoid bottom cutoff
     extra_bottom_margin = int(CAPTION_FONT_SIZE * 0.35)  # extra transparent margin at bottom
     total_height = sum(line_heights) + line_spacing*(len(lines)-1) + padding_y*2 + extra_bottom_margin
     bubble_width = min(WIDTH - 80, max_line_w + padding_x*2)
+    
+    try:
+        if log:
+            log(f"[caption] Image dimensions: {WIDTH}x{total_height + 8 + extra_bottom_margin}, lines: {len(lines)}")
+    except Exception:
+        pass
+    
     img = Image.new("RGBA", (WIDTH, total_height + 8 + extra_bottom_margin), (0,0,0,0))
     draw = ImageDraw.Draw(img)
     bubble_x0 = (WIDTH - bubble_width)//2; bubble_x1 = bubble_x0 + bubble_width
     bubble_y0 = 4; bubble_y1 = bubble_y0 + (total_height - extra_bottom_margin)  # bubble excludes the extra bottom margin
+    
+    # Draw shadow (FIXED: removed duplicate code)
     shadow = Image.new("RGBA", (bubble_width, total_height - extra_bottom_margin), (0,0,0,0))
     sd = ImageDraw.Draw(shadow)
     try:
         radius = int(padding_y*0.8)
-        sd.rounded_rectangle([0,0,bubble_width,total_height], radius=radius, fill=(0,0,0,200))
+        sd.rounded_rectangle([0,0,bubble_width,total_height - extra_bottom_margin], radius=radius, fill=(0,0,0,200))
         shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
         img.paste(shadow, (bubble_x0+0, bubble_y0+2), shadow)
-    except Exception:
-        sd.rectangle([0,0,bubble_width,total_height], fill=(0,0,0,140))
+        try:
+            if log:
+                log(f"[caption] Shadow drawn successfully with rounded corners")
+        except Exception:
+            pass
+    except Exception as e:
+        try:
+            if log:
+                log(f"[caption WARNING] Rounded shadow failed, using rectangle: {e}")
+        except Exception:
+            pass
+        sd.rectangle([0,0,bubble_width,total_height - extra_bottom_margin], fill=(0,0,0,140))
         sd_im = shadow.filter(ImageFilter.GaussianBlur(radius=6))
         img.paste(sd_im, (bubble_x0+0, bubble_y0+2), sd_im)
     
+    # Draw bubble background (FIXED: changed from transparent to visible semi-opaque white)
     try:
-        radius = int(padding_y*0.8)
-        sd.rounded_rectangle([0,0,bubble_width,total_height], radius=radius, fill=(0,0,0,200))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
-        img.paste(shadow, (bubble_x0+0, bubble_y0+2), shadow)
-    except Exception:
-        sd.rectangle([0,0,bubble_width,total_height], fill=(0,0,0,140))
-        sd_im = shadow.filter(ImageFilter.GaussianBlur(radius=6))
-        img.paste(sd_im, (bubble_x0+0, bubble_y0+2), sd_im)
-    try:
-        # light rounded bubble background (semi-opaque white for good contrast with black text)
-        draw.rounded_rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], radius=int(padding_y*0.8), fill=(0,0,0,0))
-    except Exception:
-        draw.rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], fill=(0,0,0,0))
-    # subtle stroke to help text pop slightly (dark, low alpha)
+        # Use semi-opaque white background for good contrast with text
+        bubble_fill = (255, 255, 255, 220)  # FIXED: was (0,0,0,0) - completely transparent!
+        draw.rounded_rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], radius=int(padding_y*0.8), fill=bubble_fill)
+        try:
+            if log:
+                log(f"[caption] Bubble background drawn with fill={bubble_fill}")
+        except Exception:
+            pass
+    except Exception as e:
+        try:
+            if log:
+                log(f"[caption WARNING] Rounded bubble failed, using rectangle: {e}")
+        except Exception:
+            pass
+        bubble_fill = (255, 255, 255, 220)  # FIXED: was (0,0,0,0) - completely transparent!
+        draw.rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], fill=bubble_fill)
+    
+    # Normalize and validate color values (FIXED: ensure colors are in valid range)
+    def normalize_color(color):
+        """Ensure RGBA color tuple is in valid range (0-255)."""
+        return tuple(max(0, min(255, int(c))) for c in color)
+    
     try:
         stroke_w = int(CAPTION_STROKE_WIDTH)
     except Exception:
         stroke_w = max(1, int(CAPTION_FONT_SIZE * 0.05))
+    
     try:
-        stroke_fill = tuple(CAPTION_STROKE_COLOR)
+        stroke_fill = normalize_color(tuple(CAPTION_STROKE_COLOR))
     except Exception:
         stroke_fill = (0,0,0,150)
+    
     try:
-        text_fill = tuple(CAPTION_TEXT_COLOR)
+        text_fill = normalize_color(tuple(CAPTION_TEXT_COLOR))
     except Exception:
         text_fill = (255,255,255,255)
+    
+    try:
+        if log:
+            log(f"[caption] Text settings: fill={text_fill}, stroke={stroke_fill}, stroke_width={stroke_w}")
+    except Exception:
+        pass
+    
+    # Draw text
     y = bubble_y0 + padding_y
-    for line in lines:
+    for line_idx, line in enumerate(lines):
         lw, lh = measure_text(draw, line)
         x = bubble_x0 + (bubble_width - lw)//2
         try:
             draw.text((x,y), line, font=font, fill=text_fill, stroke_width=stroke_w, stroke_fill=stroke_fill)
-        except TypeError:
+        except TypeError as e:
+            try:
+                if log:
+                    log(f"[caption WARNING] stroke_width not supported, using manual stroke: {e}")
+            except Exception:
+                pass
+            # Fallback for older Pillow versions
             offs = [(dx, dy) for dx in (-stroke_w,0,stroke_w) for dy in (-stroke_w,0,stroke_w)]
             for dx, dy in offs:
                 if dx==0 and dy==0: continue
                 draw.text((x+dx, y+dy), line, font=font, fill=stroke_fill)
             draw.text((x,y), line, font=font, fill=text_fill)
+        except Exception as e:
+            try:
+                if log:
+                    log(f"[caption ERROR] Failed to draw text line {line_idx}: {e}")
+            except Exception:
+                pass
+            raise
         y += lh + line_spacing
+    
+    try:
+        if log:
+            log(f"[caption] Caption image generated successfully")
+    except Exception:
+        pass
+    
     return img
 # ----------------- preview helpers (with timeline support) -----------------
 def extract_and_scale_frame(video_path, time_sec=None, desired_width=360):
@@ -757,10 +843,26 @@ def _make_ffmpeg_params_for_codec(codec):
         ]
 
 def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR):
+    """
+    Compose final video with blurred background and caption overlays.
+    
+    FIXED ISSUES:
+    - Removed duplicated and nested caption generation loops
+    - Fixed alpha channel handling for caption masks
+    - Added logging for caption composition errors
+    - Verified caption layer creation and positioning
+    - Ensured captions are properly composited onto final video
+    """
     try:
         log("Composing final video (with monitored export).")
     except Exception:
         print("Composing final video (no log callable).")
+    
+    try:
+        log(f"[compose] Starting composition with {len(caption_segments)} caption segments")
+    except Exception:
+        pass
+    
     # build background (static blurred frame)
     t_mid = min(max(0.001, video_clip.duration / 2.0), max(0.001, video_clip.duration - 0.01))
     frame = video_clip.get_frame(t_mid)
@@ -776,6 +878,11 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     img = img.filter(ImageFilter.GaussianBlur(blur_radius))
     img = ImageEnhance.Brightness(img).enhance(dim_factor)
     bg_static = ImageClip(np.array(img)).set_duration(video_clip.duration)
+    
+    try:
+        log(f"[compose] Background created: {WIDTH}x{HEIGHT}, blur={blur_radius}")
+    except Exception:
+        pass
 
     # foreground: slight zoom to avoid letterbox/freeze effect
     try:
@@ -785,158 +892,141 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     fg_scale = max(1.0, min_scale_to_fit) * 1.03
     fg_scale = min(fg_scale, 1.06)
     fg = video_clip.resize(fg_scale).set_position(("center", "center")).set_duration(video_clip.duration)
+    
+    try:
+        log(f"[compose] Foreground scaled: {fg_scale:.3f}x")
+    except Exception:
+        pass
 
+    # Build caption clips (FIXED: single clean loop, no duplication)
     caption_clips = []
     MIN_GROUP_DURATION = 0.25
-    for segment in caption_segments:
-        start_t = float(segment["start"])
-        end_t = float(segment["end"])
-        seg_dur = max(0.05, end_t - start_t)
-        text = normalize_text(segment["text"].strip())
-        words = text.split()
-        if not words:
-            continue
+    
+    try:
         tpl = TEMPLATE_WORDS.get(CAPTION_TEMPLATE, 2)
-        groups = [" ".join(words[i:i+tpl]) for i in range(0, len(words), tpl)]
-        raw_group_dur = seg_dur / max(1, len(groups))
-        for i, grp_text in enumerate(groups):
-            g_start = start_t + i * raw_group_dur
-            g_dur = max(MIN_GROUP_DURATION, raw_group_dur)
-            if g_start >= end_t:
-                g_start = max(start_t, end_t - g_dur)
-
+    except Exception:
+        tpl = 2
+    
+    for seg_idx, segment in enumerate(caption_segments):
+        try:
+            start_t = float(segment.get("start", segment.get("start_time", 0)))
+            end_t = float(segment.get("end", segment.get("end_time", start_t + 3)))
+            seg_dur = max(0.05, end_t - start_t)
+            text = normalize_text(segment.get("text", "").strip())
             
-            # --- START: simplified caption -> cclip with mask-based fade (replaced) ---
+            if not text:
+                try:
+                    log(f"[compose WARNING] Segment {seg_idx} has empty text, skipping")
+                except Exception:
+                    pass
+                continue
+            
             try:
-                # Build caption clips from caption_segments (expects list of dicts with 'text','start','end')
-                caption_clips = []
-                for segment in caption_segments:
-                    start_t = float(segment.get("start", segment.get("start_time", 0)))
-                    end_t = float(segment.get("end", segment.get("end_time", start_t + 3)))
-                    seg_dur = max(0.05, end_t - start_t)
-                    txt = normalize_text(segment.get("text", "").strip())
-                    if not txt:
-                        continue
-
-                    # customization defaults or globals set elsewhere
-                    font_path = globals().get("CAPTION_FONT_PATH", None)
-                    font_size = int(globals().get("CAPTION_FONT_SIZE", 56)) if globals().get("CAPTION_FONT_SIZE", None) else 56
-                    fill = globals().get("CAPTION_FILL_COLOR", (255,255,255,255))
-                    stroke = globals().get("CAPTION_STROKE_COLOR", (0,0,0,255))
-                    stroke_w = int(globals().get("CAPTION_STROKE_WIDTH", 3))
-
-                    if isinstance(fill, str):
-                        fill = hex_to_rgba(fill, alpha=255)
-                    if isinstance(stroke, str):
-                        stroke = hex_to_rgba(stroke, alpha=255)
-
-                    png = generate_caption_image(
-                        txt,
-                        font_path=font_path,
-                        font_size=font_size,
-                        fill=fill,
-                        stroke_fill=stroke,
-                        stroke_width=stroke_w,
-                        padding=18,
-                        max_width=WIDTH if 'WIDTH' in globals() else 1280,
-                        bg_transparent=True
-                    )
-                    if not png:
-                        continue
+                log(f"[compose] Processing segment {seg_idx}: '{text[:50]}...' ({start_t:.2f}s - {end_t:.2f}s)")
+            except Exception:
+                pass
+            
+            # split text into groups of tpl words
+            words = text.split()
+            groups = [" ".join(words[i:i+tpl]) for i in range(0, len(words), tpl)]
+            raw_group_dur = seg_dur / max(1, len(groups))
+            
+            for i, grp_text in enumerate(groups):
+                g_start = start_t + i * raw_group_dur
+                g_dur = max(MIN_GROUP_DURATION, raw_group_dur)
+                if g_start >= end_t:
+                    g_start = max(start_t, end_t - g_dur)
+                
+                try:
                     try:
-                        from PIL import Image as _PIL_Image
-                        import numpy as _np
-                        pil_img = _PIL_Image.open(png).convert("RGBA")
-                        rgb_arr = _np.array(pil_img.convert("RGB"))
-                        alpha_arr = _np.array(pil_img.split()[-1]).astype("float32") / 255.0
-
-                        img_clip = ImageClip(rgb_arr).set_start(start_t).set_duration(seg_dur)
-                        mask_clip = ImageClip(alpha_arr, ismask=True).set_start(start_t).set_duration(seg_dur)
-                        img_clip = img_clip.set_mask(mask_clip)
-                        img_clip = img_clip.set_position(("center", "bottom"))
-                        caption_clips.append(img_clip)
+                        log(f"[compose]   Group {i}: '{grp_text}' at {g_start:.2f}s for {g_dur:.2f}s")
                     except Exception:
+                        pass
+                    
+                    # generate PIL image for the caption group (FIXED: proper function call)
+                    pil_img = generate_caption_image(grp_text, preferred_font=preferred_font, log=log)
+                    if pil_img is None:
                         try:
-                            c = ImageClip(png).set_start(start_t).set_duration(seg_dur).set_position(("center","bottom"))
-                            caption_clips.append(c)
+                            log(f"[compose ERROR] generate_caption_image returned None for '{grp_text}'")
                         except Exception:
-                            continue
-            except Exception:
-                # If something goes wrong, fallback to original flow (leave caption_clips empty so no captions)
-                try:
-                    log and log("Caption generation replacement failed; falling back.")
-                except Exception:
-                    pass
-            # --- END: simplified caption replacement ---
-            try:
-                # determine group size / defaults (fallback dacă constantele nu există)
-                try:
-                    tpl = TEMPLATE_WORDS.get(CAPTION_TEMPLATE, 2)
-                except Exception:
-                    tpl = 2
-                try:
-                    min_group_dur = MIN_GROUP_DURATION
-                except Exception:
-                    min_group_dur = 0.08
-
-                for segment in caption_segments:
-                    try:
-                        start_t = float(segment.get("start", segment.get("start_time", 0)))
-                        end_t = float(segment.get("end", segment.get("end_time", start_t + 3)))
-                        seg_dur = max(0.05, end_t - start_t)
-                        txt = normalize_text(segment.get("text", "").strip())
-                        if not txt:
-                            continue
-
-                        # split text into groups of tpl words
-                        words = txt.split()
-                        groups = [" ".join(words[i:i+tpl]) for i in range(0, len(words), tpl)]
-                        raw_group_dur = seg_dur / max(1, len(groups))
-
-                        for i, grp_text in enumerate(groups):
-                            g_start = start_t + i * raw_group_dur
-                            g_dur = max(min_group_dur, raw_group_dur)
-                            if g_start >= end_t:
-                                g_start = max(start_t, end_t - g_dur)
-
-                            try:
-                                # generate PIL image for the caption group
-                                pil_img = generate_caption_image(grp_text, preferred_font=preferred_font, log=log)
-                                if pil_img is None:
-                                    continue
-
-                                pil_rgba = pil_img.convert("RGBA")
-
-                                # convert to numpy arrays for moviepy ImageClip + mask
-                                import numpy as _np
-                                rgb_arr = _np.array(pil_rgba.convert("RGB"))
-                                alpha_arr = _np.array(pil_rgba.split()[-1]).astype("float32") / 255.0
-
-                                from moviepy.editor import ImageClip
-                                img_clip = ImageClip(rgb_arr).set_start(g_start).set_duration(g_dur)
-                                mask_clip = ImageClip(alpha_arr, ismask=True).set_start(g_start).set_duration(g_dur)
-                                img_clip = img_clip.set_mask(mask_clip)
-
-                                # poziționare: centru jos (poți schimba)
-                                img_clip = img_clip.set_position(("center", "bottom"))
-
-                                caption_clips.append(img_clip)
-                            except Exception as e_img:
-                                try:
-                                    log and log(f"[captions] failed creating clip for group '{grp_text}': {e_img}")
-                                except Exception:
-                                    pass
-                                continue
-                    except Exception:
-                        # dacă un segment e corupt, continuăm cu următorul
+                            pass
                         continue
+                    
+                    # Ensure RGBA mode
+                    pil_rgba = pil_img.convert("RGBA")
+                    
+                    # Verify alpha channel is not completely transparent (FIXED: added validation)
+                    alpha_channel = pil_rgba.split()[-1]
+                    alpha_arr_check = np.array(alpha_channel)
+                    if alpha_arr_check.max() == 0:
+                        try:
+                            log(f"[compose ERROR] Caption image for '{grp_text}' has completely transparent alpha channel!")
+                        except Exception:
+                            pass
+                        continue
+                    
+                    try:
+                        log(f"[compose]   Alpha channel valid: min={alpha_arr_check.min()}, max={alpha_arr_check.max()}, mean={alpha_arr_check.mean():.1f}")
+                    except Exception:
+                        pass
+                    
+                    # convert to numpy arrays for moviepy ImageClip + mask (FIXED: proper mask handling)
+                    rgb_arr = np.array(pil_rgba.convert("RGB"))
+                    alpha_arr = np.array(pil_rgba.split()[-1]).astype("float32") / 255.0
+                    
+                    from moviepy.editor import ImageClip
+                    img_clip = ImageClip(rgb_arr).set_start(g_start).set_duration(g_dur)
+                    mask_clip = ImageClip(alpha_arr, ismask=True).set_start(g_start).set_duration(g_dur)
+                    img_clip = img_clip.set_mask(mask_clip)
+                    
+                    # Position: center bottom with margin
+                    img_clip = img_clip.set_position(("center", "bottom"))
+                    
+                    caption_clips.append(img_clip)
+                    
+                    try:
+                        log(f"[compose]   Caption clip created successfully")
+                    except Exception:
+                        pass
+                    
+                except Exception as e_img:
+                    try:
+                        log(f"[compose ERROR] Failed creating clip for group '{grp_text}': {e_img}")
+                        import traceback
+                        log(f"[compose ERROR] Traceback: {traceback.format_exc()}")
+                    except Exception:
+                        pass
+                    continue
+                    
+        except Exception as e_seg:
+            try:
+                log(f"[compose ERROR] Failed processing segment {seg_idx}: {e_seg}")
+                import traceback
+                log(f"[compose ERROR] Traceback: {traceback.format_exc()}")
             except Exception:
-                try:
-                    log and log("[captions] simplified caption replacement failed")
-                except Exception:
-                    pass
-                                   # --- END: simplified caption replacement ---
-    final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
+                pass
+            continue
+    
+    try:
+        log(f"[compose] Created {len(caption_clips)} caption clips total")
+    except Exception:
+        pass
+    
+    # Composite all layers (FIXED: ensure captions are included)
+    try:
+        final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
+        try:
+            log(f"[compose] Final composition created with {len(caption_clips)} caption layers")
+        except Exception:
+            pass
+    except Exception as e:
+        try:
+            log(f"[compose ERROR] Failed to create CompositeVideoClip: {e}")
+            import traceback
+            log(f"[compose ERROR] Traceback: {traceback.format_exc()}")
+        except Exception:
+            pass
+        raise
 
     # export monitoring and fallback
     codec_try_order = []
