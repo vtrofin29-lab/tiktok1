@@ -1960,8 +1960,9 @@ class App:
             caption_baseline_from_bottom = int(offset * preview_ratio)
             caption_y = h - caption_baseline_from_bottom
             
-            # Clamp to visible area
-            caption_y = max(top_y + 20, min(bottom_y - 20, caption_y))
+            # DO NOT clamp to crop lines - show actual caption position even if outside crop area
+            # Only clamp to canvas boundaries (0 to h)
+            caption_y = max(5, min(h - 5, caption_y))
             
             # Draw green dashed line showing caption baseline - PERMANENT
             self.mini_canvas.create_line(0, caption_y, composed.width, caption_y, 
