@@ -1939,6 +1939,58 @@ class App:
             except Exception:
                 pass
 
+    def _draw_caption_indicator_on_preview(self, composed, h, top_y, bottom_y, offset):
+        """Draw the caption position indicator on the mini preview canvas.
+        
+        Args:
+            composed: The composed PIL image
+            h: Canvas height
+            top_y: Top crop line Y position
+            bottom_y: Bottom crop line Y position
+            offset: Caption Y offset value
+        """
+        try:
+            # Calculate where caption will appear on the preview
+            preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
+            caption_baseline_from_bottom = int(offset * preview_ratio)
+            caption_y = h - caption_baseline_from_bottom
+            
+            # Clamp to visible area
+            caption_y = max(top_y + 20, min(bottom_y - 20, caption_y))
+            
+            # Draw green dashed line showing caption baseline - PERMANENT
+            self.mini_canvas.create_line(0, caption_y, composed.width, caption_y, 
+                                        fill="#00FF00", dash=(6, 4), width=3, tags="caption_line")
+            
+            # Draw outlined box showing caption area
+            box_width = 80
+            box_height = 18
+            self.mini_canvas.create_rectangle(composed.width//2 - box_width, caption_y - box_height, 
+                                             composed.width//2 + box_width, caption_y, 
+                                             fill="", outline="#00FF00", width=2, tags="caption_box")
+            
+            # Draw label with offset value
+            self.mini_canvas.create_text(composed.width//2, caption_y - box_height//2, 
+                                        text=f"Caption Y: {offset}px", 
+                                        fill="#00FF00", font=("Arial", 9, "bold"), tags="caption_label")
+            
+            # Log for debugging
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[CAPTION-INDICATOR] Drawn at y={caption_y}, offset={offset}px\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+                
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[CAPTION-INDICATOR-ERR] {e}\n")
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
     def on_caption_position_changed(self, val):
         """Callback when caption vertical position slider changes."""
         try:
@@ -1958,12 +2010,13 @@ class App:
                 pass
             try:
                 self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[CAPTION-POS] Y offset: {offset}px\n")
+                self.log_widget.insert('end', f"[CAPTION-POS-CHANGE] Y offset changed to: {offset}px\n")
                 self.log_widget.config(state='disabled')
                 self.log_widget.see('end')
             except Exception:
                 pass
-            # Update mini preview to show new caption position (NEW)
+            
+            # Update mini preview to show new caption position
             try:
                 if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
                     # Redraw the mini preview with updated caption indicator
@@ -1975,42 +2028,24 @@ class App:
                     top_y = int(round(h * top_pct))
                     bottom_y = int(round(h * (1.0 - bottom_pct)))
                     
+                    # Redraw entire canvas
                     self.mini_canvas.delete("all")
                     self.mini_canvas.create_image(0, 0, anchor="nw", image=photo, tags="base_img")
                     self.mini_image_ref = photo  # Keep reference to prevent garbage collection
+                    
+                    # Draw crop lines
                     self.mini_canvas.create_rectangle(0, top_y-4, composed.width, top_y+4, fill="#000000", stipple="gray50", tags="line_top")
                     self.mini_canvas.create_rectangle(0, bottom_y-4, composed.width, bottom_y+4, fill="#000000", stipple="gray50", tags="line_bottom")
                     self.mini_canvas.create_text(6, max(6, top_y-18), anchor="nw", text=f"Top {int(top_pct*100)}% ({top_y}px)", fill="#fff", font=("Arial",9), tags="label_top")
                     self.mini_canvas.create_text(6, min(h-18, bottom_y+6), anchor="nw", text=f"Bottom {int(bottom_pct*100)}% ({h - bottom_y}px)", fill="#fff", font=("Arial",9), tags="label_bottom")
                     
-                    # Draw caption position indicator
-                    preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
-                    caption_baseline_from_bottom = int(offset * preview_ratio)
-                    caption_y = h - caption_baseline_from_bottom
-                    caption_y = max(top_y + 20, min(bottom_y - 20, caption_y))
+                    # Draw caption position indicator using dedicated method
+                    self._draw_caption_indicator_on_preview(composed, h, top_y, bottom_y, offset)
                     
-                    # Draw green line and box (without stipple for better compatibility)
-                    self.mini_canvas.create_line(0, caption_y, composed.width, caption_y, 
-                                                fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
-                    self.mini_canvas.create_rectangle(composed.width//2 - 60, caption_y - 15, 
-                                                     composed.width//2 + 60, caption_y, 
-                                                     fill="", outline="#00FF00", width=2, tags="caption_box")
-                    self.mini_canvas.create_text(composed.width//2, caption_y - 7, 
-                                                text=f"Caption Y:{offset}px", 
-                                                fill="#00FF00", font=("Arial", 8, "bold"), tags="caption_label")
-                    
-                    # Log for debugging
-                    try:
-                        self.log_widget.config(state='normal')
-                        self.log_widget.insert('end', f"[CAPTION-PREVIEW] Updated at y={caption_y}, offset={offset}px\n")
-                        self.log_widget.config(state='disabled')
-                        self.log_widget.see('end')
-                    except Exception:
-                        pass
             except Exception as e:
                 try:
                     self.log_widget.config(state='normal')
-                    self.log_widget.insert('end', f"[CAPTION-PREVIEW-ERR] {e}\n")
+                    self.log_widget.insert('end', f"[CAPTION-UPDATE-ERR] {e}\n")
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
@@ -2601,31 +2636,10 @@ class App:
                 self.mini_canvas.create_text(6, max(6, top_y-18), anchor="nw", text=f"Top {int(top_pct*100)}% ({top_y}px)", fill="#fff", font=("Arial",9), tags="label_top")
                 self.mini_canvas.create_text(6, min(h-18, bottom_y+6), anchor="nw", text=f"Bottom {int(bottom_pct*100)}% ({h - bottom_y}px)", fill="#fff", font=("Arial",9), tags="label_bottom")
                 
-                # Add caption position indicator (NEW)
+                # Draw caption position indicator using dedicated method
                 try:
                     y_offset = globals().get('CAPTION_Y_OFFSET', 0)
-                    # Calculate where caption will appear on the preview
-                    # Caption is positioned from bottom in actual video (HEIGHT)
-                    # Scale it to preview height
-                    preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
-                    # Caption baseline position from bottom of preview
-                    caption_baseline_from_bottom = int(y_offset * preview_ratio)
-                    caption_y = h - caption_baseline_from_bottom
-                    
-                    # Clamp to visible area
-                    caption_y = max(top_y + 20, min(bottom_y - 20, caption_y))
-                    
-                    # Draw caption position indicator
-                    # Horizontal line showing caption baseline
-                    self.mini_canvas.create_line(0, caption_y, composed.width, caption_y, 
-                                                fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
-                    # Small semi-transparent box showing caption area (without stipple for compatibility)
-                    self.mini_canvas.create_rectangle(composed.width//2 - 60, caption_y - 15, 
-                                                     composed.width//2 + 60, caption_y, 
-                                                     fill="", outline="#00FF00", width=2, tags="caption_box")
-                    self.mini_canvas.create_text(composed.width//2, caption_y - 7, 
-                                                text=f"Caption Y:{y_offset}px", 
-                                                fill="#00FF00", font=("Arial", 8, "bold"), tags="caption_label")
+                    self._draw_caption_indicator_on_preview(composed, h, top_y, bottom_y, y_offset)
                 except Exception as e:
                     # Log caption indicator errors for debugging
                     try:
