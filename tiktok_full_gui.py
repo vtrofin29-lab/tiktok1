@@ -1665,7 +1665,7 @@ class App:
                 ttk.Label(pos_frame, text='Caption Y offset:').grid(row=0, column=0, sticky='w')
                 # Offset from bottom in pixels (0 = at bottom, negative = move up, positive = move down)
                 self.caption_y_offset_var = tk.IntVar(value=0)
-                self.caption_y_offset_scale = tk.Scale(pos_frame, from_=-500, to=200, orient='horizontal', length=140, showvalue=0, variable=self.caption_y_offset_var, command=self.on_caption_position_changed)
+                self.caption_y_offset_scale = tk.Scale(pos_frame, from_=-1080, to=200, orient='horizontal', length=140, showvalue=0, variable=self.caption_y_offset_var, command=self.on_caption_position_changed)
                 self.caption_y_offset_scale.grid(row=0, column=1, padx=(6,8))
                 self.caption_y_offset_label = ttk.Label(pos_frame, text=f"{self.caption_y_offset_var.get()}px")
                 self.caption_y_offset_label.grid(row=0, column=2, sticky='w')
