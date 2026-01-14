@@ -1991,6 +1991,55 @@ class App:
             except Exception:
                 pass
 
+    def _redraw_mini_canvas_with_caption_indicator(self, composed, top_pct, bottom_pct):
+        """Helper to redraw the entire mini canvas with crop lines and caption indicator.
+        
+        This ensures the caption indicator is ALWAYS drawn on every mini preview update.
+        """
+        try:
+            photo = ImageTk.PhotoImage(composed)
+            h = composed.height
+            top_y = int(round(h * top_pct))
+            bottom_y = int(round(h * (1.0 - bottom_pct)))
+            
+            # Clear and redraw canvas
+            self.mini_canvas.delete("all")
+            self.mini_canvas.create_image(0, 0, anchor="nw", image=photo, tags="base_img")
+            self.mini_image_ref = photo  # Keep reference
+            
+            # Draw crop lines
+            self.mini_canvas.create_rectangle(0, top_y-4, composed.width, top_y+4, 
+                                            fill="#000000", stipple="gray50", tags="line_top")
+            self.mini_canvas.create_rectangle(0, bottom_y-4, composed.width, bottom_y+4, 
+                                            fill="#000000", stipple="gray50", tags="line_bottom")
+            self.mini_canvas.create_text(6, max(6, top_y-18), anchor="nw", 
+                                        text=f"Top {int(top_pct*100)}% ({top_y}px)", 
+                                        fill="#fff", font=("Arial",9), tags="label_top")
+            self.mini_canvas.create_text(6, min(h-18, bottom_y+6), anchor="nw", 
+                                        text=f"Bottom {int(bottom_pct*100)}% ({h - bottom_y}px)", 
+                                        fill="#fff", font=("Arial",9), tags="label_bottom")
+            
+            # ALWAYS draw caption position indicator
+            y_offset = globals().get('CAPTION_Y_OFFSET', 0)
+            self._draw_caption_indicator_on_preview(composed, h, top_y, bottom_y, y_offset)
+            
+            # Log for debugging
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[MINI-REDRAW] Canvas updated with caption indicator\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+                
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[MINI-REDRAW-ERR] {e}\n")
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
     def on_caption_position_changed(self, val):
         """Callback when caption vertical position slider changes."""
         try:
@@ -2023,24 +2072,8 @@ class App:
                     top_pct = float(self.top_percent_var.get())/100.0
                     bottom_pct = float(self.bottom_percent_var.get())/100.0
                     composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    photo = ImageTk.PhotoImage(composed)
-                    h = composed.height
-                    top_y = int(round(h * top_pct))
-                    bottom_y = int(round(h * (1.0 - bottom_pct)))
-                    
-                    # Redraw entire canvas
-                    self.mini_canvas.delete("all")
-                    self.mini_canvas.create_image(0, 0, anchor="nw", image=photo, tags="base_img")
-                    self.mini_image_ref = photo  # Keep reference to prevent garbage collection
-                    
-                    # Draw crop lines
-                    self.mini_canvas.create_rectangle(0, top_y-4, composed.width, top_y+4, fill="#000000", stipple="gray50", tags="line_top")
-                    self.mini_canvas.create_rectangle(0, bottom_y-4, composed.width, bottom_y+4, fill="#000000", stipple="gray50", tags="line_bottom")
-                    self.mini_canvas.create_text(6, max(6, top_y-18), anchor="nw", text=f"Top {int(top_pct*100)}% ({top_y}px)", fill="#fff", font=("Arial",9), tags="label_top")
-                    self.mini_canvas.create_text(6, min(h-18, bottom_y+6), anchor="nw", text=f"Bottom {int(bottom_pct*100)}% ({h - bottom_y}px)", fill="#fff", font=("Arial",9), tags="label_bottom")
-                    
-                    # Draw caption position indicator using dedicated method
-                    self._draw_caption_indicator_on_preview(composed, h, top_y, bottom_y, offset)
+                    # Use centralized redraw method that ALWAYS includes caption indicator
+                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
                     
             except Exception as e:
                 try:
@@ -2625,28 +2658,8 @@ class App:
             photo = ImageTk.PhotoImage(composed)
             def apply():
                 self.mini_canvas.config(width=composed.width, height=composed.height)
-                self.mini_canvas.delete("all")
-                self.mini_canvas.create_image(0, 0, anchor="nw", image=photo, tags="base_img")
-                self.mini_image_ref = photo
-                h = composed.height
-                top_y = int(round(h * top_pct))
-                bottom_y = int(round(h * (1.0 - bottom_pct)))
-                self.mini_canvas.create_rectangle(0, top_y-4, composed.width, top_y+4, fill="#000000", stipple="gray50", tags="line_top")
-                self.mini_canvas.create_rectangle(0, bottom_y-4, composed.width, bottom_y+4, fill="#000000", stipple="gray50", tags="line_bottom")
-                self.mini_canvas.create_text(6, max(6, top_y-18), anchor="nw", text=f"Top {int(top_pct*100)}% ({top_y}px)", fill="#fff", font=("Arial",9), tags="label_top")
-                self.mini_canvas.create_text(6, min(h-18, bottom_y+6), anchor="nw", text=f"Bottom {int(bottom_pct*100)}% ({h - bottom_y}px)", fill="#fff", font=("Arial",9), tags="label_bottom")
-                
-                # Draw caption position indicator using dedicated method
-                try:
-                    y_offset = globals().get('CAPTION_Y_OFFSET', 0)
-                    self._draw_caption_indicator_on_preview(composed, h, top_y, bottom_y, y_offset)
-                except Exception as e:
-                    # Log caption indicator errors for debugging
-                    try:
-                        self.q.put(f"[Caption indicator error] {e}")
-                    except Exception:
-                        pass
-                
+                # Use centralized redraw method that ALWAYS includes caption indicator
+                self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
                 self.preview_info.config(text=f"Preview at {seconds_to_hms(time_val)} | scale={self.mini_scale:.2f}")
                 self.font_info.config(text=f"Font: {LOADED_FONT_PATH or 'not loaded'}")
             self.root.after(0, apply)
@@ -2744,16 +2757,14 @@ class App:
                     top_pct = float(self.top_percent_var.get())/100.0
                     bottom_pct = float(self.bottom_percent_var.get())/100.0
                     composed = overlay_crop_on_image(img, top_pct, bottom_pct)
-                    photo = ImageTk.PhotoImage(composed)
                     try:
-                        def _set_photo(p=photo):
+                        def _update_with_caption():
                             try:
-                                self.mini_canvas.delete('all')
-                                self.mini_canvas.create_image(0, 0, anchor='nw', image=p)
-                                self.mini_canvas.image = p
+                                # Use centralized redraw method that ALWAYS includes caption indicator
+                                self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
                             except Exception:
                                 pass
-                        self.root.after(0, _set_photo)
+                        self.root.after(0, _update_with_caption)
                     except Exception:
                         pass
             except Exception:
@@ -2791,6 +2802,15 @@ class App:
     def update_mini_preview_immediate(self):
         if self.mini_base_img is None:
             self._mini_update_worker_async()
+        else:
+            # Redraw with current crop settings and caption indicator
+            try:
+                top_pct = float(self.top_percent_var.get())/100.0
+                bottom_pct = float(self.bottom_percent_var.get())/100.0
+                composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
+                self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
+            except Exception:
+                pass
 
     def _rgba_from_hex(self, hx):
         try:
