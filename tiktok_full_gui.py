@@ -1977,7 +1977,7 @@ class App:
                     
                     self.mini_canvas.delete("all")
                     self.mini_canvas.create_image(0, 0, anchor="nw", image=photo, tags="base_img")
-                    self.mini_image_ref = photo
+                    self.mini_image_ref = photo  # Keep reference to prevent garbage collection
                     self.mini_canvas.create_rectangle(0, top_y-4, composed.width, top_y+4, fill="#000000", stipple="gray50", tags="line_top")
                     self.mini_canvas.create_rectangle(0, bottom_y-4, composed.width, bottom_y+4, fill="#000000", stipple="gray50", tags="line_bottom")
                     self.mini_canvas.create_text(6, max(6, top_y-18), anchor="nw", text=f"Top {int(top_pct*100)}% ({top_y}px)", fill="#fff", font=("Arial",9), tags="label_top")
@@ -1989,16 +1989,31 @@ class App:
                     caption_y = h - caption_baseline_from_bottom
                     caption_y = max(top_y + 20, min(bottom_y - 20, caption_y))
                     
+                    # Draw green line and box (without stipple for better compatibility)
                     self.mini_canvas.create_line(0, caption_y, composed.width, caption_y, 
                                                 fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
                     self.mini_canvas.create_rectangle(composed.width//2 - 60, caption_y - 15, 
                                                      composed.width//2 + 60, caption_y, 
-                                                     fill="#00FF00", outline="#00FF00", stipple="gray25", tags="caption_box")
+                                                     fill="", outline="#00FF00", width=2, tags="caption_box")
                     self.mini_canvas.create_text(composed.width//2, caption_y - 7, 
-                                                text=f"Caption (Y:{offset}px)", 
+                                                text=f"Caption Y:{offset}px", 
                                                 fill="#00FF00", font=("Arial", 8, "bold"), tags="caption_label")
-            except Exception:
-                pass
+                    
+                    # Log for debugging
+                    try:
+                        self.log_widget.config(state='normal')
+                        self.log_widget.insert('end', f"[CAPTION-PREVIEW] Updated at y={caption_y}, offset={offset}px\n")
+                        self.log_widget.config(state='disabled')
+                        self.log_widget.see('end')
+                    except Exception:
+                        pass
+            except Exception as e:
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[CAPTION-PREVIEW-ERR] {e}\n")
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -2604,15 +2619,19 @@ class App:
                     # Horizontal line showing caption baseline
                     self.mini_canvas.create_line(0, caption_y, composed.width, caption_y, 
                                                 fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
-                    # Small box with text showing caption area
+                    # Small semi-transparent box showing caption area (without stipple for compatibility)
                     self.mini_canvas.create_rectangle(composed.width//2 - 60, caption_y - 15, 
                                                      composed.width//2 + 60, caption_y, 
-                                                     fill="#00FF00", outline="#00FF00", stipple="gray25", tags="caption_box")
+                                                     fill="", outline="#00FF00", width=2, tags="caption_box")
                     self.mini_canvas.create_text(composed.width//2, caption_y - 7, 
-                                                text=f"Caption (Y:{y_offset}px)", 
+                                                text=f"Caption Y:{y_offset}px", 
                                                 fill="#00FF00", font=("Arial", 8, "bold"), tags="caption_label")
                 except Exception as e:
-                    pass  # If caption indicator fails, don't break the preview
+                    # Log caption indicator errors for debugging
+                    try:
+                        self.q.put(f"[Caption indicator error] {e}")
+                    except Exception:
+                        pass
                 
                 self.preview_info.config(text=f"Preview at {seconds_to_hms(time_val)} | scale={self.mini_scale:.2f}")
                 self.font_info.config(text=f"Font: {LOADED_FONT_PATH or 'not loaded'}")
