@@ -146,6 +146,7 @@ USE_GPU_IF_AVAILABLE = True
 PREFERRED_NVENC_CODEC = "h264_nvenc"
 
 CAPTION_RAISE = 420
+CAPTION_Y_OFFSET = 0  # Vertical offset in pixels (negative = move up, positive = move down)
 TEMPLATE_WORDS = {1: 1, 2: 2, 3: 3}
 CAPTION_TEMPLATE = 2  # 1, 2 sau 3 cuvinte pe rand
 
@@ -985,13 +986,21 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     mask_clip = ImageClip(alpha_arr, ismask=True).set_start(g_start).set_duration(g_dur)
                     img_clip = img_clip.set_mask(mask_clip)
                     
-                    # Position: center bottom with margin
-                    img_clip = img_clip.set_position(("center", "bottom"))
+                    # Position: use CAPTION_Y_OFFSET for vertical positioning
+                    # Negative offset moves captions up, positive moves down
+                    y_offset = globals().get('CAPTION_Y_OFFSET', 0)
+                    if y_offset == 0:
+                        # Default: bottom center
+                        img_clip = img_clip.set_position(("center", "bottom"))
+                    else:
+                        # Custom position with offset from bottom
+                        # Lambda function to calculate position: (x, y) where y = HEIGHT - offset
+                        img_clip = img_clip.set_position(lambda t: ("center", HEIGHT - img_clip.h - y_offset))
                     
                     caption_clips.append(img_clip)
                     
                     try:
-                        log(f"[compose]   Caption clip created successfully")
+                        log(f"[compose]   Caption clip created with Y offset: {y_offset}px")
                     except Exception:
                         pass
                     
@@ -1649,6 +1658,20 @@ class App:
             except Exception:
                 pass
 
+            # --- Caption vertical position control (NEW) ---
+            try:
+                pos_frame = ttk.Frame(self.font_panel)
+                pos_frame.pack(fill='x', pady=(6,4))
+                ttk.Label(pos_frame, text='Caption Y offset:').grid(row=0, column=0, sticky='w')
+                # Offset from bottom in pixels (0 = at bottom, negative = move up, positive = move down)
+                self.caption_y_offset_var = tk.IntVar(value=0)
+                self.caption_y_offset_scale = tk.Scale(pos_frame, from_=-500, to=200, orient='horizontal', length=140, showvalue=0, variable=self.caption_y_offset_var, command=self.on_caption_position_changed)
+                self.caption_y_offset_scale.grid(row=0, column=1, padx=(6,8))
+                self.caption_y_offset_label = ttk.Label(pos_frame, text=f"{self.caption_y_offset_var.get()}px")
+                self.caption_y_offset_label.grid(row=0, column=2, sticky='w')
+            except Exception:
+                pass
+
             for c in PRESET_SWATCHES:
                 b = tk.Canvas(sf, width=22, height=22, bg=c, highlightthickness=1, bd=0)
                 b.pack(side='left', padx=4)
@@ -1916,6 +1939,38 @@ class App:
             except Exception:
                 pass
 
+    def on_caption_position_changed(self, val):
+        """Callback when caption vertical position slider changes."""
+        try:
+            # val comes as string; set global and update label
+            try:
+                offset = int(float(val))
+            except Exception:
+                try:
+                    offset = int(val)
+                except Exception:
+                    offset = 0
+            globals()['CAPTION_Y_OFFSET'] = offset
+            try:
+                if hasattr(self, 'caption_y_offset_label') and self.caption_y_offset_label:
+                    self.caption_y_offset_label.config(text=f"{offset}px")
+            except Exception:
+                pass
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[CAPTION-POS] Y offset: {offset}px\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[CAPTION-POS-ERR] {e}\n")
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
     def on_template_selected(self, event=None):
         try:
             sel = (self.template_var.get() if hasattr(self, 'template_var') else '2 words').strip()
@@ -1979,10 +2034,29 @@ class App:
             # store ref to avoid GC
             self._caption_preview_im = im_tk
             self.caption_preview_canvas.delete('all')
-            # center image
+            
+            # Get caption Y offset for position visualization
+            y_offset = globals().get('CAPTION_Y_OFFSET', 0)
             cw = int(self.caption_preview_canvas['width']); ch = int(self.caption_preview_canvas['height'])
+            
+            # Simulate caption position in preview
+            # In actual video: y = HEIGHT - caption_height - y_offset
+            # In preview: proportional position from bottom
+            preview_ratio = ch / HEIGHT if HEIGHT > 0 else 1.0
+            simulated_y_pos = ch - im.height - int(y_offset * preview_ratio)
+            
+            # Clamp to canvas bounds
+            simulated_y_pos = max(0, min(ch - im.height, simulated_y_pos))
+            
+            # Center image horizontally, position vertically based on offset
             x = (cw - im.width) // 2
-            y = (ch - im.height) // 2
+            y = simulated_y_pos
+            
+            # Draw position indicator line at bottom to show baseline
+            baseline_y = ch - int(y_offset * preview_ratio)
+            self.caption_preview_canvas.create_line(0, baseline_y, cw, baseline_y, fill='#00FF00', dash=(4, 4), width=1)
+            self.caption_preview_canvas.create_text(5, baseline_y - 10, text=f'Y offset: {y_offset}px', anchor='w', fill='#00FF00', font=('Arial', 8))
+            
             self.caption_preview_canvas.create_image(x, y, anchor='nw', image=im_tk)
         except Exception as e:
             try:
