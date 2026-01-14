@@ -1977,7 +1977,7 @@ class App:
             # Log for debugging
             try:
                 self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[CAPTION-INDICATOR] Drawn at y={caption_y}, offset={offset}px\n")
+                self.log_widget.insert('end', f"[CAPTION-INDICATOR] Drawn at canvas_y={caption_y}, offset={offset}px, preview_h={h}, ratio={preview_ratio:.3f}\n")
                 self.log_widget.config(state='disabled')
                 self.log_widget.see('end')
             except Exception:
@@ -2065,7 +2065,7 @@ class App:
             except Exception:
                 pass
             
-            # Update mini preview to show new caption position
+            # Update mini preview to show new caption position - FORCE REDRAW
             try:
                 if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
                     # Redraw the mini preview with updated caption indicator
@@ -2074,6 +2074,8 @@ class App:
                     composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
                     # Use centralized redraw method that ALWAYS includes caption indicator
                     self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
+                    # Force canvas update
+                    self.mini_canvas.update_idletasks()
                     
             except Exception as e:
                 try:
