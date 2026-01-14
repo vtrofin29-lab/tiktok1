@@ -1950,6 +1950,11 @@ class App:
             offset: Caption Y offset value
         """
         try:
+            # DELETE old caption indicator items first to prevent stacking
+            self.mini_canvas.delete("caption_line")
+            self.mini_canvas.delete("caption_box")
+            self.mini_canvas.delete("caption_label")
+            
             # Calculate where caption will appear on the preview
             preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
             caption_baseline_from_bottom = int(offset * preview_ratio)
