@@ -994,8 +994,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                         img_clip = img_clip.set_position(("center", "bottom"))
                     else:
                         # Custom position with offset from bottom
-                        # Lambda function to calculate position: (x, y) where y = HEIGHT - offset
-                        img_clip = img_clip.set_position(lambda t: ("center", HEIGHT - img_clip.h - y_offset))
+                        # Lambda function to calculate position: (x, y) where y = HEIGHT - caption_height + offset
+                        # offset = -1080 → y = 1080 - h - 1080 = -h (top), offset = 0 → y = 1080 - h (bottom)
+                        img_clip = img_clip.set_position(lambda t: ("center", HEIGHT - img_clip.h + y_offset))
                     
                     caption_clips.append(img_clip)
                     
@@ -1956,8 +1957,13 @@ class App:
             self.mini_canvas.delete("caption_label")
             
             # Calculate where caption will appear on the preview
+            # offset: negative = move up, positive = move down
+            # In actual video: y = HEIGHT - caption_height + offset
+            # In preview: caption_y = h - (scaled distance from bottom)
+            # distance_from_bottom in video = HEIGHT - (HEIGHT - caption_height + offset) = caption_height - offset
+            # For indicator baseline (bottom of caption): distance_from_bottom = -offset (approximately, ignoring caption height)
             preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
-            caption_baseline_from_bottom = int(offset * preview_ratio)
+            caption_baseline_from_bottom = int(-offset * preview_ratio)  # Negative offset means higher (less from bottom)
             caption_y = h - caption_baseline_from_bottom
             
             # DO NOT clamp to crop lines - show actual caption position even if outside crop area
