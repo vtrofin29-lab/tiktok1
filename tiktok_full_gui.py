@@ -1380,7 +1380,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         # Apply mirror if enabled
         if mirror_video:
             log("Applying horizontal mirror/flip to video...")
-            from moviepy.video.fx import mirror_x
+            from moviepy.video.fx.mirror_x import mirror_x
             fg_clip = mirror_x(fg_clip)
             log("✓ Video mirrored successfully")
 
