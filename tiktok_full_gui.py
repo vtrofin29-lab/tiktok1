@@ -1354,6 +1354,10 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         # Crop information
         crop_top_pct = (custom_top_ratio if custom_top_ratio is not None else CROP_TOP_RATIO) * 100
         crop_bottom_pct = (custom_bottom_ratio if custom_bottom_ratio is not None else CROP_BOTTOM_RATIO) * 100
+        
+        # Check NVENC support before logging
+        use_nvenc = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
+        
         log(f"CROP: Top {crop_top_pct:.1f}%, Bottom {crop_bottom_pct:.1f}% → {crop_w}x{crop_h}")
         log(f"SCALE: {fg_scale:.2f}x → {scale_w}x{scale_h}")
         log(f"CAPTION OFFSET: {y_offset}px ({offset_desc})")
@@ -1363,7 +1367,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
 
         temp_dir = tempfile.mkdtemp(prefix="tiktok_prerender_")
         temp_fg = os.path.join(temp_dir, "fg_prerender.mp4")
-        use_nvenc = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
         log(f"Attempting ffmpeg pre-render -> {os.path.basename(temp_fg)} (nvenc={use_nvenc})")
         prer_ok = pre_render_foreground_ffmpeg(video_path, temp_fg, crop_x, crop_y, crop_w, crop_h, scale_w, scale_h, FPS, use_nvenc, log)
 
