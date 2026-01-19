@@ -1626,6 +1626,10 @@ class App:
         self.mirror_video_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(left_frame, text="Mirror video horizontally", variable=self.mirror_video_var).grid(row=row, column=0, columnspan=3, sticky="w")
         row += 1
+        
+        self.use_4k_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Export in 4K resolution (2160x3840)", variable=self.use_4k_var, command=self.on_4k_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
 
         # --- Voice Volume Control ---
         ttk.Label(left_frame, text="Voice volume:").grid(row=row, column=0, sticky="e")
@@ -2072,6 +2076,21 @@ class App:
                 self.music_gain_label.config(text=f"{gain:.2f}x")
         except Exception:
             pass
+    
+    def on_4k_toggle(self):
+        """Toggle between HD (1080x1920) and 4K (2160x3840) resolution"""
+        try:
+            use_4k = self.use_4k_var.get()
+            if use_4k:
+                globals()['WIDTH'] = 2160
+                globals()['HEIGHT'] = 3840
+                self.log("Resolution set to 4K: 2160x3840")
+            else:
+                globals()['WIDTH'] = 1080
+                globals()['HEIGHT'] = 1920
+                self.log("Resolution set to HD: 1080x1920")
+        except Exception as e:
+            self.log(f"Error toggling 4K: {e}")
 
     def _draw_caption_indicator_on_preview(self, composed, h, top_y, bottom_y, offset):
         """Draw the caption position indicator on the mini preview canvas.
