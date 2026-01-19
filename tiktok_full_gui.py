@@ -1283,7 +1283,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -1307,7 +1307,36 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             log(f"Error: MUSIC missing: {music_path}")
             return
 
-        log(f"Starting job:\n VIDEO={video_path}\n VOICE={voice_path}\n MUSIC={music_path}\n OUTPUT={output_path}\n FONT={LOADED_FONT_PATH}\n CUSTOM_TOP={custom_top_ratio}\n CUSTOM_BOTTOM={custom_bottom_ratio}\n")
+        # Get caption offset for logging
+        y_offset = globals().get('CAPTION_Y_OFFSET', 0)
+        offset_desc = f"moving {abs(y_offset)}px {'UP' if y_offset < 0 else 'DOWN'} from bottom" if y_offset != 0 else "at BOTTOM (default)"
+        
+        # Enhanced detailed logging
+        log("═══════════════ PROCESSING JOB ═══════════════")
+        log(f"VIDEO: {os.path.basename(video_path)} ({orig_w}x{orig_h}, {original_clip.duration:.1f}s)")
+        log(f"VOICE: {os.path.basename(voice_path)}")
+        log(f"MUSIC: {os.path.basename(music_path)}")
+        
+        # Font information
+        font_info = "default"
+        if LOADED_FONT_PATH:
+            font_info = f"{os.path.basename(LOADED_FONT_PATH)}"
+            try:
+                if LOADED_FONT_FAMILY:
+                    font_info += f" ({LOADED_FONT_FAMILY})"
+            except:
+                pass
+        log(f"FONT: {font_info}")
+        
+        # Crop information
+        crop_top_pct = (custom_top_ratio if custom_top_ratio is not None else CROP_TOP_RATIO) * 100
+        crop_bottom_pct = (custom_bottom_ratio if custom_bottom_ratio is not None else CROP_BOTTOM_RATIO) * 100
+        log(f"CROP: Top {crop_top_pct:.1f}%, Bottom {crop_bottom_pct:.1f}% → {crop_w}x{crop_h}")
+        log(f"SCALE: {fg_scale:.2f}x → {scale_w}x{scale_h}")
+        log(f"CAPTION OFFSET: {y_offset}px ({offset_desc})")
+        log(f"MIRROR: {'Enabled' if mirror_video else 'Disabled'}")
+        log(f"OUTPUT: {os.path.basename(output_path)} ({WIDTH}x{HEIGHT}, {FPS}fps{',' if use_nvenc else ''}{' NVENC' if use_nvenc else ''})")
+        log("══════════════════════════════════════════════")
 
         original_clip = VideoFileClip(video_path)
         cropped = crop_precise_top_bottom_return_cropped(original_clip, log, top_ratio=custom_top_ratio, bottom_ratio=custom_bottom_ratio)
@@ -1342,6 +1371,13 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         else:
             log("Pre-render failed or missing — falling back to MoviePy in-memory crop/resize.")
             fg_clip = cropped.resize(fg_scale).set_position(("center", "center")).set_duration(cropped.duration)
+        
+        # Apply mirror if enabled
+        if mirror_video:
+            log("Applying horizontal mirror/flip to video...")
+            from moviepy.video.fx import mirror_x
+            fg_clip = mirror_x(fg_clip)
+            log("✓ Video mirrored successfully")
 
         voice_clip = AudioFileClip(voice_path).volumex(VOICE_GAIN)
         music_clip = AudioFileClip(music_path)
@@ -1416,7 +1452,8 @@ def queue_worker(jobs, q):
         log(f"\n===== START JOB {i}/{len(jobs)} =====")
         process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"),
                            custom_top_ratio=job.get("custom_top_ratio"),
-                           custom_bottom_ratio=job.get("custom_bottom_ratio"))
+                           custom_bottom_ratio=job.get("custom_bottom_ratio"),
+                           mirror_video=job.get("mirror_video", False))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -1579,6 +1616,10 @@ class App:
 
         self.use_custom_crop_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(left_frame, text="Use custom crop for this job", variable=self.use_custom_crop_var).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+        
+        self.mirror_video_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Mirror video horizontally", variable=self.mirror_video_var).grid(row=row, column=0, columnspan=3, sticky="w")
         row += 1
 
         ttk.Label(left_frame, text="Top:").grid(row=row, column=0, sticky="e")
@@ -2035,14 +2076,7 @@ class App:
                                         text=f"Caption Y: {offset}px", 
                                         fill="#00FF00", font=("Arial", 9, "bold"), tags="caption_label")
             
-            # Log for debugging
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[CAPTION-INDICATOR] Drawn at canvas_y={caption_y}, offset={offset}px, preview_h={h}, ratio={preview_ratio:.3f}\n")
-                self.log_widget.config(state='disabled')
-                self.log_widget.see('end')
-            except Exception:
-                pass
+            # Removed repetitive logging - caption position only logged once during processing
                 
         except Exception as e:
             try:
@@ -2084,14 +2118,7 @@ class App:
             y_offset = globals().get('CAPTION_Y_OFFSET', 0)
             self._draw_caption_indicator_on_preview(composed, h, top_y, bottom_y, y_offset)
             
-            # Log for debugging
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[MINI-REDRAW] Canvas updated with caption indicator\n")
-                self.log_widget.config(state='disabled')
-                self.log_widget.see('end')
-            except Exception:
-                pass
+            # Removed repetitive mini-redraw logging
                 
         except Exception as e:
             try:
@@ -2524,7 +2551,8 @@ class App:
                 "output": output,
                 "font": pref_font,
                 "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
-                "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None
+                "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
+                "mirror_video": self.mirror_video_var.get()
             }
             self.jobs.append(job)
             display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'})"
@@ -2573,10 +2601,11 @@ class App:
             # create a queue for logs and start the job in a worker thread
             job = {"video": video, "voice": voice, "music": music, "output": output, "font": pref_font,
                    "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
-                   "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None}
+                   "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
+                   "mirror_video": self.mirror_video_var.get()}
             q = self.q
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio")}, daemon=True)
+            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False)}, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')
