@@ -1307,11 +1307,34 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             log(f"Error: MUSIC missing: {music_path}")
             return
 
+        # Load video first to get dimensions
+        original_clip = VideoFileClip(video_path)
+        cropped = crop_precise_top_bottom_return_cropped(original_clip, log, top_ratio=custom_top_ratio, bottom_ratio=custom_bottom_ratio)
+
+        orig_w, orig_h = original_clip.size
+        crop_top = int(orig_h * (CROP_TOP_RATIO if custom_top_ratio is None else custom_top_ratio))
+        crop_bottom = int(orig_h * (CROP_BOTTOM_RATIO if custom_bottom_ratio is None else custom_bottom_ratio))
+        crop_h = orig_h - crop_top - crop_bottom
+        crop_w = orig_w
+        crop_x = 0
+        crop_y = crop_top
+
+        try:
+            min_scale_to_fit = min(WIDTH / cropped.w, HEIGHT / cropped.h)
+        except Exception:
+            min_scale_to_fit = 1.0
+        
+        # Calculate scale with original logic
+        fg_scale = max(1.0, min_scale_to_fit) * 1.03
+        fg_scale = min(fg_scale, 1.06)
+        scale_w = max(1, int(round(crop_w * fg_scale)))
+        scale_h = max(1, int(round(crop_h * fg_scale)))
+        
         # Get caption offset for logging
         y_offset = globals().get('CAPTION_Y_OFFSET', 0)
         offset_desc = f"moving {abs(y_offset)}px {'UP' if y_offset < 0 else 'DOWN'} from bottom" if y_offset != 0 else "at BOTTOM (default)"
         
-        # Enhanced detailed logging
+        # Enhanced detailed logging - now that we have all values
         log("═══════════════ PROCESSING JOB ═══════════════")
         log(f"VIDEO: {os.path.basename(video_path)} ({orig_w}x{orig_h}, {original_clip.duration:.1f}s)")
         log(f"VOICE: {os.path.basename(voice_path)}")
@@ -1337,27 +1360,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         log(f"MIRROR: {'Enabled' if mirror_video else 'Disabled'}")
         log(f"OUTPUT: {os.path.basename(output_path)} ({WIDTH}x{HEIGHT}, {FPS}fps{',' if use_nvenc else ''}{' NVENC' if use_nvenc else ''})")
         log("══════════════════════════════════════════════")
-
-        original_clip = VideoFileClip(video_path)
-        cropped = crop_precise_top_bottom_return_cropped(original_clip, log, top_ratio=custom_top_ratio, bottom_ratio=custom_bottom_ratio)
-
-        orig_w, orig_h = original_clip.size
-        crop_top = int(orig_h * (CROP_TOP_RATIO if custom_top_ratio is None else custom_top_ratio))
-        crop_bottom = int(orig_h * (CROP_BOTTOM_RATIO if custom_bottom_ratio is None else custom_bottom_ratio))
-        crop_h = orig_h - crop_top - crop_bottom
-        crop_w = orig_w
-        crop_x = 0
-        crop_y = crop_top
-
-        try:
-            min_scale_to_fit = min(WIDTH / cropped.w, HEIGHT / cropped.h)
-        except Exception:
-            min_scale_to_fit = 1.0
-        fg_scale = max(1.0, min_scale_to_fit) * 1.03
-        fg_scale = min(fg_scale, 1.06)
-
-        scale_w = max(1, int(round(crop_w * fg_scale)))
-        scale_h = max(1, int(round(crop_h * fg_scale)))
 
         temp_dir = tempfile.mkdtemp(prefix="tiktok_prerender_")
         temp_fg = os.path.join(temp_dir, "fg_prerender.mp4")
