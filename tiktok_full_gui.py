@@ -1337,8 +1337,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         # Enhanced detailed logging - now that we have all values
         log("═══════════════ PROCESSING JOB ═══════════════")
         log(f"VIDEO: {os.path.basename(video_path)} ({orig_w}x{orig_h}, {original_clip.duration:.1f}s)")
-        log(f"VOICE: {os.path.basename(voice_path)}")
-        log(f"MUSIC: {os.path.basename(music_path)}")
+        log(f"VOICE: {os.path.basename(voice_path)} (volume: {VOICE_GAIN:.1f}x)")
+        log(f"MUSIC: {os.path.basename(music_path)} (volume: {MUSIC_GAIN:.2f}x)")
         
         # Font information
         font_info = "default"
@@ -1625,6 +1625,24 @@ class App:
         
         self.mirror_video_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(left_frame, text="Mirror video horizontally", variable=self.mirror_video_var).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        # --- Voice Volume Control ---
+        ttk.Label(left_frame, text="Voice volume:").grid(row=row, column=0, sticky="e")
+        self.voice_gain_var = tk.DoubleVar(value=VOICE_GAIN)
+        self.voice_gain_scale = tk.Scale(left_frame, from_=0.0, to=3.0, resolution=0.1, orient='horizontal', length=120, showvalue=0, variable=self.voice_gain_var, command=self.on_voice_gain_changed)
+        self.voice_gain_scale.grid(row=row, column=1, padx=(6,0))
+        self.voice_gain_label = ttk.Label(left_frame, text=f"{self.voice_gain_var.get():.1f}x")
+        self.voice_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        # --- Music Volume Control ---
+        ttk.Label(left_frame, text="Music volume:").grid(row=row, column=0, sticky="e")
+        self.music_gain_var = tk.DoubleVar(value=MUSIC_GAIN)
+        self.music_gain_scale = tk.Scale(left_frame, from_=0.0, to=2.0, resolution=0.05, orient='horizontal', length=120, showvalue=0, variable=self.music_gain_var, command=self.on_music_gain_changed)
+        self.music_gain_scale.grid(row=row, column=1, padx=(6,0))
+        self.music_gain_label = ttk.Label(left_frame, text=f"{self.music_gain_var.get():.2f}x")
+        self.music_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
         ttk.Label(left_frame, text="Top:").grid(row=row, column=0, sticky="e")
@@ -2034,6 +2052,26 @@ class App:
                 self.log_widget.config(state='disabled')
             except Exception:
                 pass
+
+    def on_voice_gain_changed(self, val):
+        """Callback when voice volume slider changes"""
+        try:
+            gain = float(val)
+            globals()['VOICE_GAIN'] = gain
+            if hasattr(self, 'voice_gain_label') and self.voice_gain_label:
+                self.voice_gain_label.config(text=f"{gain:.1f}x")
+        except Exception:
+            pass
+
+    def on_music_gain_changed(self, val):
+        """Callback when music volume slider changes"""
+        try:
+            gain = float(val)
+            globals()['MUSIC_GAIN'] = gain
+            if hasattr(self, 'music_gain_label') and self.music_gain_label:
+                self.music_gain_label.config(text=f"{gain:.2f}x")
+        except Exception:
+            pass
 
     def _draw_caption_indicator_on_preview(self, composed, h, top_y, bottom_y, offset):
         """Draw the caption position indicator on the mini preview canvas.
