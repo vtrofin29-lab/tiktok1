@@ -312,6 +312,11 @@ def load_preferred_font_cached(preferred, size, log=None):
     try:
         if LOADED_FONT is not None:
             if not preferred:
+                try:
+                    if log:
+                        log(f"[FONT] Using cached font: {LOADED_FONT_PATH}")
+                except Exception:
+                    pass
                 return LOADED_FONT
             # normalize comparison: absolute path or family marker
             try:
@@ -322,12 +327,22 @@ def load_preferred_font_cached(preferred, size, log=None):
                 # exact path match
                 try:
                     if os.path.isabs(str(LOADED_FONT_PATH)) and os.path.isabs(str(pref_norm)) and os.path.abspath(str(LOADED_FONT_PATH)) == os.path.abspath(str(pref_norm)):
+                        try:
+                            if log:
+                                log(f"[FONT] Using cached font (path match): {LOADED_FONT_PATH}")
+                        except Exception:
+                            pass
                         return LOADED_FONT
                 except Exception:
                     pass
                 # family name match marker: LOADED_FONT_PATH may be 'family:<name>'
                 try:
                     if isinstance(LOADED_FONT_PATH, str) and LOADED_FONT_PATH.lower().startswith('family:') and preferred and preferred.lower() in LOADED_FONT_PATH.lower():
+                        try:
+                            if log:
+                                log(f"[FONT] Using cached font (family match): {LOADED_FONT_PATH}")
+                        except Exception:
+                            pass
                         return LOADED_FONT
                 except Exception:
                     pass
@@ -340,7 +355,7 @@ def load_preferred_font_cached(preferred, size, log=None):
             try:
                 LOADED_FONT = ImageFont.truetype(preferred, size)
                 LOADED_FONT_PATH = os.path.abspath(preferred)
-                if log: log(f"[font] Using font file: {LOADED_FONT_PATH}")
+                if log: log(f"[FONT] ✓ Loaded font from file: {LOADED_FONT_PATH}")
                 return LOADED_FONT
             except Exception:
                 pass
@@ -349,14 +364,14 @@ def load_preferred_font_cached(preferred, size, log=None):
             try:
                 LOADED_FONT = ImageFont.truetype(found, size)
                 LOADED_FONT_PATH = found
-                if log: log(f"[font] Using font found: {found}")
+                if log: log(f"[FONT] ✓ Loaded font (searched): {found}")
                 return LOADED_FONT
             except Exception:
                 pass
         try:
             LOADED_FONT = ImageFont.truetype(preferred, size)
             LOADED_FONT_PATH = f"family:{preferred}"
-            if log: log(f"[font] Using font by family name: {preferred}")
+            if log: log(f"[FONT] ✓ Loaded font by family name: {preferred}")
             return LOADED_FONT
         except Exception:
             pass
@@ -365,18 +380,18 @@ def load_preferred_font_cached(preferred, size, log=None):
         try:
             LOADED_FONT = ImageFont.truetype(found, size)
             LOADED_FONT_PATH = found
-            if log: log(f"[font] Using candidate font: {found}")
+            if log: log(f"[FONT] ✓ Loaded candidate font: {found}")
             return LOADED_FONT
         except Exception:
             pass
     try:
         LOADED_FONT = ImageFont.truetype("DejaVuSans.ttf", size)
         LOADED_FONT_PATH = "DejaVuSans.ttf (fallback)"
-        if log: log("[font] Bangers not found — using DejaVuSans.ttf fallback.")
+        if log: log("[FONT] WARNING: Preferred font not found — using DejaVuSans.ttf fallback.")
         return LOADED_FONT
     except Exception:
         pass
-    if log: log("[font] WARNING: Bangers not found and DejaVuSans not available. Using default bitmap font.")
+    if log: log("[FONT] WARNING: No TrueType fonts available. Using default bitmap font.")
     LOADED_FONT = ImageFont.load_default()
     LOADED_FONT_PATH = "default"
     return LOADED_FONT
@@ -589,16 +604,27 @@ def generate_caption_image(text, preferred_font=None, log=None):
     """
     try:
         if log:
-            log(f"[caption] Generating caption image for text: '{text[:50]}...'")
+            log(f"[CAPTION-GEN] ═══════════════════════════════════════════════")
+            log(f"[CAPTION-GEN] Starting caption generation")
+            log(f"[CAPTION-GEN] Text: '{text[:80]}{'...' if len(text) > 80 else ''}'")
+            log(f"[CAPTION-GEN] Text length: {len(text)} characters")
+            log(f"[CAPTION-GEN] Preferred font: {preferred_font or 'default'}")
     except Exception:
         pass
     
     try:
         font = load_preferred_font_cached(preferred_font or CAPTION_FONT_PREFERRED, CAPTION_FONT_SIZE, log=log)
+        try:
+            if log:
+                font_info = f"{LOADED_FONT_PATH}" if LOADED_FONT_PATH else "unknown"
+                log(f"[CAPTION-GEN] Font loaded successfully: {font_info}")
+                log(f"[CAPTION-GEN] Font size: {CAPTION_FONT_SIZE}px")
+        except Exception:
+            pass
     except Exception as e:
         try:
             if log:
-                log(f"[caption ERROR] Failed to load font: {e}")
+                log(f"[CAPTION-GEN ERROR] Failed to load font: {e}")
         except Exception:
             pass
         raise
@@ -642,7 +668,10 @@ def generate_caption_image(text, preferred_font=None, log=None):
     
     try:
         if log:
-            log(f"[caption] Image dimensions: {WIDTH}x{total_height + 8 + extra_bottom_margin}, lines: {len(lines)}")
+            log(f"[CAPTION-GEN] Image dimensions: {WIDTH}x{total_height + 8 + extra_bottom_margin}")
+            log(f"[CAPTION-GEN] Number of lines: {len(lines)}")
+            log(f"[CAPTION-GEN] Bubble width: {bubble_width}px, height: {total_height - extra_bottom_margin}px")
+            log(f"[CAPTION-GEN] Padding: x={padding_x}px, y={padding_y}px")
     except Exception:
         pass
     
@@ -661,13 +690,13 @@ def generate_caption_image(text, preferred_font=None, log=None):
         img.paste(shadow, (bubble_x0+0, bubble_y0+2), shadow)
         try:
             if log:
-                log(f"[caption] Shadow drawn successfully with rounded corners")
+                log(f"[CAPTION-GEN] Shadow drawn successfully with rounded corners, radius={radius}px")
         except Exception:
             pass
     except Exception as e:
         try:
             if log:
-                log(f"[caption WARNING] Rounded shadow failed, using rectangle: {e}")
+                log(f"[CAPTION-GEN WARNING] Rounded shadow failed, using rectangle: {e}")
         except Exception:
             pass
         sd.rectangle([0,0,bubble_width,total_height - extra_bottom_margin], fill=(0,0,0,140))
@@ -681,13 +710,13 @@ def generate_caption_image(text, preferred_font=None, log=None):
         draw.rounded_rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], radius=int(padding_y*0.8), fill=bubble_fill)
         try:
             if log:
-                log(f"[caption] Bubble background is transparent (no white box)")
+                log(f"[CAPTION-GEN] Background: TRANSPARENT (no white box - text only with stroke)")
         except Exception:
             pass
     except Exception as e:
         try:
             if log:
-                log(f"[caption WARNING] Rounded bubble failed, using rectangle: {e}")
+                log(f"[CAPTION-GEN WARNING] Rounded bubble failed, using rectangle: {e}")
         except Exception:
             pass
         draw.rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], fill=bubble_fill)
@@ -721,7 +750,9 @@ def generate_caption_image(text, preferred_font=None, log=None):
     
     try:
         if log:
-            log(f"[caption] Text settings: fill={text_fill}, stroke={stroke_fill}, stroke_width={stroke_w}")
+            log(f"[CAPTION-GEN] Text color: RGBA{text_fill}")
+            log(f"[CAPTION-GEN] Stroke color: RGBA{stroke_fill}")
+            log(f"[CAPTION-GEN] Stroke width: {stroke_w}px (enhanced for visibility)")
     except Exception:
         pass
     
@@ -735,7 +766,7 @@ def generate_caption_image(text, preferred_font=None, log=None):
         except TypeError as e:
             try:
                 if log:
-                    log(f"[caption WARNING] stroke_width not supported, using manual stroke: {e}")
+                    log(f"[CAPTION-GEN WARNING] stroke_width not supported, using manual stroke: {e}")
             except Exception:
                 pass
             # Fallback for older Pillow versions
@@ -747,7 +778,7 @@ def generate_caption_image(text, preferred_font=None, log=None):
         except Exception as e:
             try:
                 if log:
-                    log(f"[caption ERROR] Failed to draw text line {line_idx}: {e}")
+                    log(f"[CAPTION-GEN ERROR] Failed to draw text line {line_idx}: {e}")
             except Exception:
                 pass
             raise
@@ -755,7 +786,9 @@ def generate_caption_image(text, preferred_font=None, log=None):
     
     try:
         if log:
-            log(f"[caption] Caption image generated successfully")
+            log(f"[CAPTION-GEN] ✓ Caption image generated successfully!")
+            log(f"[CAPTION-GEN] Final image size: {img.size[0]}x{img.size[1]}px")
+            log(f"[CAPTION-GEN] ═══════════════════════════════════════════════")
     except Exception:
         pass
     
@@ -929,7 +962,11 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 continue
             
             try:
-                log(f"[compose] Processing segment {seg_idx}: '{text[:50]}...' ({start_t:.2f}s - {end_t:.2f}s)")
+                log(f"[COMPOSE] ═══════════════════════════════════════════════")
+                log(f"[COMPOSE] Processing segment #{seg_idx}")
+                log(f"[COMPOSE] Text: '{text[:80]}{'...' if len(text) > 80 else ''}'")
+                log(f"[COMPOSE] Time range: {start_t:.2f}s - {end_t:.2f}s (duration: {seg_dur:.2f}s)")
+                log(f"[COMPOSE] Preferred font: {preferred_font or 'default'}")
             except Exception:
                 pass
             
@@ -946,7 +983,8 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 
                 try:
                     try:
-                        log(f"[compose]   Group {i}: '{grp_text}' at {g_start:.2f}s for {g_dur:.2f}s")
+                        log(f"[COMPOSE]   Caption group {i+1}/{len(groups)}: '{grp_text}'")
+                        log(f"[COMPOSE]   Display time: {g_start:.2f}s - {g_start + g_dur:.2f}s (duration: {g_dur:.2f}s)")
                     except Exception:
                         pass
                     
@@ -954,7 +992,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     pil_img = generate_caption_image(grp_text, preferred_font=preferred_font, log=log)
                     if pil_img is None:
                         try:
-                            log(f"[compose ERROR] generate_caption_image returned None for '{grp_text}'")
+                            log(f"[COMPOSE ERROR] generate_caption_image returned None for '{grp_text}'")
                         except Exception:
                             pass
                         continue
@@ -967,13 +1005,13 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     alpha_arr_check = np.array(alpha_channel)
                     if not np.any(alpha_arr_check > 0):  # Performance: short-circuits on first non-zero
                         try:
-                            log(f"[compose ERROR] Caption image for '{grp_text}' has completely transparent alpha channel!")
+                            log(f"[COMPOSE ERROR] Caption image for '{grp_text}' has completely transparent alpha channel!")
                         except Exception:
                             pass
                         continue
                     
                     try:
-                        log(f"[compose]   Alpha channel valid: min={alpha_arr_check.min()}, max={alpha_arr_check.max()}, mean={alpha_arr_check.mean():.1f}")
+                        log(f"[COMPOSE]   Alpha channel stats: min={alpha_arr_check.min()}, max={alpha_arr_check.max()}, mean={alpha_arr_check.mean():.1f}")
                     except Exception:
                         pass
                     
@@ -1001,30 +1039,40 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     caption_clips.append(img_clip)
                     
                     try:
-                        log(f"[compose]   Caption clip created with Y offset: {y_offset}px")
+                        y_offset_value = globals().get('CAPTION_Y_OFFSET', 0)
+                        log(f"[COMPOSE]   ✓ Caption clip created successfully")
+                        log(f"[COMPOSE]   Position: Y offset = {y_offset_value}px")
+                        if y_offset_value < 0:
+                            log(f"[COMPOSE]   (captions positioned {abs(y_offset_value)}px from bottom, moving UP)")
+                        elif y_offset_value > 0:
+                            log(f"[COMPOSE]   (captions positioned {y_offset_value}px below bottom, moving DOWN)")
+                        else:
+                            log(f"[COMPOSE]   (captions at default BOTTOM position)")
                     except Exception:
                         pass
                     
                 except Exception as e_img:
                     try:
-                        log(f"[compose ERROR] Failed creating clip for group '{grp_text}': {e_img}")
+                        log(f"[COMPOSE ERROR] Failed creating clip for group '{grp_text}': {e_img}")
                         import traceback
-                        log(f"[compose ERROR] Traceback: {traceback.format_exc()}")
+                        log(f"[COMPOSE ERROR] Traceback: {traceback.format_exc()}")
                     except Exception:
                         pass
                     continue
                     
         except Exception as e_seg:
             try:
-                log(f"[compose ERROR] Failed processing segment {seg_idx}: {e_seg}")
+                log(f"[COMPOSE ERROR] Failed processing segment {seg_idx}: {e_seg}")
                 import traceback
-                log(f"[compose ERROR] Traceback: {traceback.format_exc()}")
+                log(f"[COMPOSE ERROR] Traceback: {traceback.format_exc()}")
             except Exception:
                 pass
             continue
     
     try:
-        log(f"[compose] Created {len(caption_clips)} caption clips total")
+        log(f"[COMPOSE] ═══════════════════════════════════════════════")
+        log(f"[COMPOSE] Total caption clips created: {len(caption_clips)}")
+        log(f"[COMPOSE] ═══════════════════════════════════════════════")
     except Exception:
         pass
     
@@ -1032,14 +1080,15 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     try:
         final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
         try:
-            log(f"[compose] Final composition created with {len(caption_clips)} caption layers")
+            log(f"[COMPOSE] ✓ Final composition created successfully")
+            log(f"[COMPOSE] Layers: background + foreground + {len(caption_clips)} caption overlays")
         except Exception:
             pass
     except Exception as e:
         try:
-            log(f"[compose ERROR] Failed to create CompositeVideoClip: {e}")
+            log(f"[COMPOSE ERROR] Failed to create CompositeVideoClip: {e}")
             import traceback
-            log(f"[compose ERROR] Traceback: {traceback.format_exc()}")
+            log(f"[COMPOSE ERROR] Traceback: {traceback.format_exc()}")
         except Exception:
             pass
         raise
