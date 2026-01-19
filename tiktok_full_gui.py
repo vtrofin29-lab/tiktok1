@@ -2095,8 +2095,15 @@ class App:
                     # Scale current offset value (multiply by 2)
                     current_offset = self.caption_y_offset_var.get()
                     self.caption_y_offset_var.set(current_offset * 2)
-                self.log("Resolution set to 4K: 2160x3840")
-                self.log("Caption font size scaled to: 112px")
+                # Log resolution change
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', "Resolution set to 4K: 2160x3840\n")
+                    self.log_widget.insert('end', "Caption font size scaled to: 112px\n")
+                    self.log_widget.see('end')
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
             else:
                 # HD resolution
                 globals()['WIDTH'] = 1080
@@ -2111,10 +2118,23 @@ class App:
                     # Scale current offset value back (divide by 2)
                     current_offset = self.caption_y_offset_var.get()
                     self.caption_y_offset_var.set(current_offset // 2)
-                self.log("Resolution set to HD: 1080x1920")
-                self.log("Caption font size reset to: 56px")
+                # Log resolution change
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', "Resolution set to HD: 1080x1920\n")
+                    self.log_widget.insert('end', "Caption font size reset to: 56px\n")
+                    self.log_widget.see('end')
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
         except Exception as e:
-            self.log(f"Error toggling 4K: {e}")
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[4K-TOGGLE-ERR] {e}\n")
+                self.log_widget.see('end')
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
 
     def _draw_caption_indicator_on_preview(self, composed, h, top_y, bottom_y, offset):
         """Draw the caption position indicator on the mini preview canvas.
