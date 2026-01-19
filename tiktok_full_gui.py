@@ -2082,13 +2082,37 @@ class App:
         try:
             use_4k = self.use_4k_var.get()
             if use_4k:
+                # 4K is 2x HD resolution
                 globals()['WIDTH'] = 2160
                 globals()['HEIGHT'] = 3840
+                # Scale caption font size for 4K (2x)
+                globals()['CAPTION_FONT_SIZE'] = 112  # 56 * 2
+                # Update stroke width based on new font size
+                globals()['CAPTION_STROKE_WIDTH'] = max(1, int(112 * 0.05))
+                # Update caption Y offset slider range for 4K (-3840 to +200)
+                if hasattr(self, 'caption_y_offset_scale'):
+                    self.caption_y_offset_scale.config(from_=-3840, to=200)
+                    # Scale current offset value (multiply by 2)
+                    current_offset = self.caption_y_offset_var.get()
+                    self.caption_y_offset_var.set(current_offset * 2)
                 self.log("Resolution set to 4K: 2160x3840")
+                self.log("Caption font size scaled to: 112px")
             else:
+                # HD resolution
                 globals()['WIDTH'] = 1080
                 globals()['HEIGHT'] = 1920
+                # Reset caption font size to default HD (56)
+                globals()['CAPTION_FONT_SIZE'] = 56
+                # Update stroke width based on default font size
+                globals()['CAPTION_STROKE_WIDTH'] = max(1, int(56 * 0.05))
+                # Reset caption Y offset slider range for HD (-1080 to +200)
+                if hasattr(self, 'caption_y_offset_scale'):
+                    self.caption_y_offset_scale.config(from_=-1920, to=200)
+                    # Scale current offset value back (divide by 2)
+                    current_offset = self.caption_y_offset_var.get()
+                    self.caption_y_offset_var.set(current_offset // 2)
                 self.log("Resolution set to HD: 1080x1920")
+                self.log("Caption font size reset to: 56px")
         except Exception as e:
             self.log(f"Error toggling 4K: {e}")
 
