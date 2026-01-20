@@ -1989,6 +1989,29 @@ class App:
         ttk.Label(left_frame, text="(voice output)").grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
+        # API Key input for premium TTS services
+        ttk.Label(left_frame, text="TTS API Key:").grid(row=row, column=0, sticky="e")
+        
+        # Load saved API key
+        saved_api_key = ""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    saved_api_key = config.get("api_key", "")
+        except Exception:
+            pass
+        
+        self.tts_api_key_var = tk.StringVar(value=saved_api_key)
+        self.tts_api_key_entry = ttk.Entry(left_frame, textvariable=self.tts_api_key_var, show="*", width=30)
+        self.tts_api_key_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        row += 1
+        
+        # Button to save API key
+        ttk.Button(left_frame, text="Save API Key", command=self.on_save_api_key).grid(row=row, column=1, sticky="w", padx=(6,0))
+        row += 1
+
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1
 
@@ -2465,6 +2488,27 @@ class App:
             globals()['TTS_LANGUAGE'] = lang
         except Exception as e:
             print(f"TTS language selection error: {e}")
+    
+    def on_save_api_key(self):
+        """Callback when Save API Key button is clicked"""
+        try:
+            api_key = self.tts_api_key_var.get().strip()
+            if not api_key:
+                messagebox.showwarning("No API Key", "Please enter an API key.")
+                return
+            
+            # Save to config file
+            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+            config = {"api_key": api_key}
+            
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(config, f)
+                messagebox.showinfo("API Key Saved", "Your API key has been saved successfully!")
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save API key: {e}")
+        except Exception as e:
+            print(f"Save API key error: {e}")
     
     def on_4k_toggle(self):
         """Toggle between HD (1080x1920) and 4K (2160x3840) resolution"""
