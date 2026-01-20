@@ -106,7 +106,7 @@ from moviepy.editor import (
 )
 from moviepy.audio.AudioClip import CompositeAudioClip
 from moviepy.video.fx.all import speedx
-from moviepy.audio.fx.all import audio_fadeout, speedx as audio_speedx
+from moviepy.audio.fx.all import audio_fadeout
 
 import whisper
 
@@ -1677,7 +1677,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         log(f"[AI VOICE] Adjusting TTS duration from {tts_clip.duration:.2f}s to {target_duration:.2f}s")
                         # Speed up or slow down TTS to match target duration
                         speed_factor = tts_clip.duration / target_duration
-                        tts_clip = tts_clip.fx(audio_speedx, speed_factor)
+                        tts_clip = tts_clip.fx(speedx, speed_factor)
                     # Replace voice in mixed audio
                     mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(target_duration)
                     log("[AI VOICE] Voice replaced successfully with AI-generated audio")
