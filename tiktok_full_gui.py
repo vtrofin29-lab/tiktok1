@@ -106,7 +106,7 @@ from moviepy.editor import (
 )
 from moviepy.audio.AudioClip import CompositeAudioClip
 from moviepy.video.fx.all import speedx
-from moviepy.audio.fx.all import audio_fadeout
+from moviepy.audio.fx.all import audio_fadeout, speedx as audio_speedx
 
 import whisper
 
@@ -227,7 +227,6 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     
     try:
         if output_path is None:
-            import tempfile
             fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='tts_')
             os.close(fd)
         
@@ -264,6 +263,13 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
         log(f"[TTS] Generating AI voice from {len(caption_segments)} segments...")
     
     try:
+        # NOTE: This implementation combines all segments into one continuous audio track.
+        # For better synchronization, a future enhancement would be to:
+        # 1. Generate TTS for each segment individually
+        # 2. Concatenate audio clips with proper timing based on segment start/end times
+        # 3. Add silence between segments to match original timing
+        # Current approach works well when video speed is adjusted to match audio duration.
+        
         # Combine all segment texts
         full_text = " ".join([seg.get("text", "") for seg in caption_segments])
         
@@ -1671,7 +1677,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         log(f"[AI VOICE] Adjusting TTS duration from {tts_clip.duration:.2f}s to {target_duration:.2f}s")
                         # Speed up or slow down TTS to match target duration
                         speed_factor = tts_clip.duration / target_duration
-                        from moviepy.audio.fx.all import speedx as audio_speedx
                         tts_clip = tts_clip.fx(audio_speedx, speed_factor)
                     # Replace voice in mixed audio
                     mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(target_duration)
