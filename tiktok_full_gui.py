@@ -204,9 +204,181 @@ def translate_segments(segments, target_language='en', log=None):
     return translated
 
 # ----------------- AI VOICE REPLACEMENT FUNCTIONS -----------------
+
+def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=None, log=None):
+    """
+    Generate Text-to-Speech audio using GenAI Pro API.
+    
+    Args:
+        text: Text to convert to speech
+        language: Language code for TTS
+        output_path: Path to save audio file (temp file if None)
+        api_key: GenAI Pro API key (JWT token)
+        log: Optional logging function
+    
+    Returns:
+        Path to generated audio file or None if failed
+    """
+    if not REQUESTS_AVAILABLE:
+        if log:
+            log("[GenAI Pro] requests library not available")
+        return None
+    
+    if not api_key:
+        if log:
+            log("[GenAI Pro] No API key provided")
+        return None
+    
+    if not text or not text.strip():
+        return None
+    
+    try:
+        import requests
+        import time
+        
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='genaipro_tts_')
+            os.close(fd)
+        
+        # Map language codes to voice IDs (you can expand this mapping)
+        voice_map = {
+            'en': 'uju3wxzG5OhpWcoi3SMy',  # Default English voice
+            'es': 'uju3wxzG5OhpWcoi3SMy',  # Using same for now, can be customized
+            'fr': 'uju3wxzG5OhpWcoi3SMy',
+            'de': 'uju3wxzG5OhpWcoi3SMy',
+            'it': 'uju3wxzG5OhpWcoi3SMy',
+            'pt': 'uju3wxzG5OhpWcoi3SMy',
+            'ro': 'uju3wxzG5OhpWcoi3SMy',
+            'ru': 'uju3wxzG5OhpWcoi3SMy',
+            'zh': 'uju3wxzG5OhpWcoi3SMy',
+            'ja': 'uju3wxzG5OhpWcoi3SMy',
+            'ko': 'uju3wxzG5OhpWcoi3SMy',
+        }
+        
+        voice_id = voice_map.get(language, 'uju3wxzG5OhpWcoi3SMy')
+        
+        # Step 1: Submit TTS task
+        if log:
+            log(f"[GenAI Pro] Submitting TTS task ({len(text)} chars)...")
+        
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        task_payload = {
+            'input': text,
+            'voice_id': voice_id,
+            'model_id': 'eleven_turbo_v2_5',  # Fast model
+            'speed': 1.0,
+            'style': 0.0,
+            'use_speaker_boost': False,
+            'similarity': 0.75,
+            'stability': 0.5
+        }
+        
+        response = requests.post(
+            'https://genaipro.vn/api/v1/labs/task',
+            headers=headers,
+            json=task_payload,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            if log:
+                log(f"[GenAI Pro ERROR] Task submission failed: {response.status_code} - {response.text}")
+            return None
+        
+        task_data = response.json()
+        task_id = task_data.get('task_id')
+        
+        if not task_id:
+            if log:
+                log(f"[GenAI Pro ERROR] No task_id in response: {task_data}")
+            return None
+        
+        if log:
+            log(f"[GenAI Pro] Task submitted: {task_id}")
+        
+        # Step 2: Poll for task completion
+        max_polls = 60  # Wait up to 60 seconds
+        poll_interval = 1  # Poll every second
+        
+        for i in range(max_polls):
+            time.sleep(poll_interval)
+            
+            status_response = requests.get(
+                'https://genaipro.vn/api/v1/labs/task',
+                headers=headers,
+                timeout=10
+            )
+            
+            if status_response.status_code != 200:
+                if log:
+                    log(f"[GenAI Pro ERROR] Status check failed: {status_response.status_code}")
+                continue
+            
+            tasks = status_response.json()
+            
+            # Find our task in the list
+            our_task = None
+            if isinstance(tasks, list):
+                for task in tasks:
+                    if task.get('task_id') == task_id:
+                        our_task = task
+                        break
+            elif isinstance(tasks, dict) and tasks.get('task_id') == task_id:
+                our_task = tasks
+            
+            if our_task:
+                status = our_task.get('status', '').lower()
+                
+                if status == 'completed':
+                    audio_url = our_task.get('output_url') or our_task.get('audio_url')
+                    
+                    if not audio_url:
+                        if log:
+                            log(f"[GenAI Pro ERROR] Task completed but no audio URL: {our_task}")
+                        return None
+                    
+                    # Step 3: Download the audio file
+                    if log:
+                        log(f"[GenAI Pro] Downloading audio from: {audio_url}")
+                    
+                    audio_response = requests.get(audio_url, timeout=30)
+                    
+                    if audio_response.status_code == 200:
+                        with open(output_path, 'wb') as f:
+                            f.write(audio_response.content)
+                        
+                        if log:
+                            log(f"[GenAI Pro] TTS generated successfully: {output_path}")
+                        return output_path
+                    else:
+                        if log:
+                            log(f"[GenAI Pro ERROR] Failed to download audio: {audio_response.status_code}")
+                        return None
+                
+                elif status == 'failed' or status == 'error':
+                    if log:
+                        log(f"[GenAI Pro ERROR] Task failed: {our_task}")
+                    return None
+                
+                elif i % 5 == 0 and log:
+                    log(f"[GenAI Pro] Waiting for task completion... ({status})")
+        
+        if log:
+            log(f"[GenAI Pro ERROR] Task timeout after {max_polls} seconds")
+        return None
+        
+    except Exception as e:
+        if log:
+            log(f"[GenAI Pro ERROR] Exception: {e}")
+        return None
+
 def generate_tts_audio(text, language='en', output_path=None, log=None):
     """
-    Generate Text-to-Speech audio from text using gTTS.
+    Generate Text-to-Speech audio from text using GenAI Pro (if API key available) or gTTS (fallback).
     
     Args:
         text: Text to convert to speech
@@ -217,6 +389,28 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     Returns:
         Path to generated audio file or None if failed
     """
+    # Try to load API key from config
+    api_key = None
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                api_key = config.get("api_key", "").strip()
+    except Exception:
+        pass
+    
+    # Try GenAI Pro first if API key is available
+    if api_key:
+        if log:
+            log("[TTS] Using GenAI Pro for high-quality voice synthesis...")
+        result = generate_tts_with_genaipro(text, language, output_path, api_key, log)
+        if result:
+            return result
+        if log:
+            log("[TTS] GenAI Pro failed, falling back to gTTS...")
+    
+    # Fallback to gTTS
     if not TTS_AVAILABLE:
         if log:
             log("[TTS] gTTS not available - skipping voice generation")
@@ -234,7 +428,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
         tts.save(output_path)
         
         if log:
-            log(f"[TTS] Generated audio: {output_path} (length: {len(text)} chars)")
+            log(f"[TTS/gTTS] Generated audio: {output_path} (length: {len(text)} chars)")
         
         return output_path
     except Exception as e:
