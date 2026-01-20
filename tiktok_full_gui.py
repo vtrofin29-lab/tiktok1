@@ -110,6 +110,204 @@ from moviepy.audio.fx.all import audio_fadeout
 
 import whisper
 
+# ----------------- TRANSLATION & AI VOICE MODULES -----------------
+try:
+    from googletrans import Translator
+    TRANSLATION_AVAILABLE = True
+except ImportError:
+    TRANSLATION_AVAILABLE = False
+    Translator = None
+
+try:
+    from gtts import gTTS
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+    gTTS = None
+
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    requests = None
+
+# ----------------- TRANSLATION FUNCTIONS -----------------
+def translate_text(text, target_language='en', log=None):
+    """
+    Translate text to target language using Google Translate API.
+    
+    Args:
+        text: Text to translate
+        target_language: Target language code (e.g., 'en', 'es', 'fr', 'ro')
+        log: Optional logging function
+    
+    Returns:
+        Translated text or original text if translation fails
+    """
+    if not TRANSLATION_AVAILABLE:
+        if log:
+            log("[TRANSLATE] googletrans not available - skipping translation")
+        return text
+    
+    if not text or not text.strip():
+        return text
+    
+    try:
+        translator = Translator()
+        result = translator.translate(text, dest=target_language)
+        if log:
+            log(f"[TRANSLATE] '{text[:50]}...' -> '{result.text[:50]}...' ({target_language})")
+        return result.text
+    except Exception as e:
+        if log:
+            log(f"[TRANSLATE ERROR] Failed to translate: {e}")
+        return text
+
+def translate_segments(segments, target_language='en', log=None):
+    """
+    Translate all caption segments to target language.
+    
+    Args:
+        segments: List of caption segments from Whisper
+        target_language: Target language code
+        log: Optional logging function
+    
+    Returns:
+        List of segments with translated text
+    """
+    if not TRANSLATION_AVAILABLE or target_language == 'none':
+        return segments
+    
+    if log:
+        log(f"[TRANSLATE] Translating {len(segments)} segments to {target_language}...")
+    
+    translated = []
+    for i, seg in enumerate(segments):
+        try:
+            original_text = seg.get("text", "")
+            translated_text = translate_text(original_text, target_language, log=None)
+            
+            # Create new segment with translated text
+            new_seg = seg.copy()
+            new_seg["text"] = translated_text
+            new_seg["original_text"] = original_text
+            translated.append(new_seg)
+        except Exception as e:
+            if log:
+                log(f"[TRANSLATE ERROR] Failed segment {i}: {e}")
+            translated.append(seg)
+    
+    if log:
+        log(f"[TRANSLATE] Translation complete!")
+    
+    return translated
+
+# ----------------- AI VOICE REPLACEMENT FUNCTIONS -----------------
+def generate_tts_audio(text, language='en', output_path=None, log=None):
+    """
+    Generate Text-to-Speech audio from text using gTTS.
+    
+    Args:
+        text: Text to convert to speech
+        language: Language code for TTS
+        output_path: Path to save audio file (temp file if None)
+        log: Optional logging function
+    
+    Returns:
+        Path to generated audio file or None if failed
+    """
+    if not TTS_AVAILABLE:
+        if log:
+            log("[TTS] gTTS not available - skipping voice generation")
+        return None
+    
+    if not text or not text.strip():
+        return None
+    
+    try:
+        if output_path is None:
+            import tempfile
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='tts_')
+            os.close(fd)
+        
+        tts = gTTS(text=text, lang=language, slow=False)
+        tts.save(output_path)
+        
+        if log:
+            log(f"[TTS] Generated audio: {output_path} (length: {len(text)} chars)")
+        
+        return output_path
+    except Exception as e:
+        if log:
+            log(f"[TTS ERROR] Failed to generate audio: {e}")
+        return None
+
+def replace_voice_with_tts(caption_segments, language='en', log=None):
+    """
+    Generate AI voice audio from caption segments.
+    
+    Args:
+        caption_segments: List of caption segments with translated text
+        language: Language code for TTS
+        log: Optional logging function
+    
+    Returns:
+        Path to generated audio file or None if failed
+    """
+    if not TTS_AVAILABLE:
+        if log:
+            log("[TTS] gTTS not available - cannot replace voice")
+        return None
+    
+    if log:
+        log(f"[TTS] Generating AI voice from {len(caption_segments)} segments...")
+    
+    try:
+        # Combine all segment texts
+        full_text = " ".join([seg.get("text", "") for seg in caption_segments])
+        
+        # Generate TTS audio
+        output_path = generate_tts_audio(full_text, language=language, log=log)
+        
+        if output_path and log:
+            log(f"[TTS] Voice replacement complete: {output_path}")
+        
+        return output_path
+    except Exception as e:
+        if log:
+            log(f"[TTS ERROR] Failed to replace voice: {e}")
+        return None
+
+# ----------------- CLAPTOOLS INTEGRATION -----------------
+def transcribe_with_claptools(video_path, api_key=None, log=None):
+    """
+    Transcribe video using ClapTools API (placeholder - requires actual API endpoint).
+    
+    Args:
+        video_path: Path to video file
+        api_key: ClapTools API key
+        log: Optional logging function
+    
+    Returns:
+        List of caption segments compatible with Whisper format
+    """
+    if not REQUESTS_AVAILABLE:
+        if log:
+            log("[CLAPTOOLS] requests library not available")
+        return None
+    
+    if log:
+        log("[CLAPTOOLS] ClapTools integration not fully implemented - using Whisper fallback")
+    
+    # Placeholder for actual ClapTools API integration
+    # In real implementation, you would:
+    # 1. Upload video to ClapTools API
+    # 2. Poll for transcription results
+    # 3. Convert results to Whisper-compatible format
+    
+    return None
+
 # ----------------- SETTINGS (defaults) -----------------
 WIDTH = 1080
 HEIGHT = 1920
@@ -133,6 +331,14 @@ CAPTION_TEXT_COLOR = (255, 255, 255, 255)
 CAPTION_STROKE_COLOR = (0, 0, 0, 150)
 # Stroke width (pixels) for caption border
 CAPTION_STROKE_WIDTH = max(1, int(CAPTION_FONT_SIZE * 0.05))
+
+# Translation and AI Voice settings
+TRANSLATION_ENABLED = False
+TARGET_LANGUAGE = 'none'  # 'none', 'en', 'es', 'fr', 'ro', etc.
+USE_AI_VOICE_REPLACEMENT = False
+TTS_LANGUAGE = 'en'
+USE_CLAPTOOLS = False
+CLAPTOOLS_API_KEY = None
 
 FPS = 24
 
@@ -570,27 +776,60 @@ def _load_whisper_model_with_retries(model_name="medium", tries=3, log=None):
         raise last_exc
     raise RuntimeError(f"Could not load whisper model '{model_name}' for unknown reason.")
 
-def transcribe_captions(voice_path, log=None):
+def transcribe_captions(voice_path, log=None, use_claptools=False, translate_to=None):
+    """
+    Transcribe audio to text captions using Whisper or ClapTools, with optional translation.
+    
+    Args:
+        voice_path: Path to audio file
+        log: Optional logging function
+        use_claptools: If True, use ClapTools API instead of Whisper
+        translate_to: Target language code for translation (None or 'none' to skip)
+    
+    Returns:
+        List of caption segments
+    """
     def _default_log(s):
         try:
             print(s)
         except Exception:
             pass
     log_fn = _default_log if log is None else log
-    try:
-        model = _load_whisper_model_with_retries("medium", tries=3, log=log_fn)
-    except Exception as e_medium:
-        log_fn(f"[whisper] Failed to load 'medium' model after retries: {e_medium}")
-        log_fn("[whisper] Falling back to 'small' model (faster, less accurate).")
+    
+    # Try ClapTools first if enabled
+    if use_claptools and USE_CLAPTOOLS:
+        log_fn("[TRANSCRIBE] Attempting ClapTools transcription...")
+        segments = transcribe_with_claptools(voice_path, api_key=CLAPTOOLS_API_KEY, log=log_fn)
+        if segments:
+            log_fn("[TRANSCRIBE] ClapTools transcription successful!")
+        else:
+            log_fn("[TRANSCRIBE] ClapTools failed, falling back to Whisper...")
+    else:
+        segments = None
+    
+    # Fallback to Whisper if ClapTools not used or failed
+    if segments is None:
         try:
-            model = _load_whisper_model_with_retries("small", tries=2, log=log_fn)
-        except Exception as e_small:
-            log_fn(f"[whisper] Failed to load 'small' model as well: {e_small}")
-            raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_small
-    log_fn("[whisper] Transcribing audio (this may take a while)...")
-    result = model.transcribe(voice_path)
-    log_fn("[whisper] Transcription finished.")
-    return result["segments"]
+            model = _load_whisper_model_with_retries("medium", tries=3, log=log_fn)
+        except Exception as e_medium:
+            log_fn(f"[whisper] Failed to load 'medium' model after retries: {e_medium}")
+            log_fn("[whisper] Falling back to 'small' model (faster, less accurate).")
+            try:
+                model = _load_whisper_model_with_retries("small", tries=2, log=log_fn)
+            except Exception as e_small:
+                log_fn(f"[whisper] Failed to load 'small' model as well: {e_small}")
+                raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_small
+        log_fn("[whisper] Transcribing audio (this may take a while)...")
+        result = model.transcribe(voice_path)
+        log_fn("[whisper] Transcription finished.")
+        segments = result["segments"]
+    
+    # Apply translation if requested
+    if translate_to and translate_to != 'none' and TRANSLATION_ENABLED:
+        log_fn(f"[TRANSCRIBE] Translating to {translate_to}...")
+        segments = translate_segments(segments, target_language=translate_to, log=log_fn)
+    
+    return segments
 
 # ----------------- caption generation -----------------
 def generate_caption_image(text, preferred_font=None, log=None):
@@ -1407,7 +1646,38 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
 
         synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
 
-        caption_segments = transcribe_captions(voice_path, log)
+        # Transcribe captions with optional ClapTools and translation
+        caption_segments = transcribe_captions(
+            voice_path, 
+            log, 
+            use_claptools=USE_CLAPTOOLS,
+            translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+        )
+        
+        # Optional: Replace voice with AI-generated TTS
+        if USE_AI_VOICE_REPLACEMENT and caption_segments:
+            log("[AI VOICE] Generating AI voice replacement...")
+            tts_audio_path = replace_voice_with_tts(
+                caption_segments, 
+                language=TTS_LANGUAGE,
+                log=log
+            )
+            if tts_audio_path:
+                # Replace voice_clip with TTS audio
+                try:
+                    tts_clip = AudioFileClip(tts_audio_path).volumex(VOICE_GAIN)
+                    # Adjust TTS clip duration to match video
+                    if abs(tts_clip.duration - target_duration) > 0.5:
+                        log(f"[AI VOICE] Adjusting TTS duration from {tts_clip.duration:.2f}s to {target_duration:.2f}s")
+                        # Speed up or slow down TTS to match target duration
+                        speed_factor = tts_clip.duration / target_duration
+                        from moviepy.audio.fx.all import speedx as audio_speedx
+                        tts_clip = tts_clip.fx(audio_speedx, speed_factor)
+                    # Replace voice in mixed audio
+                    mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(target_duration)
+                    log("[AI VOICE] Voice replaced successfully with AI-generated audio")
+                except Exception as e:
+                    log(f"[AI VOICE ERROR] Failed to use TTS audio: {e}")
 
         ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log)
         if ok:
@@ -1661,6 +1931,49 @@ class App:
         self.music_gain_scale.grid(row=row, column=1, padx=(6,0))
         self.music_gain_label = ttk.Label(left_frame, text=f"{self.music_gain_var.get():.2f}x")
         self.music_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+
+        # --- Translation Controls ---
+        ttk.Label(left_frame, text="Translation & AI Voice", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        self.translation_enabled_var = tk.BooleanVar(value=TRANSLATION_ENABLED)
+        ttk.Checkbutton(left_frame, text="Enable translation", variable=self.translation_enabled_var, 
+                       command=self.on_translation_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        ttk.Label(left_frame, text="Target language:").grid(row=row, column=0, sticky="e")
+        self.target_language_var = tk.StringVar(value=TARGET_LANGUAGE)
+        languages = ['none', 'en', 'es', 'fr', 'de', 'it', 'pt', 'ro', 'ru', 'zh-cn', 'ja', 'ko']
+        language_combo = ttk.Combobox(left_frame, textvariable=self.target_language_var, values=languages, state='readonly', width=10)
+        language_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
+        language_combo.bind('<<ComboboxSelected>>', self.on_language_selected)
+        ttk.Label(left_frame, text="(for captions)").grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
+        ttk.Checkbutton(left_frame, text="Replace voice with AI (TTS)", variable=self.use_ai_voice_var,
+                       command=self.on_ai_voice_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        ttk.Label(left_frame, text="TTS language:").grid(row=row, column=0, sticky="e")
+        self.tts_language_var = tk.StringVar(value=TTS_LANGUAGE)
+        tts_languages = ['en', 'es', 'fr', 'de', 'it', 'pt', 'ro', 'ru', 'zh', 'ja', 'ko']
+        tts_combo = ttk.Combobox(left_frame, textvariable=self.tts_language_var, values=tts_languages, state='readonly', width=10)
+        tts_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
+        tts_combo.bind('<<ComboboxSelected>>', self.on_tts_language_selected)
+        ttk.Label(left_frame, text="(voice output)").grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        self.use_claptools_var = tk.BooleanVar(value=USE_CLAPTOOLS)
+        ttk.Checkbutton(left_frame, text="Use ClapTools for transcription", variable=self.use_claptools_var,
+                       command=self.on_claptools_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1
 
         ttk.Label(left_frame, text="Top:").grid(row=row, column=0, sticky="e")
@@ -2090,6 +2403,72 @@ class App:
                 self.music_gain_label.config(text=f"{gain:.2f}x")
         except Exception:
             pass
+    
+    def on_translation_toggle(self):
+        """Callback when translation checkbox is toggled"""
+        try:
+            enabled = self.translation_enabled_var.get()
+            globals()['TRANSLATION_ENABLED'] = enabled
+            if enabled and not TRANSLATION_AVAILABLE:
+                messagebox.showwarning(
+                    "Translation Unavailable",
+                    "Translation library (googletrans) is not installed.\nPlease install it with: pip install googletrans==4.0.0rc1"
+                )
+                self.translation_enabled_var.set(False)
+                globals()['TRANSLATION_ENABLED'] = False
+        except Exception as e:
+            print(f"Translation toggle error: {e}")
+    
+    def on_language_selected(self, event=None):
+        """Callback when target language is selected"""
+        try:
+            lang = self.target_language_var.get()
+            globals()['TARGET_LANGUAGE'] = lang
+        except Exception as e:
+            print(f"Language selection error: {e}")
+    
+    def on_ai_voice_toggle(self):
+        """Callback when AI voice replacement checkbox is toggled"""
+        try:
+            enabled = self.use_ai_voice_var.get()
+            globals()['USE_AI_VOICE_REPLACEMENT'] = enabled
+            if enabled and not TTS_AVAILABLE:
+                messagebox.showwarning(
+                    "TTS Unavailable",
+                    "Text-to-Speech library (gTTS) is not installed.\nPlease install it with: pip install gtts"
+                )
+                self.use_ai_voice_var.set(False)
+                globals()['USE_AI_VOICE_REPLACEMENT'] = False
+        except Exception as e:
+            print(f"AI voice toggle error: {e}")
+    
+    def on_tts_language_selected(self, event=None):
+        """Callback when TTS language is selected"""
+        try:
+            lang = self.tts_language_var.get()
+            globals()['TTS_LANGUAGE'] = lang
+        except Exception as e:
+            print(f"TTS language selection error: {e}")
+    
+    def on_claptools_toggle(self):
+        """Callback when ClapTools checkbox is toggled"""
+        try:
+            enabled = self.use_claptools_var.get()
+            globals()['USE_CLAPTOOLS'] = enabled
+            if enabled and not REQUESTS_AVAILABLE:
+                messagebox.showwarning(
+                    "Requests Unavailable",
+                    "HTTP requests library is not installed.\nPlease install it with: pip install requests"
+                )
+                self.use_claptools_var.set(False)
+                globals()['USE_CLAPTOOLS'] = False
+            elif enabled:
+                messagebox.showinfo(
+                    "ClapTools Integration",
+                    "ClapTools integration is not fully implemented yet.\nUsing Whisper as fallback for transcription."
+                )
+        except Exception as e:
+            print(f"ClapTools toggle error: {e}")
     
     def on_4k_toggle(self):
         """Toggle between HD (1080x1920) and 4K (2160x3840) resolution"""
