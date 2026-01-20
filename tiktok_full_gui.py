@@ -118,8 +118,8 @@ IS_4K_MODE = False  # Track resolution mode for proper scaling
 CROP_TOP_RATIO = 0.30
 CROP_BOTTOM_RATIO = 0.35
 
-VOICE_GAIN = 1.0
-MUSIC_GAIN = 0.25
+VOICE_GAIN = 1.5  # Default: 1.5x louder for better voice clarity
+MUSIC_GAIN = 0.15  # Default: 0.15x quieter for subtle background music
 CAPTION_FONT_PREFERRED = "Bangers"
 CAPTION_FONT_SIZE = 56
 
