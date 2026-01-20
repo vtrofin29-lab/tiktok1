@@ -113,6 +113,7 @@ import whisper
 # ----------------- SETTINGS (defaults) -----------------
 WIDTH = 1080
 HEIGHT = 1920
+IS_4K_MODE = False  # Track resolution mode for proper scaling
 
 CROP_TOP_RATIO = 0.30
 CROP_BOTTOM_RATIO = 0.35
@@ -1324,9 +1325,22 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         except Exception:
             min_scale_to_fit = 1.0
         
-        # Calculate scale with original logic
-        fg_scale = max(1.0, min_scale_to_fit) * 1.03
-        fg_scale = min(fg_scale, 1.06)
+        # Calculate scale with dynamic limits based on resolution mode
+        # In 4K mode, we need higher scale limits to maintain same zoom effect
+        is_4k = globals().get('IS_4K_MODE', False)
+        base_scale_factor = 1.03
+        max_scale_limit = 1.06
+        
+        if is_4k:
+            # For 4K, double the scale factors to maintain same visual zoom
+            # This ensures the video is zoomed in properly to cover edges
+            fg_scale = max(1.0, min_scale_to_fit) * (base_scale_factor * 2.0)
+            fg_scale = min(fg_scale, max_scale_limit * 2.0)  # Allow up to 2.12x for 4K
+        else:
+            # HD mode - use original logic
+            fg_scale = max(1.0, min_scale_to_fit) * base_scale_factor
+            fg_scale = min(fg_scale, max_scale_limit)
+        
         scale_w = max(1, int(round(crop_w * fg_scale)))
         scale_h = max(1, int(round(crop_h * fg_scale)))
         
@@ -2089,6 +2103,10 @@ class App:
                 globals()['CAPTION_FONT_SIZE'] = 112  # 56 * 2
                 # Update stroke width based on new font size
                 globals()['CAPTION_STROKE_WIDTH'] = max(1, int(112 * 0.05))
+                # Scale background zoom factor for 4K
+                globals()['BG_SCALE_EXTRA'] = 1.08  # Keep same for both (proportional to resolution)
+                # Mark that we're in 4K mode for scaling calculations
+                globals()['IS_4K_MODE'] = True
                 # Update caption Y offset slider range for 4K (-3840 to +200)
                 if hasattr(self, 'caption_y_offset_scale'):
                     self.caption_y_offset_scale.config(from_=-3840, to=200)
@@ -2100,6 +2118,7 @@ class App:
                     self.log_widget.config(state='normal')
                     self.log_widget.insert('end', "Resolution set to 4K: 2160x3840\n")
                     self.log_widget.insert('end', "Caption font size scaled to: 112px\n")
+                    self.log_widget.insert('end', "Zoom/scale factors adjusted for 4K\n")
                     self.log_widget.see('end')
                     self.log_widget.config(state='disabled')
                 except Exception:
@@ -2112,6 +2131,10 @@ class App:
                 globals()['CAPTION_FONT_SIZE'] = 56
                 # Update stroke width based on default font size
                 globals()['CAPTION_STROKE_WIDTH'] = max(1, int(56 * 0.05))
+                # Reset background zoom factor for HD
+                globals()['BG_SCALE_EXTRA'] = 1.08
+                # Mark that we're in HD mode
+                globals()['IS_4K_MODE'] = False
                 # Reset caption Y offset slider range for HD (-1080 to +200)
                 if hasattr(self, 'caption_y_offset_scale'):
                     self.caption_y_offset_scale.config(from_=-1920, to=200)
@@ -2123,6 +2146,7 @@ class App:
                     self.log_widget.config(state='normal')
                     self.log_widget.insert('end', "Resolution set to HD: 1080x1920\n")
                     self.log_widget.insert('end', "Caption font size reset to: 56px\n")
+                    self.log_widget.insert('end', "Zoom/scale factors reset to HD\n")
                     self.log_widget.see('end')
                     self.log_widget.config(state='disabled')
                 except Exception:
