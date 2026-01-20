@@ -288,7 +288,10 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
 # ----------------- CLAPTOOLS INTEGRATION -----------------
 def transcribe_with_claptools(video_path, api_key=None, log=None):
     """
-    Transcribe video using ClapTools API (placeholder - requires actual API endpoint).
+    Transcribe video using ClapTools API.
+    
+    ClapTools (https://claptools.com/tiktok-transcript-generator/) is a transcription service.
+    This function is a placeholder that requires actual API integration.
     
     Args:
         video_path: Path to video file
@@ -296,7 +299,41 @@ def transcribe_with_claptools(video_path, api_key=None, log=None):
         log: Optional logging function
     
     Returns:
-        List of caption segments compatible with Whisper format
+        List of caption segments compatible with Whisper format, or None if not implemented
+    
+    TODO: To fully implement ClapTools integration, you need:
+    1. ClapTools API endpoint URL (e.g., https://api.claptools.com/v1/transcribe)
+    2. API authentication method (API key, OAuth, etc.)
+    3. Request format (file upload, URL, base64, etc.)
+    4. Response format (JSON structure)
+    5. Rate limiting and error handling
+    
+    Example implementation structure:
+        import requests
+        
+        # Upload video to ClapTools
+        with open(video_path, 'rb') as f:
+            files = {'file': f}
+            headers = {'Authorization': f'Bearer {api_key}'}
+            response = requests.post(
+                'https://api.claptools.com/v1/transcribe',
+                files=files,
+                headers=headers
+            )
+        
+        # Poll for results or get immediate response
+        result = response.json()
+        
+        # Convert ClapTools format to Whisper-compatible format
+        segments = []
+        for item in result.get('transcription', []):
+            segments.append({
+                'start': item['start_time'],
+                'end': item['end_time'],
+                'text': item['text']
+            })
+        
+        return segments
     """
     if not REQUESTS_AVAILABLE:
         if log:
@@ -304,14 +341,12 @@ def transcribe_with_claptools(video_path, api_key=None, log=None):
         return None
     
     if log:
-        log("[CLAPTOOLS] ClapTools integration not fully implemented - using Whisper fallback")
+        log("[CLAPTOOLS] ClapTools integration requires API credentials and endpoint configuration")
+        log("[CLAPTOOLS] Visit https://claptools.com to sign up and get API access")
+        log("[CLAPTOOLS] Falling back to Whisper for transcription...")
     
-    # Placeholder for actual ClapTools API integration
-    # In real implementation, you would:
-    # 1. Upload video to ClapTools API
-    # 2. Poll for transcription results
-    # 3. Convert results to Whisper-compatible format
-    
+    # Placeholder - returns None to trigger Whisper fallback
+    # Replace this with actual API call when you have ClapTools API credentials
     return None
 
 # ----------------- SETTINGS (defaults) -----------------
