@@ -1546,9 +1546,35 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         if not os.path.exists(video_path):
             log(f"Error: VIDEO missing: {video_path}")
             return
-        if not os.path.exists(voice_path):
-            log(f"Error: VOICE missing: {voice_path}")
-            return
+        
+        # Voice is now optional - extract from video if not provided
+        voice_from_video = False
+        if not voice_path or not os.path.exists(voice_path):
+            log("[VOICE] No separate voice file provided - extracting audio from video...")
+            voice_from_video = True
+            # Extract audio from video to a temporary file
+            temp_voice_path = tempfile.mktemp(suffix='.mp3', prefix='extracted_voice_')
+            try:
+                video_clip_for_audio = VideoFileClip(video_path)
+                if video_clip_for_audio.audio is None:
+                    log("[VOICE ERROR] Video has no audio track!")
+                    if not USE_AI_VOICE_REPLACEMENT:
+                        log("[VOICE ERROR] Cannot proceed without voice audio or AI voice enabled.")
+                        return
+                    log("[VOICE] Will generate AI voice from text/captions only.")
+                    voice_path = None
+                else:
+                    video_clip_for_audio.audio.write_audiofile(temp_voice_path, logger=None)
+                    voice_path = temp_voice_path
+                    log(f"[VOICE] ✓ Extracted audio from video: {temp_voice_path}")
+                    video_clip_for_audio.close()
+            except Exception as e:
+                log(f"[VOICE ERROR] Failed to extract audio from video: {e}")
+                if not USE_AI_VOICE_REPLACEMENT:
+                    return
+                log("[VOICE] Will proceed with AI voice generation only.")
+                voice_path = None
+        
         if not os.path.exists(music_path):
             log(f"Error: MUSIC missing: {music_path}")
             return
@@ -1643,46 +1669,63 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             fg_clip = mirror_x(fg_clip)
             log("✓ Video mirrored successfully")
 
-        voice_clip = AudioFileClip(voice_path).volumex(VOICE_GAIN)
-        music_clip = AudioFileClip(music_path)
-        target_duration = voice_clip.duration
-        log(f"Voice duration (target): {target_duration:.2f}s")
-        music_matched = make_music_match_duration(music_clip, target_duration, log)
-        mixed_audio = CompositeAudioClip([music_matched, voice_clip.set_start(0)]).set_duration(target_duration)
-
-        synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
-
-        # Transcribe captions with optional ClapTools and translation
-        caption_segments = transcribe_captions(
-            voice_path, 
-            log, 
-            use_claptools=USE_CLAPTOOLS,
-            translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
-        )
-        
-        # Optional: Replace voice with AI-generated TTS
-        if USE_AI_VOICE_REPLACEMENT and caption_segments:
-            log("[AI VOICE] Generating AI voice replacement...")
-            tts_audio_path = replace_voice_with_tts(
-                caption_segments, 
-                language=TTS_LANGUAGE,
-                log=log
+        # Handle audio based on whether we have a voice file
+        if voice_path and os.path.exists(voice_path):
+            voice_clip = AudioFileClip(voice_path).volumex(VOICE_GAIN)
+            music_clip = AudioFileClip(music_path)
+            target_duration = voice_clip.duration
+            log(f"Voice duration (target): {target_duration:.2f}s")
+            music_matched = make_music_match_duration(music_clip, target_duration, log)
+            mixed_audio = CompositeAudioClip([music_matched, voice_clip.set_start(0)]).set_duration(target_duration)
+            
+            synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
+            
+            # Transcribe captions with optional ClapTools and translation
+            caption_segments = transcribe_captions(
+                voice_path, 
+                log, 
+                use_claptools=USE_CLAPTOOLS,
+                translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
             )
-            if tts_audio_path:
-                # Replace voice_clip with TTS audio
-                try:
-                    tts_clip = AudioFileClip(tts_audio_path).volumex(VOICE_GAIN)
-                    # Adjust TTS clip duration to match video
-                    if abs(tts_clip.duration - target_duration) > 0.5:
-                        log(f"[AI VOICE] Adjusting TTS duration from {tts_clip.duration:.2f}s to {target_duration:.2f}s")
-                        # Speed up or slow down TTS to match target duration
-                        speed_factor = tts_clip.duration / target_duration
-                        tts_clip = tts_clip.fx(speedx, speed_factor)
-                    # Replace voice in mixed audio
-                    mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(target_duration)
-                    log("[AI VOICE] Voice replaced successfully with AI-generated audio")
-                except Exception as e:
-                    log(f"[AI VOICE ERROR] Failed to use TTS audio: {e}")
+        else:
+            # No voice file - use video duration as target
+            log("[NO VOICE] Using video duration as target")
+            target_duration = fg_clip.duration
+            music_clip = AudioFileClip(music_path)
+            music_matched = make_music_match_duration(music_clip, target_duration, log)
+            mixed_audio = music_matched.set_duration(target_duration)
+            synced_video = fg_clip
+            caption_segments = []
+            log("[NO VOICE] No captions will be generated (no voice to transcribe)")
+        
+        # Optional: Replace voice with AI-generated TTS or generate from scratch
+        if USE_AI_VOICE_REPLACEMENT:
+            if caption_segments:
+                log("[AI VOICE] Generating AI voice replacement from transcribed captions...")
+                tts_audio_path = replace_voice_with_tts(
+                    caption_segments, 
+                    language=TTS_LANGUAGE,
+                    log=log
+                )
+                if tts_audio_path:
+                    # Replace voice_clip with TTS audio
+                    try:
+                        tts_clip = AudioFileClip(tts_audio_path).volumex(VOICE_GAIN)
+                        # Adjust TTS clip duration to match video
+                        if abs(tts_clip.duration - target_duration) > 0.5:
+                            log(f"[AI VOICE] Adjusting TTS duration from {tts_clip.duration:.2f}s to {target_duration:.2f}s")
+                            # Speed up or slow down TTS to match target duration
+                            speed_factor = tts_clip.duration / target_duration
+                            tts_clip = tts_clip.fx(speedx, speed_factor)
+                        # Replace voice in mixed audio
+                        mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(target_duration)
+                        synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
+                        log("[AI VOICE] Voice replaced successfully with AI-generated audio")
+                    except Exception as e:
+                        log(f"[AI VOICE ERROR] Failed to use TTS audio: {e}")
+            else:
+                log("[AI VOICE] No captions available - AI voice replacement skipped")
+                log("[AI VOICE] Tip: Provide voice file or enable transcription for AI voice generation")
 
         ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log)
         if ok:
@@ -1727,6 +1770,17 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     q.put(f"[cleanup] Removed temp dir: {temp_dir}")
                 except Exception as e_rm:
                     q.put(f"[cleanup] Could not remove temp dir {temp_dir}: {e_rm}")
+        except Exception:
+            pass
+        
+        # Remove temp voice file if it was created
+        try:
+            if 'temp_voice_path' in locals() and temp_voice_path and os.path.exists(temp_voice_path):
+                try:
+                    os.remove(temp_voice_path)
+                    q.put(f"[cleanup] Removed temp voice file: {temp_voice_path}")
+                except Exception as e_rm:
+                    q.put(f"[cleanup] Could not remove temp voice file {temp_voice_path}: {e_rm}")
         except Exception:
             pass
 
@@ -1884,7 +1938,7 @@ class App:
         ttk.Button(left_frame, text="Browse...", command=self.browse_video).grid(row=row, column=2, padx=6)
         row += 1
 
-        ttk.Label(left_frame, text="VOICE:").grid(row=row, column=0, sticky="w")
+        ttk.Label(left_frame, text="VOICE (optional):").grid(row=row, column=0, sticky="w")
         self.voice_var = tk.StringVar(value="")
         self.voice_entry = ttk.Entry(left_frame, textvariable=self.voice_var)
         self.voice_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
@@ -3046,8 +3100,8 @@ class App:
             voice = self.voice_var.get().strip()
             music = self.music_var.get().strip()
             output = self.output_var.get().strip() or "final_tiktok.mp4"
-            if not video or not voice or not music:
-                messagebox.showwarning("Missing fields", "Please select VIDEO, VOICE and MUSIC before adding a job.")
+            if not video or not music:
+                messagebox.showwarning("Missing fields", "Please select VIDEO and MUSIC before adding a job.")
                 return
             # preferred font: prefer selected_font_path (.ttf) else selected_font family name
             try:
@@ -3101,8 +3155,8 @@ class App:
             voice = self.voice_var.get().strip()
             music = self.music_var.get().strip()
             output = self.output_var.get().strip() or "final_tiktok.mp4"
-            if not video or not voice or not music:
-                messagebox.showwarning("Missing fields", "Please select VIDEO, VOICE and MUSIC before running.")
+            if not video or not music:
+                messagebox.showwarning("Missing fields", "Please select VIDEO and MUSIC before running.")
                 return
             try:
                 pref_font = None
