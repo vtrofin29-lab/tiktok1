@@ -285,70 +285,6 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
             log(f"[TTS ERROR] Failed to replace voice: {e}")
         return None
 
-# ----------------- CLAPTOOLS INTEGRATION -----------------
-def transcribe_with_claptools(video_path, api_key=None, log=None):
-    """
-    Transcribe video using ClapTools API.
-    
-    ClapTools (https://claptools.com/tiktok-transcript-generator/) is a transcription service.
-    This function is a placeholder that requires actual API integration.
-    
-    Args:
-        video_path: Path to video file
-        api_key: ClapTools API key
-        log: Optional logging function
-    
-    Returns:
-        List of caption segments compatible with Whisper format, or None if not implemented
-    
-    TODO: To fully implement ClapTools integration, you need:
-    1. ClapTools API endpoint URL (e.g., https://api.claptools.com/v1/transcribe)
-    2. API authentication method (API key, OAuth, etc.)
-    3. Request format (file upload, URL, base64, etc.)
-    4. Response format (JSON structure)
-    5. Rate limiting and error handling
-    
-    Example implementation structure:
-        import requests
-        
-        # Upload video to ClapTools
-        with open(video_path, 'rb') as f:
-            files = {'file': f}
-            headers = {'Authorization': f'Bearer {api_key}'}
-            response = requests.post(
-                'https://api.claptools.com/v1/transcribe',
-                files=files,
-                headers=headers
-            )
-        
-        # Poll for results or get immediate response
-        result = response.json()
-        
-        # Convert ClapTools format to Whisper-compatible format
-        segments = []
-        for item in result.get('transcription', []):
-            segments.append({
-                'start': item['start_time'],
-                'end': item['end_time'],
-                'text': item['text']
-            })
-        
-        return segments
-    """
-    if not REQUESTS_AVAILABLE:
-        if log:
-            log("[CLAPTOOLS] requests library not available")
-        return None
-    
-    if log:
-        log("[CLAPTOOLS] ClapTools integration requires API credentials and endpoint configuration")
-        log("[CLAPTOOLS] Visit https://claptools.com to sign up and get API access")
-        log("[CLAPTOOLS] Falling back to Whisper for transcription...")
-    
-    # Placeholder - returns None to trigger Whisper fallback
-    # Replace this with actual API call when you have ClapTools API credentials
-    return None
-
 # ----------------- SETTINGS (defaults) -----------------
 WIDTH = 1080
 HEIGHT = 1920
@@ -378,8 +314,13 @@ TRANSLATION_ENABLED = False
 TARGET_LANGUAGE = 'none'  # 'none', 'en', 'es', 'fr', 'ro', etc.
 USE_AI_VOICE_REPLACEMENT = False
 TTS_LANGUAGE = 'en'
-USE_CLAPTOOLS = False
-CLAPTOOLS_API_KEY = None
+# Premium TTS API keys (for better quality voices)
+# Supported: 'elevenlabs', 'openai', 'azure'
+TTS_ENGINE = 'gtts'  # Options: 'gtts' (free, basic), 'elevenlabs', 'openai', 'azure'
+ELEVENLABS_API_KEY = None
+OPENAI_API_KEY = None
+AZURE_SPEECH_KEY = None
+AZURE_SPEECH_REGION = None
 
 FPS = 24
 
@@ -817,14 +758,13 @@ def _load_whisper_model_with_retries(model_name="medium", tries=3, log=None):
         raise last_exc
     raise RuntimeError(f"Could not load whisper model '{model_name}' for unknown reason.")
 
-def transcribe_captions(voice_path, log=None, use_claptools=False, translate_to=None):
+def transcribe_captions(voice_path, log=None, translate_to=None):
     """
-    Transcribe audio to text captions using Whisper or ClapTools, with optional translation.
+    Transcribe audio to text captions using Whisper, with optional translation.
     
     Args:
         voice_path: Path to audio file
         log: Optional logging function
-        use_claptools: If True, use ClapTools API instead of Whisper
         translate_to: Target language code for translation (None or 'none' to skip)
     
     Returns:
@@ -837,33 +777,21 @@ def transcribe_captions(voice_path, log=None, use_claptools=False, translate_to=
             pass
     log_fn = _default_log if log is None else log
     
-    # Try ClapTools first if enabled
-    if use_claptools and USE_CLAPTOOLS:
-        log_fn("[TRANSCRIBE] Attempting ClapTools transcription...")
-        segments = transcribe_with_claptools(voice_path, api_key=CLAPTOOLS_API_KEY, log=log_fn)
-        if segments:
-            log_fn("[TRANSCRIBE] ClapTools transcription successful!")
-        else:
-            log_fn("[TRANSCRIBE] ClapTools failed, falling back to Whisper...")
-    else:
-        segments = None
-    
-    # Fallback to Whisper if ClapTools not used or failed
-    if segments is None:
+    # Use Whisper for transcription
+    try:
+        model = _load_whisper_model_with_retries("medium", tries=3, log=log_fn)
+    except Exception as e_medium:
+        log_fn(f"[whisper] Failed to load 'medium' model after retries: {e_medium}")
+        log_fn("[whisper] Falling back to 'small' model (faster, less accurate).")
         try:
-            model = _load_whisper_model_with_retries("medium", tries=3, log=log_fn)
-        except Exception as e_medium:
-            log_fn(f"[whisper] Failed to load 'medium' model after retries: {e_medium}")
-            log_fn("[whisper] Falling back to 'small' model (faster, less accurate).")
-            try:
-                model = _load_whisper_model_with_retries("small", tries=2, log=log_fn)
-            except Exception as e_small:
-                log_fn(f"[whisper] Failed to load 'small' model as well: {e_small}")
-                raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_small
-        log_fn("[whisper] Transcribing audio (this may take a while)...")
-        result = model.transcribe(voice_path)
-        log_fn("[whisper] Transcription finished.")
-        segments = result["segments"]
+            model = _load_whisper_model_with_retries("small", tries=2, log=log_fn)
+        except Exception as e_small:
+            log_fn(f"[whisper] Failed to load 'small' model as well: {e_small}")
+            raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_small
+    log_fn("[whisper] Transcribing audio (this may take a while)...")
+    result = model.transcribe(voice_path)
+    log_fn("[whisper] Transcription finished.")
+    segments = result["segments"]
     
     # Apply translation if requested
     if translate_to and translate_to != 'none' and TRANSLATION_ENABLED:
@@ -1715,11 +1643,10 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
             
-            # Transcribe captions with optional ClapTools and translation
+            # Transcribe captions with translation
             caption_segments = transcribe_captions(
                 voice_path, 
                 log, 
-                use_claptools=USE_CLAPTOOLS,
                 translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
             )
         else:
@@ -2060,11 +1987,6 @@ class App:
         tts_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
         tts_combo.bind('<<ComboboxSelected>>', self.on_tts_language_selected)
         ttk.Label(left_frame, text="(voice output)").grid(row=row, column=2, sticky='w', padx=(4,0))
-        row += 1
-
-        self.use_claptools_var = tk.BooleanVar(value=USE_CLAPTOOLS)
-        ttk.Checkbutton(left_frame, text="Use ClapTools for transcription", variable=self.use_claptools_var,
-                       command=self.on_claptools_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
@@ -2543,26 +2465,6 @@ class App:
             globals()['TTS_LANGUAGE'] = lang
         except Exception as e:
             print(f"TTS language selection error: {e}")
-    
-    def on_claptools_toggle(self):
-        """Callback when ClapTools checkbox is toggled"""
-        try:
-            enabled = self.use_claptools_var.get()
-            globals()['USE_CLAPTOOLS'] = enabled
-            if enabled and not REQUESTS_AVAILABLE:
-                messagebox.showwarning(
-                    "Requests Unavailable",
-                    "HTTP requests library is not installed.\nPlease install it with: pip install requests"
-                )
-                self.use_claptools_var.set(False)
-                globals()['USE_CLAPTOOLS'] = False
-            elif enabled:
-                messagebox.showinfo(
-                    "ClapTools Integration",
-                    "ClapTools integration is not fully implemented yet.\nUsing Whisper as fallback for transcription."
-                )
-        except Exception as e:
-            print(f"ClapTools toggle error: {e}")
     
     def on_4k_toggle(self):
         """Toggle between HD (1080x1920) and 4K (2160x3840) resolution"""
