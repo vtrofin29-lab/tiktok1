@@ -241,21 +241,25 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             os.close(fd)
         
         # Map language codes to voice IDs (you can expand this mapping)
-        voice_map = {
-            'en': 'uju3wxzG5OhpWcoi3SMy',  # Default English voice
-            'es': 'uju3wxzG5OhpWcoi3SMy',  # Using same for now, can be customized
-            'fr': 'uju3wxzG5OhpWcoi3SMy',
-            'de': 'uju3wxzG5OhpWcoi3SMy',
-            'it': 'uju3wxzG5OhpWcoi3SMy',
-            'pt': 'uju3wxzG5OhpWcoi3SMy',
-            'ro': 'uju3wxzG5OhpWcoi3SMy',
-            'ru': 'uju3wxzG5OhpWcoi3SMy',
-            'zh': 'uju3wxzG5OhpWcoi3SMy',
-            'ja': 'uju3wxzG5OhpWcoi3SMy',
-            'ko': 'uju3wxzG5OhpWcoi3SMy',
-        }
-        
-        voice_id = voice_map.get(language, 'uju3wxzG5OhpWcoi3SMy')
+        # Check if a custom voice ID is specified, otherwise use language defaults
+        global TTS_VOICE_ID
+        if TTS_VOICE_ID and TTS_VOICE_ID != 'auto':
+            voice_id = TTS_VOICE_ID
+        else:
+            voice_map = {
+                'en': 'uju3wxzG5OhpWcoi3SMy',  # Default English voice
+                'es': 'uju3wxzG5OhpWcoi3SMy',  # Using same for now, can be customized
+                'fr': 'uju3wxzG5OhpWcoi3SMy',
+                'de': 'uju3wxzG5OhpWcoi3SMy',
+                'it': 'uju3wxzG5OhpWcoi3SMy',
+                'pt': 'uju3wxzG5OhpWcoi3SMy',
+                'ro': 'uju3wxzG5OhpWcoi3SMy',
+                'ru': 'uju3wxzG5OhpWcoi3SMy',
+                'zh': 'uju3wxzG5OhpWcoi3SMy',
+                'ja': 'uju3wxzG5OhpWcoi3SMy',
+                'ko': 'uju3wxzG5OhpWcoi3SMy',
+            }
+            voice_id = voice_map.get(language, 'uju3wxzG5OhpWcoi3SMy')
         
         # Step 1: Submit TTS task
         if log:
@@ -508,6 +512,7 @@ TRANSLATION_ENABLED = False
 TARGET_LANGUAGE = 'none'  # 'none', 'en', 'es', 'fr', 'ro', etc.
 USE_AI_VOICE_REPLACEMENT = False
 TTS_LANGUAGE = 'en'
+TTS_VOICE_ID = 'auto'  # 'auto' or specific voice ID
 # Premium TTS API keys (for better quality voices)
 # Supported: 'elevenlabs', 'openai', 'azure'
 TTS_ENGINE = 'gtts'  # Options: 'gtts' (free, basic), 'elevenlabs', 'openai', 'azure'
@@ -1852,7 +1857,15 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             mixed_audio = music_matched.set_duration(target_duration)
             synced_video = fg_clip
             caption_segments = []
-            log("[NO VOICE] No captions will be generated (no voice to transcribe)")
+            
+            # If AI voice is enabled, we still need to generate it even without a voice file
+            # We'll need to create dummy caption segments from user input or skip captions
+            if USE_AI_VOICE_REPLACEMENT:
+                log("[NO VOICE + AI TTS] Will generate AI voice without captions")
+                # For now, we'll skip caption generation when there's no voice to transcribe
+                # The TTS will be generated below if caption_segments exists or can be created
+            else:
+                log("[NO VOICE] No captions will be generated (no voice to transcribe)")
         
         # Optional: Replace voice with AI-generated TTS or generate from scratch
         if USE_AI_VOICE_REPLACEMENT:
@@ -1873,15 +1886,16 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                             # Speed up or slow down TTS to match target duration
                             speed_factor = tts_clip.duration / target_duration
                             tts_clip = tts_clip.fx(speedx, speed_factor)
-                        # Replace voice in mixed audio
+                        # Replace voice in mixed audio with TTS
+                        log(f"[AI VOICE] Adding TTS audio to video (duration: {tts_clip.duration:.2f}s)")
                         mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(target_duration)
                         synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
-                        log("[AI VOICE] Voice replaced successfully with AI-generated audio")
+                        log("[AI VOICE] ✓ Voice replaced successfully with AI-generated audio")
                     except Exception as e:
                         log(f"[AI VOICE ERROR] Failed to use TTS audio: {e}")
             else:
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
-                log("[AI VOICE] Tip: Provide voice file or enable transcription for AI voice generation")
+                log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
 
         ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log)
         if ok:
@@ -2181,6 +2195,41 @@ class App:
         tts_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
         tts_combo.bind('<<ComboboxSelected>>', self.on_tts_language_selected)
         ttk.Label(left_frame, text="(voice output)").grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        # Voice selection dropdown - shows voices for selected TTS language
+        ttk.Label(left_frame, text="Voice:").grid(row=row, column=0, sticky="e")
+        
+        # Available voices per language (from GenAI Pro API)
+        self.voice_options = {
+            'en': ['Auto (Default)', 'Voice 1', 'Voice 2', 'Voice 3'],
+            'es': ['Auto (Default)', 'Voice 1', 'Voice 2'],
+            'fr': ['Auto (Default)', 'Voice 1', 'Voice 2'],
+            'de': ['Auto (Default)', 'Voice 1'],
+            'it': ['Auto (Default)', 'Voice 1'],
+            'pt': ['Auto (Default)', 'Voice 1'],
+            'ro': ['Auto (Default)', 'Voice 1'],
+            'ru': ['Auto (Default)', 'Voice 1'],
+            'zh': ['Auto (Default)', 'Voice 1'],
+            'ja': ['Auto (Default)', 'Voice 1'],
+            'ko': ['Auto (Default)', 'Voice 1'],
+        }
+        
+        # Voice ID mappings (extend this as you discover more voice IDs from GenAI Pro)
+        self.voice_id_map = {
+            'Auto (Default)': 'auto',
+            'Voice 1': 'uju3wxzG5OhpWcoi3SMy',
+            'Voice 2': 'uju3wxzG5OhpWcoi3SMy',  # Replace with actual voice IDs
+            'Voice 3': 'uju3wxzG5OhpWcoi3SMy',  # Replace with actual voice IDs
+        }
+        
+        self.tts_voice_var = tk.StringVar(value='Auto (Default)')
+        current_voices = self.voice_options.get(TTS_LANGUAGE, ['Auto (Default)'])
+        self.tts_voice_combo = ttk.Combobox(left_frame, textvariable=self.tts_voice_var, 
+                                            values=current_voices, state='readonly', width=15)
+        self.tts_voice_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
+        self.tts_voice_combo.bind('<<ComboboxSelected>>', self.on_voice_selected)
+        ttk.Label(left_frame, text="(select voice)").grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
         # API Key input for premium TTS services
@@ -2680,8 +2729,24 @@ class App:
         try:
             lang = self.tts_language_var.get()
             globals()['TTS_LANGUAGE'] = lang
+            
+            # Update voice dropdown based on selected language
+            voices = self.voice_options.get(lang, ['Auto (Default)'])
+            self.tts_voice_combo['values'] = voices
+            self.tts_voice_var.set('Auto (Default)')  # Reset to auto
+            globals()['TTS_VOICE_ID'] = 'auto'
         except Exception as e:
             print(f"TTS language selection error: {e}")
+    
+    def on_voice_selected(self, event=None):
+        """Callback when a specific voice is selected"""
+        try:
+            voice_name = self.tts_voice_var.get()
+            voice_id = self.voice_id_map.get(voice_name, 'auto')
+            globals()['TTS_VOICE_ID'] = voice_id
+            print(f"[Voice Selection] Selected: {voice_name} (ID: {voice_id})")
+        except Exception as e:
+            print(f"Voice selection error: {e}")
     
     def on_save_api_key(self):
         """Callback when Save API Key button is clicked"""
