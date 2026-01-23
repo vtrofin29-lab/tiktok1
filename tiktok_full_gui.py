@@ -369,6 +369,10 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             if our_task:
                 status = our_task.get('status', '').lower()
                 
+                # DEBUG: Log full task object every 20 seconds to see what fields are available
+                if i % 10 == 0 and log:
+                    log(f"[GenAI Pro DEBUG] Current task object: {our_task}")
+                
                 # Check for various completion status values
                 if status in ['completed', 'done', 'success', 'succeeded', 'finished']:
                     elapsed_seconds = (i + 1) * poll_interval
