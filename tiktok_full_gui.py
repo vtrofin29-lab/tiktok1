@@ -304,12 +304,12 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
         if log:
             log(f"[GenAI Pro] Task submitted: {task_id}")
         
-        # Step 2: Poll for task completion - wait indefinitely for GenAI Pro
-        max_polls = 300  # Wait up to 5 minutes (300 seconds) for very long texts
+        # Step 2: Poll for task completion - wait as long as needed for GenAI Pro
+        max_polls = 1800  # Wait up to 30 minutes (1800 iterations * 2 seconds = 3600 seconds = 60 minutes total)
         poll_interval = 2  # Poll every 2 seconds to reduce API calls
         
         if log:
-            log(f"[GenAI Pro] Waiting for audio generation... (max {max_polls} seconds)")
+            log(f"[GenAI Pro] Waiting for audio generation... (will wait as long as needed, max 60 minutes)")
         
         for i in range(max_polls):
             time.sleep(poll_interval)
@@ -317,9 +317,10 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             elapsed_seconds = (i + 1) * poll_interval
             # Show progress every 10 seconds or at start
             if i == 0 or elapsed_seconds % 10 == 0:
-                progress_pct = int(((i + 1) / max_polls) * 100)
+                elapsed_mins = elapsed_seconds // 60
+                elapsed_secs = elapsed_seconds % 60
                 if log:
-                    log(f"[GenAI Pro] ⏳ Progress: {elapsed_seconds}/{max_polls * poll_interval} seconds ({progress_pct}%) - Waiting for audio...")
+                    log(f"[GenAI Pro] ⏳ Waiting: {elapsed_mins}m {elapsed_secs}s elapsed - Still processing...")
             
             status_response = requests.get(
                 'https://genaipro.vn/api/v1/labs/task',
@@ -349,8 +350,10 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                 
                 if status == 'completed':
                     elapsed_seconds = (i + 1) * poll_interval
+                    elapsed_mins = elapsed_seconds // 60
+                    elapsed_secs = elapsed_seconds % 60
                     if log:
-                        log(f"[GenAI Pro] ✓ Audio generation complete! ({elapsed_seconds} seconds)")
+                        log(f"[GenAI Pro] ✓ Audio generation complete! (took {elapsed_mins}m {elapsed_secs}s)")
                     
                     audio_url = our_task.get('output_url') or our_task.get('audio_url')
                     
@@ -386,8 +389,11 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                 elif i % 10 == 0 and log and i > 0:
                     log(f"[GenAI Pro] Status: {status} (still processing...)")
         
+        # If we get here, the task didn't complete within the timeout
         if log:
-            log(f"[GenAI Pro ERROR] Task timeout after {max_polls * poll_interval} seconds")
+            elapsed_total = max_polls * poll_interval
+            elapsed_mins = elapsed_total // 60
+            log(f"[GenAI Pro ERROR] ⏱️ Task timeout after {elapsed_mins} minutes. Task may still be processing on GenAI Pro.")
         return None
         
     except Exception as e:
