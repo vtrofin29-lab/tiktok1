@@ -294,7 +294,8 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             return None
         
         task_data = response.json()
-        task_id = task_data.get('task_id')
+        # GenAI Pro might return 'task_id' or 'id' field
+        task_id = task_data.get('task_id') or task_data.get('id')
         
         if not task_id:
             if log:
@@ -302,7 +303,8 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             return None
         
         if log:
-            log(f"[GenAI Pro] Task submitted: {task_id}")
+            log(f"[GenAI Pro] Task submitted with ID: {task_id}")
+            log(f"[GenAI Pro DEBUG] Full submission response: {task_data}")
         
         # Step 2: Poll for task completion - wait as long as needed for GenAI Pro
         max_polls = 1800  # Wait up to 30 minutes (1800 iterations * 2 seconds = 3600 seconds = 60 minutes total)
@@ -339,23 +341,28 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             our_task = None
             if isinstance(tasks, list):
                 for task in tasks:
-                    if task.get('task_id') == task_id:
+                    # Check both 'task_id' and 'id' fields
+                    task_identifier = task.get('task_id') or task.get('id')
+                    if task_identifier == task_id:
                         our_task = task
                         break
             elif isinstance(tasks, dict):
                 # Could be a single task response or a wrapper
-                if tasks.get('task_id') == task_id:
+                task_identifier = tasks.get('task_id') or tasks.get('id')
+                if task_identifier == task_id:
                     our_task = tasks
                 elif 'tasks' in tasks and isinstance(tasks['tasks'], list):
                     # Response might have tasks in a 'tasks' field
                     for task in tasks['tasks']:
-                        if task.get('task_id') == task_id:
+                        task_identifier = task.get('task_id') or task.get('id')
+                        if task_identifier == task_id:
                             our_task = task
                             break
                 elif 'data' in tasks and isinstance(tasks['data'], list):
                     # Response might have tasks in a 'data' field
                     for task in tasks['data']:
-                        if task.get('task_id') == task_id:
+                        task_identifier = task.get('task_id') or task.get('id')
+                        if task_identifier == task_id:
                             our_task = task
                             break
             
@@ -411,9 +418,16 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             else:
                 # Task not found in response - log for debugging
                 if i == 0 and log:
-                    log(f"[GenAI Pro DEBUG] Task {task_id} not found in initial status check. Response structure: {type(tasks)}")
+                    log(f"[GenAI Pro DEBUG] Task {task_id} not found in initial status check.")
+                    log(f"[GenAI Pro DEBUG] Response type: {type(tasks)}")
+                    log(f"[GenAI Pro DEBUG] Full response: {tasks}")
                 elif i % 30 == 0 and log and i > 0:
                     log(f"[GenAI Pro DEBUG] Still waiting... Task {task_id} not found in status response.")
+                    # Log response structure periodically
+                    if isinstance(tasks, list) and len(tasks) > 0:
+                        log(f"[GenAI Pro DEBUG] Sample task structure: {tasks[0]}")
+                    elif isinstance(tasks, dict):
+                        log(f"[GenAI Pro DEBUG] Response keys: {list(tasks.keys())}")
         
         # If we get here, the task didn't complete within the timeout
         if log:
