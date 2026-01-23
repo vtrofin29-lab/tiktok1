@@ -342,29 +342,49 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                     if task.get('task_id') == task_id:
                         our_task = task
                         break
-            elif isinstance(tasks, dict) and tasks.get('task_id') == task_id:
-                our_task = tasks
+            elif isinstance(tasks, dict):
+                # Could be a single task response or a wrapper
+                if tasks.get('task_id') == task_id:
+                    our_task = tasks
+                elif 'tasks' in tasks and isinstance(tasks['tasks'], list):
+                    # Response might have tasks in a 'tasks' field
+                    for task in tasks['tasks']:
+                        if task.get('task_id') == task_id:
+                            our_task = task
+                            break
+                elif 'data' in tasks and isinstance(tasks['data'], list):
+                    # Response might have tasks in a 'data' field
+                    for task in tasks['data']:
+                        if task.get('task_id') == task_id:
+                            our_task = task
+                            break
             
             if our_task:
                 status = our_task.get('status', '').lower()
                 
-                if status == 'completed':
+                # Check for various completion status values
+                if status in ['completed', 'done', 'success', 'succeeded', 'finished']:
                     elapsed_seconds = (i + 1) * poll_interval
                     elapsed_mins = elapsed_seconds // 60
                     elapsed_secs = elapsed_seconds % 60
                     if log:
                         log(f"[GenAI Pro] ✓ Audio generation complete! (took {elapsed_mins}m {elapsed_secs}s)")
                     
-                    audio_url = our_task.get('output_url') or our_task.get('audio_url')
+                    # Try multiple possible field names for the audio URL
+                    audio_url = (our_task.get('output_url') or 
+                                our_task.get('audio_url') or 
+                                our_task.get('result_url') or
+                                our_task.get('file_url') or
+                                our_task.get('url'))
                     
                     if not audio_url:
                         if log:
-                            log(f"[GenAI Pro ERROR] Task completed but no audio URL: {our_task}")
+                            log(f"[GenAI Pro ERROR] Task completed but no audio URL found in response: {our_task}")
                         return None
                     
                     # Step 3: Download the audio file
                     if log:
-                        log(f"[GenAI Pro] 📥 Downloading audio file...")
+                        log(f"[GenAI Pro] 📥 Downloading audio file from: {audio_url}")
                     
                     audio_response = requests.get(audio_url, timeout=30)
                     
@@ -373,21 +393,27 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                             f.write(audio_response.content)
                         
                         if log:
-                            log(f"[GenAI Pro] TTS generated successfully: {output_path}")
+                            log(f"[GenAI Pro] ✅ TTS generated successfully: {output_path}")
                         return output_path
                     else:
                         if log:
                             log(f"[GenAI Pro ERROR] Failed to download audio: {audio_response.status_code}")
                         return None
                 
-                elif status == 'failed' or status == 'error':
+                elif status in ['failed', 'error', 'cancelled', 'canceled']:
                     if log:
-                        log(f"[GenAI Pro ERROR] ❌ Task failed: {our_task}")
+                        log(f"[GenAI Pro ERROR] ❌ Task failed with status '{status}': {our_task}")
                     return None
                 
                 # Show status periodically for non-completed tasks
                 elif i % 10 == 0 and log and i > 0:
                     log(f"[GenAI Pro] Status: {status} (still processing...)")
+            else:
+                # Task not found in response - log for debugging
+                if i == 0 and log:
+                    log(f"[GenAI Pro DEBUG] Task {task_id} not found in initial status check. Response structure: {type(tasks)}")
+                elif i % 30 == 0 and log and i > 0:
+                    log(f"[GenAI Pro DEBUG] Still waiting... Task {task_id} not found in status response.")
         
         # If we get here, the task didn't complete within the timeout
         if log:
