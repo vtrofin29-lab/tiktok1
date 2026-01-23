@@ -385,6 +385,8 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                     elapsed_secs = elapsed_seconds % 60
                     if log:
                         log(f"[GenAI Pro] ✓ Audio generation complete! (took {elapsed_mins}m {elapsed_secs}s)")
+                        log(f"[GenAI Pro DEBUG] Complete task - All fields: {list(our_task.keys())}")
+                        log(f"[GenAI Pro DEBUG] Complete task - Full object: {our_task}")
                     
                     # Try multiple possible field names for the audio URL, including 'result'
                     audio_url = (our_task.get('result') or
@@ -396,7 +398,10 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                     
                     if not audio_url:
                         if log:
-                            log(f"[GenAI Pro ERROR] Task completed but no audio URL found in response: {our_task}")
+                            log(f"[GenAI Pro ERROR] Task completed but no audio URL found")
+                            log(f"[GenAI Pro ERROR] status={status}, result={result}")
+                            log(f"[GenAI Pro ERROR] Checked fields: result, output_url, audio_url, result_url, file_url, url")
+                            log(f"[GenAI Pro ERROR] All available fields in task: {list(our_task.keys())}")
                         return None
                     
                     # Step 3: Download the audio file
