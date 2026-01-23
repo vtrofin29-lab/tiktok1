@@ -308,8 +308,17 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
         max_polls = 60  # Wait up to 60 seconds
         poll_interval = 1  # Poll every second
         
+        if log:
+            log(f"[GenAI Pro] Waiting for audio generation... (max {max_polls} seconds)")
+        
         for i in range(max_polls):
             time.sleep(poll_interval)
+            
+            # Show progress every 5 seconds or at start
+            if i == 0 or (i + 1) % 5 == 0:
+                progress_pct = int(((i + 1) / max_polls) * 100)
+                if log:
+                    log(f"[GenAI Pro] ⏳ Progress: {i + 1}/{max_polls} seconds ({progress_pct}%) - Waiting for audio...")
             
             status_response = requests.get(
                 'https://genaipro.vn/api/v1/labs/task',
@@ -338,6 +347,9 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                 status = our_task.get('status', '').lower()
                 
                 if status == 'completed':
+                    if log:
+                        log(f"[GenAI Pro] ✓ Audio generation complete! ({i + 1} seconds)")
+                    
                     audio_url = our_task.get('output_url') or our_task.get('audio_url')
                     
                     if not audio_url:
@@ -347,7 +359,7 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                     
                     # Step 3: Download the audio file
                     if log:
-                        log(f"[GenAI Pro] Downloading audio from: {audio_url}")
+                        log(f"[GenAI Pro] 📥 Downloading audio file...")
                     
                     audio_response = requests.get(audio_url, timeout=30)
                     
@@ -365,11 +377,12 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                 
                 elif status == 'failed' or status == 'error':
                     if log:
-                        log(f"[GenAI Pro ERROR] Task failed: {our_task}")
+                        log(f"[GenAI Pro ERROR] ❌ Task failed: {our_task}")
                     return None
                 
-                elif i % 5 == 0 and log:
-                    log(f"[GenAI Pro] Waiting for task completion... ({status})")
+                # Show status periodically for non-completed tasks
+                elif i % 10 == 0 and log and i > 0:
+                    log(f"[GenAI Pro] Status: {status} (still processing...)")
         
         if log:
             log(f"[GenAI Pro ERROR] Task timeout after {max_polls} seconds")
@@ -407,12 +420,22 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     # Try GenAI Pro first if API key is available
     if api_key:
         if log:
-            log("[TTS] Using GenAI Pro for high-quality voice synthesis...")
+            log("="*60)
+            log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
+            log(f"[TTS] Using GenAI Pro API for high-quality synthesis")
+            log(f"[TTS] Text length: {len(text)} characters")
+            log(f"[TTS] Language: {language}")
+            log("="*60)
         result = generate_tts_with_genaipro(text, language, output_path, api_key, log)
         if result:
+            if log:
+                log("="*60)
+                log("[TTS] ✅ AI VOICE GENERATION COMPLETE!")
+                log(f"[TTS] Audio file ready: {result}")
+                log("="*60)
             return result
         if log:
-            log("[TTS] GenAI Pro failed, falling back to gTTS...")
+            log("[TTS] ⚠️  GenAI Pro failed, falling back to gTTS...")
     
     # Fallback to gTTS
     if not TTS_AVAILABLE:
@@ -1870,7 +1893,14 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         # Optional: Replace voice with AI-generated TTS or generate from scratch
         if USE_AI_VOICE_REPLACEMENT:
             if caption_segments:
-                log("[AI VOICE] Generating AI voice replacement from transcribed captions...")
+                log("")
+                log("━"*60)
+                log("[AI VOICE] 🎵 GENERATING AI VOICE REPLACEMENT")
+                log(f"[AI VOICE] Segments to synthesize: {len(caption_segments)}")
+                log(f"[AI VOICE] Target language: {TTS_LANGUAGE}")
+                log("━"*60)
+                log("")
+                
                 tts_audio_path = replace_voice_with_tts(
                     caption_segments, 
                     language=TTS_LANGUAGE,
@@ -1879,20 +1909,27 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 if tts_audio_path:
                     # Replace voice_clip with TTS audio
                     try:
+                        log("")
+                        log("[AI VOICE] 🔊 Integrating AI voice into video...")
                         tts_clip = AudioFileClip(tts_audio_path).volumex(VOICE_GAIN)
                         # Adjust TTS clip duration to match video
                         if abs(tts_clip.duration - target_duration) > 0.5:
-                            log(f"[AI VOICE] Adjusting TTS duration from {tts_clip.duration:.2f}s to {target_duration:.2f}s")
+                            log(f"[AI VOICE] ⚙️  Adjusting TTS duration from {tts_clip.duration:.2f}s to {target_duration:.2f}s")
                             # Speed up or slow down TTS to match target duration
                             speed_factor = tts_clip.duration / target_duration
                             tts_clip = tts_clip.fx(speedx, speed_factor)
                         # Replace voice in mixed audio with TTS
-                        log(f"[AI VOICE] Adding TTS audio to video (duration: {tts_clip.duration:.2f}s)")
+                        log(f"[AI VOICE] 🎬 Compositing audio tracks (TTS + Music)...")
                         mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(target_duration)
                         synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
-                        log("[AI VOICE] ✓ Voice replaced successfully with AI-generated audio")
+                        log("")
+                        log("━"*60)
+                        log("[AI VOICE] ✅ VOICE REPLACEMENT SUCCESSFUL!")
+                        log("[AI VOICE] AI-generated audio has been added to the video")
+                        log("━"*60)
+                        log("")
                     except Exception as e:
-                        log(f"[AI VOICE ERROR] Failed to use TTS audio: {e}")
+                        log(f"[AI VOICE ERROR] ❌ Failed to use TTS audio: {e}")
             else:
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
                 log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
