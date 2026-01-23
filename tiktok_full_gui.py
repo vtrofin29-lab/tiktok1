@@ -368,21 +368,27 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             
             if our_task:
                 status = our_task.get('status', '').lower()
+                result = our_task.get('result', '')
                 
                 # DEBUG: Log full task object every 20 seconds to see what fields are available
                 if i % 10 == 0 and log:
                     log(f"[GenAI Pro DEBUG] Current task object: {our_task}")
                 
-                # Check for various completion status values
-                if status in ['completed', 'done', 'success', 'succeeded', 'finished']:
+                # Check if task is complete - either by status OR by result field being populated
+                # GenAI Pro fills the 'result' field with audio URL when done
+                is_complete = (status in ['completed', 'done', 'success', 'succeeded', 'finished'] or 
+                              (result and result != ''))
+                
+                if is_complete:
                     elapsed_seconds = (i + 1) * poll_interval
                     elapsed_mins = elapsed_seconds // 60
                     elapsed_secs = elapsed_seconds % 60
                     if log:
                         log(f"[GenAI Pro] ✓ Audio generation complete! (took {elapsed_mins}m {elapsed_secs}s)")
                     
-                    # Try multiple possible field names for the audio URL
-                    audio_url = (our_task.get('output_url') or 
+                    # Try multiple possible field names for the audio URL, including 'result'
+                    audio_url = (our_task.get('result') or
+                                our_task.get('output_url') or 
                                 our_task.get('audio_url') or 
                                 our_task.get('result_url') or
                                 our_task.get('file_url') or
