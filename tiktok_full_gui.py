@@ -458,7 +458,7 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
 
 def remove_silence_from_audio(audio_path, output_path=None, log=None):
     """
-    Remove ALL silences from audio file to create continuous speech.
+    Remove long silences from audio file while keeping natural speech pauses.
     
     Args:
         audio_path: Path to input audio file
@@ -487,12 +487,12 @@ def remove_silence_from_audio(audio_path, output_path=None, log=None):
         if log:
             log(f"[SILENCE] Original duration: {len(audio)/1000.0:.2f}s")
         
-        # Detect non-silent chunks (very aggressive - remove ALL silence)
-        # min_silence_len: minimum length of silence to consider (100ms = very short)
+        # Detect non-silent chunks (moderate - keep natural pauses, remove only long gaps)
+        # min_silence_len: minimum length of silence to consider (800ms = remove long pauses only)
         # silence_thresh: volume threshold for silence (audio.dBFS - 16 = fairly sensitive)
         nonsilent_ranges = detect_nonsilent(
             audio,
-            min_silence_len=100,  # 100ms - very short silence detection
+            min_silence_len=800,  # 800ms - only remove longer pauses, keep natural speech rhythm
             silence_thresh=audio.dBFS - 16  # Detect even quiet parts as non-silent
         )
         
