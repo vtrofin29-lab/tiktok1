@@ -487,12 +487,12 @@ def remove_silence_from_audio(audio_path, output_path=None, log=None):
         if log:
             log(f"[SILENCE] Original duration: {len(audio)/1000.0:.2f}s")
         
-        # Detect non-silent chunks (moderate - keep natural pauses, remove only long gaps)
-        # min_silence_len: minimum length of silence to consider (800ms = remove long pauses only)
+        # Detect non-silent chunks (balanced - remove gaps >300ms for better pacing)
+        # min_silence_len: minimum length of silence to consider (300ms = short pauses between words)
         # silence_thresh: volume threshold for silence (audio.dBFS - 16 = fairly sensitive)
         nonsilent_ranges = detect_nonsilent(
             audio,
-            min_silence_len=800,  # 800ms - only remove longer pauses, keep natural speech rhythm
+            min_silence_len=300,  # 300ms - remove gaps longer than 300ms between words
             silence_thresh=audio.dBFS - 16  # Detect even quiet parts as non-silent
         )
         
@@ -1627,14 +1627,44 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             except Exception:
                 pass
             
-            # split text into groups of tpl words
-            words = text.split()
-            groups = [" ".join(words[i:i+tpl]) for i in range(0, len(words), tpl)]
-            raw_group_dur = seg_dur / max(1, len(groups))
+            # Use word-level timestamps if available (CapCut-style auto-captions)
+            # Check if segment has word-level timing data
+            word_data = segment.get("words", [])
             
-            for i, grp_text in enumerate(groups):
-                g_start = start_t + i * raw_group_dur
-                g_dur = max(MIN_GROUP_DURATION, raw_group_dur)
+            if word_data:
+                # Word-by-word captions like CapCut
+                groups_with_timing = []
+                for word_idx in range(0, len(word_data), tpl):
+                    # Group up to tpl words together
+                    word_group = word_data[word_idx:word_idx + tpl]
+                    grp_text = " ".join([w.get("word", "").strip() for w in word_group])
+                    # Use the start time of the first word and end time of the last word
+                    grp_start = word_group[0].get("start", start_t)
+                    grp_end = word_group[-1].get("end", end_t)
+                    groups_with_timing.append({
+                        "text": grp_text,
+                        "start": grp_start,
+                        "end": grp_end
+                    })
+            else:
+                # Fallback: split text evenly if no word timestamps
+                words = text.split()
+                groups_with_timing = []
+                raw_group_dur = seg_dur / max(1, len(words) // tpl + (1 if len(words) % tpl else 0))
+                for i in range(0, len(words), tpl):
+                    grp_text = " ".join(words[i:i+tpl])
+                    g_start = start_t + (i // tpl) * raw_group_dur
+                    g_end = min(end_t, g_start + raw_group_dur)
+                    groups_with_timing.append({
+                        "text": grp_text,
+                        "start": g_start,
+                        "end": g_end
+                    })
+            
+            for i, group_data in enumerate(groups_with_timing):
+                grp_text = group_data["text"]
+                g_start = group_data["start"]
+                g_dur = max(MIN_GROUP_DURATION, group_data["end"] - group_data["start"])
                 if g_start >= end_t:
                     g_start = max(start_t, end_t - g_dur)
                 
