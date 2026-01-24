@@ -2121,12 +2121,23 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
             
-            # Transcribe captions with translation
-            caption_segments = transcribe_captions(
-                voice_path, 
-                log, 
-                translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
-            )
+            # Transcribe captions ONLY if AI voice replacement is NOT enabled
+            # If AI voice is enabled, we'll transcribe from the TTS audio later
+            if not USE_AI_VOICE_REPLACEMENT:
+                log("[CAPTION] Transcribing captions from original voice...")
+                caption_segments = transcribe_captions(
+                    voice_path, 
+                    log, 
+                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                )
+            else:
+                log("[CAPTION] Deferring caption generation until after TTS voice is created...")
+                # Generate initial caption segments from original voice for TTS generation
+                caption_segments = transcribe_captions(
+                    voice_path, 
+                    log, 
+                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                )
         else:
             # No voice file - use video duration as target
             log("[NO VOICE] Using video duration as target")
@@ -2167,6 +2178,19 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     try:
                         log("")
                         log("[AI VOICE] 🔊 Integrating AI voice into video...")
+                        
+                        # STEP 0: Re-transcribe captions from the generated TTS audio
+                        # This ensures captions match exactly what the AI voice is saying
+                        log("")
+                        log("[AI VOICE] 📝 RE-TRANSCRIBING CAPTIONS FROM GENERATED TTS AUDIO")
+                        log("[AI VOICE] This ensures captions match the AI voice perfectly...")
+                        caption_segments = transcribe_captions(
+                            tts_audio_path, 
+                            log, 
+                            translate_to=None  # Already translated during TTS generation
+                        )
+                        log(f"[AI VOICE] ✓ Generated {len(caption_segments)} caption segments from TTS audio")
+                        log("")
                         
                         # STEP 1: Remove all silences from TTS audio for continuous speech
                         log("[AI VOICE] 📝 Removing silences from TTS audio for continuous playback...")
