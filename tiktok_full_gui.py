@@ -456,7 +456,7 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             log(f"[GenAI Pro ERROR] Exception: {e}")
         return None
 
-def remove_silence_from_audio(audio_path, output_path=None, log=None):
+def remove_silence_from_audio(audio_path, output_path=None, log=None, min_silence_ms=300):
     """
     Remove long silences from audio file while keeping natural speech pauses.
     
@@ -464,6 +464,7 @@ def remove_silence_from_audio(audio_path, output_path=None, log=None):
         audio_path: Path to input audio file
         output_path: Path to save processed audio (temp file if None)
         log: Optional logging function
+        min_silence_ms: Minimum silence length in milliseconds to remove (default: 300ms)
     
     Returns:
         Tuple of (output_path, silence_map) where silence_map is a list of
@@ -487,12 +488,12 @@ def remove_silence_from_audio(audio_path, output_path=None, log=None):
         if log:
             log(f"[SILENCE] Original duration: {len(audio)/1000.0:.2f}s")
         
-        # Detect non-silent chunks (balanced - remove gaps >300ms for better pacing)
-        # min_silence_len: minimum length of silence to consider (300ms = short pauses between words)
+        # Detect non-silent chunks (balanced - remove gaps based on user setting)
+        # min_silence_len: minimum length of silence to consider (default 300ms)
         # silence_thresh: volume threshold for silence (audio.dBFS - 16 = fairly sensitive)
         nonsilent_ranges = detect_nonsilent(
             audio,
-            min_silence_len=300,  # 300ms - remove gaps longer than 300ms between words
+            min_silence_len=min_silence_ms,  # User-configurable threshold
             silence_thresh=audio.dBFS - 16  # Detect even quiet parts as non-silent
         )
         
@@ -2194,10 +2195,13 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         
                         # STEP 1: Remove all silences from TTS audio for continuous speech
                         log("[AI VOICE] 📝 Removing silences from TTS audio for continuous playback...")
+                        silence_threshold_ms = self.silence_threshold_var.get()
+                        log(f"[AI VOICE] Using silence threshold: {silence_threshold_ms}ms")
                         compressed_tts_path, silence_map = remove_silence_from_audio(
                             tts_audio_path, 
                             output_path=None,
-                            log=log
+                            log=log,
+                            min_silence_ms=silence_threshold_ms
                         )
                         
                         # STEP 2: Update caption timestamps to match compressed audio
@@ -2645,6 +2649,24 @@ class App:
         row += 1
         
         ttk.Button(left_frame, text="Save Custom Voice", command=self.on_save_custom_voice).grid(row=row, column=1, sticky="w", padx=(6,0))
+        row += 1
+        
+        # Silence Removal Threshold Section
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+        
+        ttk.Label(left_frame, text="Silence Threshold (ms):").grid(row=row, column=0, sticky="e")
+        self.silence_threshold_var = tk.IntVar(value=300)
+        silence_threshold_spinbox = ttk.Spinbox(
+            left_frame, 
+            from_=100, 
+            to=2000, 
+            increment=50,
+            textvariable=self.silence_threshold_var,
+            width=10
+        )
+        silence_threshold_spinbox.grid(row=row, column=1, sticky="w", padx=(6,0))
+        ttk.Label(left_frame, text="(Gaps to remove from AI voice)").grid(row=row, column=2, sticky="w", padx=(3,0))
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
