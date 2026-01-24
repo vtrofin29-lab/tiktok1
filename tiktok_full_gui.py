@@ -2156,6 +2156,19 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                             )
                             log("[AI VOICE] ✓ Captions synchronized with continuous voice")
                         
+                        # STEP 2.5: Extend last caption to cover full video duration
+                        # This ensures captions display throughout the entire video
+                        compressed_tts_clip = AudioFileClip(compressed_tts_path)
+                        tts_final_duration = compressed_tts_clip.duration
+                        compressed_tts_clip.close()
+                        
+                        if caption_segments:
+                            last_caption_end = caption_segments[-1].get('end', 0)
+                            if last_caption_end < tts_final_duration:
+                                # Extend last caption to match video/audio duration
+                                caption_segments[-1]['end'] = tts_final_duration
+                                log(f"[AI VOICE] Extended last caption from {last_caption_end:.2f}s to {tts_final_duration:.2f}s (full video duration)")
+                        
                         # Load the silence-removed TTS audio
                         tts_clip = AudioFileClip(compressed_tts_path).volumex(VOICE_GAIN)
                         
