@@ -456,6 +456,168 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             log(f"[GenAI Pro ERROR] Exception: {e}")
         return None
 
+def remove_silence_from_audio(audio_path, output_path=None, log=None):
+    """
+    Remove ALL silences from audio file to create continuous speech.
+    
+    Args:
+        audio_path: Path to input audio file
+        output_path: Path to save processed audio (temp file if None)
+        log: Optional logging function
+    
+    Returns:
+        Tuple of (output_path, silence_map) where silence_map is a list of
+        (original_start, original_end, new_start, new_end) for each kept segment
+    """
+    try:
+        from pydub import AudioSegment
+        from pydub.silence import detect_nonsilent
+    except ImportError:
+        if log:
+            log("[SILENCE] pydub not available - skipping silence removal")
+        return audio_path, []
+    
+    try:
+        if log:
+            log(f"[SILENCE] Loading audio: {audio_path}")
+        
+        # Load audio
+        audio = AudioSegment.from_file(audio_path)
+        
+        if log:
+            log(f"[SILENCE] Original duration: {len(audio)/1000.0:.2f}s")
+        
+        # Detect non-silent chunks (very aggressive - remove ALL silence)
+        # min_silence_len: minimum length of silence to consider (100ms = very short)
+        # silence_thresh: volume threshold for silence (audio.dBFS - 16 = fairly sensitive)
+        nonsilent_ranges = detect_nonsilent(
+            audio,
+            min_silence_len=100,  # 100ms - very short silence detection
+            silence_thresh=audio.dBFS - 16  # Detect even quiet parts as non-silent
+        )
+        
+        if not nonsilent_ranges:
+            if log:
+                log("[SILENCE] No non-silent segments found!")
+            return audio_path, []
+        
+        if log:
+            log(f"[SILENCE] Found {len(nonsilent_ranges)} non-silent segments")
+        
+        # Concatenate all non-silent segments
+        output_audio = AudioSegment.empty()
+        silence_map = []
+        new_position = 0
+        
+        for i, (start_ms, end_ms) in enumerate(nonsilent_ranges):
+            segment = audio[start_ms:end_ms]
+            output_audio += segment
+            
+            # Track mapping: original time -> new time
+            segment_duration = end_ms - start_ms
+            silence_map.append((
+                start_ms / 1000.0,  # original start in seconds
+                end_ms / 1000.0,    # original end in seconds
+                new_position / 1000.0,  # new start in seconds
+                (new_position + segment_duration) / 1000.0  # new end in seconds
+            ))
+            new_position += segment_duration
+        
+        if log:
+            orig_dur = len(audio) / 1000.0
+            new_dur = len(output_audio) / 1000.0
+            removed = orig_dur - new_dur
+            log(f"[SILENCE] New duration: {new_dur:.2f}s (removed {removed:.2f}s of silence)")
+        
+        # Save processed audio
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='audio_no_silence_')
+            os.close(fd)
+        
+        output_audio.export(output_path, format="mp3")
+        
+        if log:
+            log(f"[SILENCE] ✅ Saved silence-removed audio: {output_path}")
+        
+        return output_path, silence_map
+        
+    except Exception as e:
+        if log:
+            log(f"[SILENCE ERROR] Failed to remove silence: {e}")
+        return audio_path, []
+
+def map_timestamps_after_silence_removal(segments, silence_map, log=None):
+    """
+    Re-map caption segment timestamps after silence removal.
+    
+    Args:
+        segments: List of caption segments with 'start' and 'end' times
+        silence_map: List of (orig_start, orig_end, new_start, new_end) from remove_silence_from_audio
+        log: Optional logging function
+    
+    Returns:
+        List of segments with updated 'start' and 'end' times
+    """
+    if not silence_map:
+        if log:
+            log("[TIMESTAMP] No silence map - returning original segments")
+        return segments
+    
+    if log:
+        log(f"[TIMESTAMP] Re-mapping {len(segments)} segments to compressed audio timeline")
+    
+    def map_time(original_time):
+        """Map an original timestamp to the new timeline after silence removal."""
+        # Find which segment contains this timestamp
+        for orig_start, orig_end, new_start, new_end in silence_map:
+            if orig_start <= original_time <= orig_end:
+                # Time falls within this segment
+                # Calculate relative position within the segment
+                relative_pos = (original_time - orig_start) / (orig_end - orig_start) if (orig_end - orig_start) > 0 else 0
+                # Map to new timeline
+                return new_start + relative_pos * (new_end - new_start)
+        
+        # If time doesn't fall in any segment, find the closest segment
+        # (this handles edge cases and slight timestamp mismatches)
+        closest_segment = min(silence_map, key=lambda seg: min(abs(seg[0] - original_time), abs(seg[1] - original_time)))
+        orig_start, orig_end, new_start, new_end = closest_segment
+        
+        if original_time < orig_start:
+            return new_start  # Before first segment
+        else:
+            return new_end  # After last segment
+    
+    # Create new segments with mapped timestamps
+    mapped_segments = []
+    for seg in segments:
+        new_seg = seg.copy()
+        orig_start = seg.get('start', 0)
+        orig_end = seg.get('end', 0)
+        
+        new_seg['start'] = map_time(orig_start)
+        new_seg['end'] = map_time(orig_end)
+        
+        # If segment has word-level timestamps, map those too
+        if 'words' in seg and seg['words']:
+            new_words = []
+            for word in seg['words']:
+                new_word = word.copy()
+                if 'start' in word:
+                    new_word['start'] = map_time(word['start'])
+                if 'end' in word:
+                    new_word['end'] = map_time(word['end'])
+                new_words.append(new_word)
+            new_seg['words'] = new_words
+        
+        mapped_segments.append(new_seg)
+    
+    if log:
+        orig_total = segments[-1]['end'] if segments else 0
+        new_total = mapped_segments[-1]['end'] if mapped_segments else 0
+        log(f"[TIMESTAMP] Timeline compressed from {orig_total:.2f}s to {new_total:.2f}s")
+    
+    return mapped_segments
+
 def generate_tts_audio(text, language='en', output_path=None, log=None):
     """
     Generate Text-to-Speech audio from text using GenAI Pro (if API key available) or gTTS (fallback).
@@ -1073,8 +1235,9 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
         except Exception as e_small:
             log_fn(f"[whisper] Failed to load 'small' model as well: {e_small}")
             raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_small
-    log_fn("[whisper] Transcribing audio (this may take a while)...")
-    result = model.transcribe(voice_path)
+    log_fn("[whisper] Transcribing audio with word-level timestamps (this may take a while)...")
+    # Enable word_timestamps for precise caption synchronization
+    result = model.transcribe(voice_path, word_timestamps=True)
     log_fn("[whisper] Transcription finished.")
     segments = result["segments"]
     
@@ -1974,11 +2137,31 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     try:
                         log("")
                         log("[AI VOICE] 🔊 Integrating AI voice into video...")
-                        tts_clip = AudioFileClip(tts_audio_path).volumex(VOICE_GAIN)
+                        
+                        # STEP 1: Remove all silences from TTS audio for continuous speech
+                        log("[AI VOICE] 📝 Removing silences from TTS audio for continuous playback...")
+                        compressed_tts_path, silence_map = remove_silence_from_audio(
+                            tts_audio_path, 
+                            output_path=None,
+                            log=log
+                        )
+                        
+                        # STEP 2: Update caption timestamps to match compressed audio
+                        if silence_map:
+                            log("[AI VOICE] 🕒 Re-synchronizing caption timestamps to compressed audio...")
+                            caption_segments = map_timestamps_after_silence_removal(
+                                caption_segments,
+                                silence_map,
+                                log=log
+                            )
+                            log("[AI VOICE] ✓ Captions synchronized with continuous voice")
+                        
+                        # Load the silence-removed TTS audio
+                        tts_clip = AudioFileClip(compressed_tts_path).volumex(VOICE_GAIN)
                         
                         # Use TTS duration as the new target - DO NOT speed up/slow down the voice
                         tts_duration = tts_clip.duration
-                        log(f"[AI VOICE] TTS voice duration: {tts_duration:.2f}s")
+                        log(f"[AI VOICE] TTS voice duration (after silence removal): {tts_duration:.2f}s")
                         log(f"[AI VOICE] Keeping TTS voice at original speed (natural sound)")
                         
                         # Adjust music to match TTS duration
@@ -1996,11 +2179,15 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         log("")
                         log("━"*60)
                         log("[AI VOICE] ✅ VOICE REPLACEMENT SUCCESSFUL!")
+                        log("[AI VOICE] Voice plays continuously (silences removed)")
+                        log("[AI VOICE] Captions synchronized with word timestamps")
                         log("[AI VOICE] Video speed adjusted to match AI voice (voice kept at natural speed)")
                         log("━"*60)
                         log("")
                     except Exception as e:
                         log(f"[AI VOICE ERROR] ❌ Failed to use TTS audio: {e}")
+                        import traceback
+                        log(traceback.format_exc())
             else:
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
                 log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
