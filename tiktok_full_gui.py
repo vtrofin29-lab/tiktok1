@@ -2338,6 +2338,10 @@ class App:
         self.tts_voice_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
         self.tts_voice_combo.bind('<<ComboboxSelected>>', self.on_voice_selected)
         ttk.Label(left_frame, text="(select voice)").grid(row=row, column=2, sticky='w', padx=(4,0))
+        
+        # Load custom voices on startup
+        self.update_voice_dropdown(TTS_LANGUAGE)
+        
         row += 1
 
         # API Key input for premium TTS services
@@ -2361,6 +2365,32 @@ class App:
         
         # Button to save API key
         ttk.Button(left_frame, text="Save API Key", command=self.on_save_api_key).grid(row=row, column=1, sticky="w", padx=(6,0))
+        row += 1
+        
+        # Custom Voice Management Section
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+        
+        ttk.Label(left_frame, text="Custom Voice ID:").grid(row=row, column=0, sticky="e")
+        self.custom_voice_id_var = tk.StringVar()
+        self.custom_voice_id_entry = ttk.Entry(left_frame, textvariable=self.custom_voice_id_var, width=30)
+        self.custom_voice_id_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        row += 1
+        
+        ttk.Label(left_frame, text="Voice Name:").grid(row=row, column=0, sticky="e")
+        self.custom_voice_name_var = tk.StringVar()
+        self.custom_voice_name_entry = ttk.Entry(left_frame, textvariable=self.custom_voice_name_var, width=30)
+        self.custom_voice_name_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        row += 1
+        
+        ttk.Label(left_frame, text="Language Category:").grid(row=row, column=0, sticky="e")
+        self.custom_voice_lang_var = tk.StringVar(value="en")
+        lang_options = ["en", "es", "fr", "de", "it", "pt", "ro", "ru", "zh", "ja", "ko", "ar"]
+        self.custom_voice_lang_combo = ttk.Combobox(left_frame, textvariable=self.custom_voice_lang_var, values=lang_options, state="readonly", width=10)
+        self.custom_voice_lang_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
+        row += 1
+        
+        ttk.Button(left_frame, text="Save Custom Voice", command=self.on_save_custom_voice).grid(row=row, column=1, sticky="w", padx=(6,0))
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
@@ -2838,13 +2868,54 @@ class App:
             lang = self.tts_language_var.get()
             globals()['TTS_LANGUAGE'] = lang
             
-            # Update voice dropdown based on selected language
-            voices = self.voice_options.get(lang, ['Auto (Default)'])
+            # Update voice dropdown based on selected language (including custom voices)
+            self.update_voice_dropdown(lang)
+        except Exception as e:
+            print(f"TTS language selection error: {e}")
+    
+    def load_custom_voices(self):
+        """Load custom voices from config file"""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    return config.get("custom_voices", {})
+        except Exception as e:
+            print(f"Error loading custom voices: {e}")
+        return {}
+    
+    def update_voice_dropdown(self, language=None):
+        """Update voice dropdown with default and custom voices for the selected language"""
+        try:
+            if language is None:
+                language = self.tts_language_var.get()
+            
+            # Start with default voices
+            voices = self.voice_options.get(language, ['Auto (Default)']).copy()
+            
+            # Load and add custom voices
+            custom_voices = self.load_custom_voices()
+            if language in custom_voices:
+                for voice_data in custom_voices[language]:
+                    if isinstance(voice_data, dict):
+                        voice_name = voice_data.get("name")
+                        voice_id = voice_data.get("id")
+                        if voice_name and voice_id:
+                            # Add to voices list if not already there
+                            if voice_name not in voices:
+                                voices.append(voice_name)
+                            # Update the voice ID map
+                            self.voice_id_map[voice_name] = voice_id
+            
+            # Update the combobox
             self.tts_voice_combo['values'] = voices
             self.tts_voice_var.set('Auto (Default)')  # Reset to auto
             globals()['TTS_VOICE_ID'] = 'auto'
+            
+            print(f"[Voice Dropdown] Updated for {language}: {len(voices)} voices available")
         except Exception as e:
-            print(f"TTS language selection error: {e}")
+            print(f"Update voice dropdown error: {e}")
     
     def on_voice_selected(self, event=None):
         """Callback when a specific voice is selected"""
@@ -2876,6 +2947,77 @@ class App:
                 messagebox.showerror("Save Error", f"Failed to save API key: {e}")
         except Exception as e:
             print(f"Save API key error: {e}")
+    
+    def on_save_custom_voice(self):
+        """Callback when Save Custom Voice button is clicked"""
+        try:
+            voice_id = self.custom_voice_id_var.get().strip()
+            voice_name = self.custom_voice_name_var.get().strip()
+            language = self.custom_voice_lang_var.get()
+            
+            if not voice_id:
+                messagebox.showwarning("No Voice ID", "Please enter a voice ID.")
+                return
+            
+            if not voice_name:
+                messagebox.showwarning("No Voice Name", "Please enter a name for this voice.")
+                return
+            
+            # Load existing config
+            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+            config = {}
+            try:
+                if os.path.exists(config_path):
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+            except Exception:
+                pass
+            
+            # Add custom voices section if not exists
+            if "custom_voices" not in config:
+                config["custom_voices"] = {}
+            
+            # Add the custom voice
+            if language not in config["custom_voices"]:
+                config["custom_voices"][language] = []
+            
+            # Check if voice name already exists for this language
+            existing_voices = config["custom_voices"][language]
+            voice_exists = any(v["name"] == voice_name for v in existing_voices if isinstance(v, dict))
+            
+            if voice_exists:
+                response = messagebox.askyesno(
+                    "Voice Exists", 
+                    f"A voice named '{voice_name}' already exists for {language}. Do you want to update it?"
+                )
+                if not response:
+                    return
+                # Remove the old one
+                config["custom_voices"][language] = [v for v in existing_voices if not (isinstance(v, dict) and v.get("name") == voice_name)]
+            
+            # Add the new voice
+            config["custom_voices"][language].append({
+                "name": voice_name,
+                "id": voice_id
+            })
+            
+            # Save config
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=2)
+                messagebox.showinfo("Custom Voice Saved", f"Voice '{voice_name}' has been saved for {language.upper()}!")
+                
+                # Clear the input fields
+                self.custom_voice_id_var.set("")
+                self.custom_voice_name_var.set("")
+                
+                # Reload voices in the dropdown
+                self.update_voice_dropdown()
+                
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save custom voice: {e}")
+        except Exception as e:
+            print(f"Save custom voice error: {e}")
     
     def on_4k_toggle(self):
         """Toggle between HD (1080x1920) and 4K (2160x3840) resolution"""
