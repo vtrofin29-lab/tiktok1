@@ -1975,20 +1975,28 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         log("")
                         log("[AI VOICE] 🔊 Integrating AI voice into video...")
                         tts_clip = AudioFileClip(tts_audio_path).volumex(VOICE_GAIN)
-                        # Adjust TTS clip duration to match video
-                        if abs(tts_clip.duration - target_duration) > 0.5:
-                            log(f"[AI VOICE] ⚙️  Adjusting TTS duration from {tts_clip.duration:.2f}s to {target_duration:.2f}s")
-                            # Speed up or slow down TTS to match target duration
-                            speed_factor = tts_clip.duration / target_duration
-                            tts_clip = tts_clip.fx(speedx, speed_factor)
-                        # Replace voice in mixed audio with TTS
-                        log(f"[AI VOICE] 🎬 Compositing audio tracks (TTS + Music)...")
-                        mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(target_duration)
-                        synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
+                        
+                        # Use TTS duration as the new target - DO NOT speed up/slow down the voice
+                        tts_duration = tts_clip.duration
+                        log(f"[AI VOICE] TTS voice duration: {tts_duration:.2f}s")
+                        log(f"[AI VOICE] Keeping TTS voice at original speed (natural sound)")
+                        
+                        # Adjust music to match TTS duration
+                        log(f"[AI VOICE] Adjusting music to match TTS duration...")
+                        music_matched = make_music_match_duration(music_clip, tts_duration, log)
+                        
+                        # Composite ONLY TTS + music (no original voice to avoid duplicate audio)
+                        log(f"[AI VOICE] 🎬 Compositing audio tracks (TTS + Music only)...")
+                        mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(tts_duration)
+                        
+                        # Adjust VIDEO speed to match TTS duration (slow down or speed up video)
+                        log(f"[AI VOICE] 🎬 Adjusting video speed to sync with TTS voice...")
+                        synced_video = adjust_video_speed(fg_clip, tts_duration, log, max_change=2.0)
+                        
                         log("")
                         log("━"*60)
                         log("[AI VOICE] ✅ VOICE REPLACEMENT SUCCESSFUL!")
-                        log("[AI VOICE] AI-generated audio has been added to the video")
+                        log("[AI VOICE] Video speed adjusted to match AI voice (voice kept at natural speed)")
                         log("━"*60)
                         log("")
                     except Exception as e:
