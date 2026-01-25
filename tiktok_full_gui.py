@@ -2183,20 +2183,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         log("")
                         log("[AI VOICE] 🔊 Integrating AI voice into video...")
                         
-                        # STEP 0: Re-transcribe captions from the generated TTS audio
-                        # This ensures captions match exactly what the AI voice is saying
+                        # STEP 1: Remove all silences from TTS audio FIRST for continuous speech
                         log("")
-                        log("[AI VOICE] 📝 RE-TRANSCRIBING CAPTIONS FROM GENERATED TTS AUDIO")
-                        log("[AI VOICE] This ensures captions match the AI voice perfectly...")
-                        caption_segments = transcribe_captions(
-                            tts_audio_path, 
-                            log, 
-                            translate_to=None  # Already translated during TTS generation
-                        )
-                        log(f"[AI VOICE] ✓ Generated {len(caption_segments)} caption segments from TTS audio")
-                        log("")
-                        
-                        # STEP 1: Remove all silences from TTS audio for continuous speech
                         log("[AI VOICE] 📝 Removing silences from TTS audio for continuous playback...")
                         silence_threshold_ms = self.silence_threshold_var.get()
                         log(f"[AI VOICE] Using silence threshold: {silence_threshold_ms}ms")
@@ -2207,16 +2195,21 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                             min_silence_ms=silence_threshold_ms
                         )
                         
-                        # STEP 2: Update caption timestamps to match compressed audio
-                        if silence_map:
-                            log("[AI VOICE] 🕒 Re-synchronizing caption timestamps to compressed audio...")
-                            caption_segments = map_timestamps_after_silence_removal(
-                                caption_segments,
-                                silence_map,
-                                log=log
-                            )
-                            
-                            log(f"[AI VOICE] ✓ Captions synchronized with continuous voice (+ {CAPTION_DELAY_MS}ms offset)")
+                        # STEP 2: Re-transcribe captions from the SILENCE-REMOVED audio
+                        # This ensures captions match exactly with the final compressed audio
+                        # CapCut-style: transcribe from final audio for perfect sync
+                        log("")
+                        log("[AI VOICE] 📝 TRANSCRIBING CAPTIONS FROM SILENCE-REMOVED TTS AUDIO")
+                        log("[AI VOICE] CapCut-style: Captions generated from final compressed audio...")
+                        caption_segments = transcribe_captions(
+                            compressed_tts_path,  # Use compressed audio instead of original
+                            log, 
+                            translate_to=None  # Already translated during TTS generation
+                        )
+                        log(f"[AI VOICE] ✓ Generated {len(caption_segments)} caption segments with perfect timing")
+                        log("")
+                        
+                        # No need for timestamp remapping - captions already match the compressed audio!
                         
                         # STEP 2.5: Extend last caption to cover full video duration
                         # This ensures captions display throughout the entire video
