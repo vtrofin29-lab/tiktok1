@@ -1172,7 +1172,7 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
                         if log: log(f"[whisper-cleanup] failed to remove {full}: {e}")
     return removed
 
-def _load_whisper_model_with_retries(model_name="medium", tries=3, log=None):
+def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
     last_exc = None
     for attempt in range(1, tries + 1):
         try:
@@ -1227,15 +1227,15 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     
     # Use Whisper for transcription
     try:
-        model = _load_whisper_model_with_retries("medium", tries=3, log=log_fn)
-    except Exception as e_medium:
-        log_fn(f"[whisper] Failed to load 'medium' model after retries: {e_medium}")
-        log_fn("[whisper] Falling back to 'small' model (faster, less accurate).")
+        model = _load_whisper_model_with_retries("large-v3", tries=3, log=log_fn)
+    except Exception as e_large:
+        log_fn(f"[whisper] Failed to load 'large-v3' model after retries: {e_large}")
+        log_fn("[whisper] Falling back to 'medium' model (faster, less accurate).")
         try:
-            model = _load_whisper_model_with_retries("small", tries=2, log=log_fn)
-        except Exception as e_small:
-            log_fn(f"[whisper] Failed to load 'small' model as well: {e_small}")
-            raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_small
+            model = _load_whisper_model_with_retries("medium", tries=2, log=log_fn)
+        except Exception as e_medium:
+            log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
+            raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
     log_fn("[whisper] Transcribing audio with word-level timestamps (this may take a while)...")
     # Enable word_timestamps for precise caption synchronization
     result = model.transcribe(voice_path, word_timestamps=True)
