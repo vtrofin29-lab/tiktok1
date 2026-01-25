@@ -1540,7 +1540,7 @@ def _make_ffmpeg_params_for_codec(codec):
             "-movflags", "+faststart"
         ]
 
-def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR):
+def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
     """
     Compose final video with blurred background and caption overlays.
     
@@ -1600,10 +1600,13 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     caption_clips = []
     MIN_GROUP_DURATION = 0.25
     
+    # Use the words_per_caption parameter (from UI control)
+    tpl = words_per_caption
+    
     try:
-        tpl = TEMPLATE_WORDS.get(CAPTION_TEMPLATE, 2)
+        log(f"[COMPOSE] Using {tpl} word(s) per caption (CapCut-style)")
     except Exception:
-        tpl = 2
+        pass
     
     for seg_idx, segment in enumerate(caption_segments):
         try:
@@ -1906,7 +1909,7 @@ def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bott
     log(f"Crop done. Cropped size: {cropped_video.size}, duration: {cropped_video.duration:.2f}s")
     return cropped_video
 
-def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR):
+def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
     """Helper to temporarily override global CAPTION_FONT_PREFERRED for the duration of compose."""
     old = globals().get('CAPTION_FONT_PREFERRED')
     try:
@@ -1917,7 +1920,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption)
     finally:
         try:
             if preferred_font and old is not None:
@@ -1971,7 +1974,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -2263,7 +2266,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
                 log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
 
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log)
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, words_per_caption=words_per_caption)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
@@ -2337,7 +2340,8 @@ def queue_worker(jobs, q):
         process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"),
                            custom_top_ratio=job.get("custom_top_ratio"),
                            custom_bottom_ratio=job.get("custom_bottom_ratio"),
-                           mirror_video=job.get("mirror_video", False))
+                           mirror_video=job.get("mirror_video", False),
+                           words_per_caption=job.get("words_per_caption", 2))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -2667,6 +2671,21 @@ class App:
         )
         silence_threshold_spinbox.grid(row=row, column=1, sticky="w", padx=(6,0))
         ttk.Label(left_frame, text="(Gaps to remove from AI voice)").grid(row=row, column=2, sticky="w", padx=(3,0))
+        row += 1
+        
+        # Words per caption control (CapCut-style)
+        ttk.Label(left_frame, text="Words per caption:").grid(row=row, column=0, sticky="e")
+        self.words_per_caption_var = tk.IntVar(value=2)
+        words_per_caption_spinbox = ttk.Spinbox(
+            left_frame, 
+            from_=1, 
+            to=3, 
+            increment=1,
+            textvariable=self.words_per_caption_var,
+            width=10
+        )
+        words_per_caption_spinbox.grid(row=row, column=1, sticky="w", padx=(6,0))
+        ttk.Label(left_frame, text="(1=single word, 2-3=groups)").grid(row=row, column=2, sticky="w", padx=(3,0))
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
@@ -3886,7 +3905,8 @@ class App:
                 "font": pref_font,
                 "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
-                "mirror_video": self.mirror_video_var.get()
+                "mirror_video": self.mirror_video_var.get(),
+                "words_per_caption": self.words_per_caption_var.get()
             }
             self.jobs.append(job)
             display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'})"
@@ -3952,7 +3972,8 @@ class App:
             messagebox.showerror("Run error", str(e))
 
     def _run_single_thread(self, video, voice, music, output, top_ratio, bottom_ratio):
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio)
+        words_per_caption = self.words_per_caption_var.get()
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
