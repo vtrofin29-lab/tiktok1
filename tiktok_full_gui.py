@@ -2216,19 +2216,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                                 log=log
                             )
                             
-                            # Add slight delay to captions to ensure they don't appear before words are spoken
-                            # CapCut-style: captions should appear RIGHT when word starts, not early
-                            CAPTION_DELAY_MS = 50  # 50ms delay to prevent early appearance
-                            for seg in caption_segments:
-                                seg['start'] = max(0, seg['start'] + (CAPTION_DELAY_MS / 1000.0))
-                                seg['end'] = seg['end'] + (CAPTION_DELAY_MS / 1000.0)
-                                if 'words' in seg:
-                                    for word in seg['words']:
-                                        if 'start' in word:
-                                            word['start'] = max(0, word['start'] + (CAPTION_DELAY_MS / 1000.0))
-                                        if 'end' in word:
-                                            word['end'] = word['end'] + (CAPTION_DELAY_MS / 1000.0)
-                            
                             log(f"[AI VOICE] ✓ Captions synchronized with continuous voice (+ {CAPTION_DELAY_MS}ms offset)")
                         
                         # STEP 2.5: Extend last caption to cover full video duration
