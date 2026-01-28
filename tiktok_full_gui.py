@@ -1974,12 +1974,30 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = QueueWriter(q)
     temp_fg = None
+    
+    # Set defaults for effects if not provided
+    if blur_radius is None:
+        blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
+    if bg_scale_extra is None:
+        bg_scale_extra = globals().get('BG_SCALE_EXTRA', 1.08)
+    if dim_factor is None:
+        dim_factor = globals().get('DIM_FACTOR', 0.55)
+    
+    # Set 4K mode if requested
+    old_is_4k = globals().get('IS_4K_MODE', False)
+    if use_4k:
+        globals()['IS_4K_MODE'] = True
+        log("[RESOLUTION] Job set to 4K mode (2160x3840)")
+    else:
+        globals()['IS_4K_MODE'] = False
+        log("[RESOLUTION] Job set to HD mode (1080x1920)")
+    
     try:
         load_preferred_font_cached(preferred_font or CAPTION_FONT_PREFERRED, CAPTION_FONT_SIZE, log=log)
         if REQUIRE_FONT_BANGERS and (LOADED_FONT_PATH is None or ("bangers" not in str(LOADED_FONT_PATH).lower())):
@@ -2260,7 +2278,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
                 log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
 
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, words_per_caption=words_per_caption)
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
@@ -2323,6 +2341,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         sys.stderr = old_stderr
     except Exception:
         pass
+    
+    # Restore IS_4K_MODE
+    try:
+        globals()['IS_4K_MODE'] = old_is_4k
+    except Exception:
+        pass
 
 
 def queue_worker(jobs, q):
@@ -2335,7 +2359,11 @@ def queue_worker(jobs, q):
                            custom_top_ratio=job.get("custom_top_ratio"),
                            custom_bottom_ratio=job.get("custom_bottom_ratio"),
                            mirror_video=job.get("mirror_video", False),
-                           words_per_caption=job.get("words_per_caption", 2))
+                           words_per_caption=job.get("words_per_caption", 2),
+                           use_4k=job.get("use_4k", False),
+                           blur_radius=job.get("blur_radius"),
+                           bg_scale_extra=job.get("bg_scale_extra"),
+                           dim_factor=job.get("dim_factor"))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -3900,10 +3928,23 @@ class App:
                 "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "mirror_video": self.mirror_video_var.get(),
-                "words_per_caption": self.words_per_caption_var.get()
+                "words_per_caption": self.words_per_caption_var.get(),
+                "use_4k": self.use_4k_var.get(),
+                "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
+                "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
+                "dim_factor": globals().get('DIM_FACTOR', 0.55)
             }
             self.jobs.append(job)
-            display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'})"
+            # Show more complete job info in the display
+            info_parts = []
+            if job.get("use_4k"):
+                info_parts.append("4K")
+            if job.get("mirror_video"):
+                info_parts.append("Mirror")
+            if job.get("words_per_caption", 2) != 2:
+                info_parts.append(f"{job.get('words_per_caption')}w/cap")
+            info = " [" + ", ".join(info_parts) + "]" if info_parts else ""
+            display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'}){info}"
             self.job_listbox.insert('end', display)
         except Exception as e:
             messagebox.showerror("Error adding job", str(e))
@@ -3914,7 +3955,26 @@ class App:
             tag = ""
             if j.get("custom_top_ratio") is not None:
                 tag = f" (crop {int(j['custom_top_ratio']*100)}%/{int(j['custom_bottom_ratio']*100)}%)"
-            display = f"{i}. {os.path.basename(j['video'])} | {os.path.basename(j['voice'])} | {os.path.basename(j['music'])}{tag}"
+            
+            # Add more job info
+            info_parts = []
+            if j.get("use_4k"):
+                info_parts.append("4K")
+            if j.get("mirror_video"):
+                info_parts.append("Mirror")
+            if j.get("words_per_caption", 2) != 2:
+                info_parts.append(f"{j.get('words_per_caption')}w/cap")
+            
+            # Add effects info
+            blur = j.get("blur_radius", 25)
+            bg_scale = j.get("bg_scale_extra", 1.08)
+            dim = j.get("dim_factor", 0.55)
+            if blur != 25 or bg_scale != 1.08 or dim != 0.55:
+                info_parts.append(f"fx:blur={blur}/scale={bg_scale:.2f}/dim={dim:.2f}")
+            
+            info = " [" + ", ".join(info_parts) + "]" if info_parts else ""
+            
+            display = f"{i}. {os.path.basename(j['video'])} | {os.path.basename(j['voice'])} | {os.path.basename(j['music'])}{tag}{info}"
             self.job_listbox.insert(tk.END, display)
 
     def remove_job(self):
@@ -3950,10 +4010,15 @@ class App:
             job = {"video": video, "voice": voice, "music": music, "output": output, "font": pref_font,
                    "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                    "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
-                   "mirror_video": self.mirror_video_var.get()}
+                   "mirror_video": self.mirror_video_var.get(),
+                   "words_per_caption": self.words_per_caption_var.get(),
+                   "use_4k": self.use_4k_var.get(),
+                   "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
+                   "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
+                   "dim_factor": globals().get('DIM_FACTOR', 0.55)}
             q = self.q
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False)}, daemon=True)
+            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor")}, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')
