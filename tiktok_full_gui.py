@@ -2577,14 +2577,61 @@ class App:
         except Exception:
             pass
 
-        left_frame = ttk.Frame(pw, padding=8)
+        # Create a container frame for the left side with scrollbar
+        left_container = ttk.Frame(pw)
+        try:
+            left_container.configure(style='TFrame')
+            left_container.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        
+        # Create Canvas and Scrollbar for scrollable left panel
+        left_canvas = tk.Canvas(left_container, bg='#0b0b0b', highlightthickness=0)
+        left_scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=left_canvas.yview)
+        
+        # Create the actual frame that will contain all controls
+        left_frame = ttk.Frame(left_canvas, padding=8)
         try:
             left_frame.configure(style='TFrame')
             left_frame.config(bg='#0b0b0b')
         except Exception:
             pass
         left_frame.columnconfigure(1, weight=1)
-        pw.add(left_frame, weight=1)
+        
+        # Pack scrollbar and canvas
+        left_scrollbar.pack(side="right", fill="y")
+        left_canvas.pack(side="left", fill="both", expand=True)
+        
+        # Create window in canvas for the frame
+        canvas_frame = left_canvas.create_window((0, 0), window=left_frame, anchor="nw")
+        
+        # Configure canvas scrolling
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        
+        # Update scroll region when frame changes size
+        def configure_scroll_region(event=None):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+            # Also update the canvas window width to match canvas width
+            canvas_width = left_canvas.winfo_width()
+            left_canvas.itemconfig(canvas_frame, width=canvas_width)
+        
+        left_frame.bind("<Configure>", configure_scroll_region)
+        left_canvas.bind("<Configure>", configure_scroll_region)
+        
+        # Enable mousewheel scrolling
+        def on_mousewheel(event):
+            left_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def bind_mousewheel(event):
+            left_canvas.bind_all("<MouseWheel>", on_mousewheel)
+        
+        def unbind_mousewheel(event):
+            left_canvas.unbind_all("<MouseWheel>")
+        
+        left_canvas.bind('<Enter>', bind_mousewheel)
+        left_canvas.bind('<Leave>', unbind_mousewheel)
+        
+        pw.add(left_container, weight=1)
 
         right_outer = ttk.PanedWindow(pw, orient="vertical")
         pw.add(right_outer, weight=2)
@@ -3257,6 +3304,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3273,6 +3322,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3284,6 +3335,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3293,6 +3346,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3997,6 +4052,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4013,6 +4070,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4024,6 +4083,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4033,6 +4094,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4510,6 +4573,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4526,6 +4591,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4537,6 +4604,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4546,6 +4615,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4778,6 +4849,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4794,6 +4867,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4805,6 +4880,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4814,6 +4891,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
