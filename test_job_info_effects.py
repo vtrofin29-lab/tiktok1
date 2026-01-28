@@ -46,24 +46,29 @@ def test_job_info_display():
     
     import os
     
+    # Helper function to format job info (same as in main script)
+    def format_job_info(job):
+        """Format job information for display, showing all relevant settings."""
+        info_parts = []
+        if job.get("use_4k"):
+            info_parts.append("4K")
+        if job.get("mirror_video"):
+            info_parts.append("Mirror")
+        if job.get("words_per_caption", 2) != 2:
+            info_parts.append(f"{job.get('words_per_caption')} words/cap")
+        
+        # Add effects info if different from defaults
+        blur = job.get("blur_radius", 25)
+        bg_scale = job.get("bg_scale_extra", 1.08)
+        dim = job.get("dim_factor", 0.55)
+        if blur != 25 or bg_scale != 1.08 or dim != 0.55:
+            info_parts.append(f"effects:blur={blur}/scale={bg_scale:.2f}/dim={dim:.2f}")
+        
+        return " [" + ", ".join(info_parts) + "]" if info_parts else ""
+    
     for i, j in enumerate(test_jobs, start=1):
         # Simulate _refresh_job_listbox logic
-        info_parts = []
-        if j.get("use_4k"):
-            info_parts.append("4K")
-        if j.get("mirror_video"):
-            info_parts.append("Mirror")
-        if j.get("words_per_caption", 2) != 2:
-            info_parts.append(f"{j.get('words_per_caption')}w/cap")
-        
-        # Add effects info
-        blur = j.get("blur_radius", 25)
-        bg_scale = j.get("bg_scale_extra", 1.08)
-        dim = j.get("dim_factor", 0.55)
-        if blur != 25 or bg_scale != 1.08 or dim != 0.55:
-            info_parts.append(f"fx:blur={blur}/scale={bg_scale:.2f}/dim={dim:.2f}")
-        
-        info = " [" + ", ".join(info_parts) + "]" if info_parts else ""
+        info = format_job_info(j)
         
         display = f"{i}. {os.path.basename(j['video'])} | {os.path.basename(j['voice'])} | {os.path.basename(j['music'])}{info}"
         print(display)

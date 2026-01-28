@@ -1990,6 +1990,10 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         dim_factor = globals().get('DIM_FACTOR', 0.55)
     
     # Set 4K mode if requested
+    # NOTE: Using global state for IS_4K_MODE. This is safe because:
+    # 1. Jobs are processed sequentially (one at a time) via queue_worker
+    # 2. Single jobs via on_run_single run in separate threads but don't overlap
+    # 3. The old value is saved and restored in the finally block
     old_is_4k = globals().get('IS_4K_MODE', False)
     if use_4k:
         globals()['IS_4K_MODE'] = True
@@ -3901,6 +3905,25 @@ class App:
         path = filedialog.asksaveasfilename(title="Output file", defaultextension=".mp4", filetypes=[("MP4 file", "*.mp4")])
         if path: self.output_var.set(path)
 
+    def _format_job_info(self, job):
+        """Format job information for display, showing all relevant settings."""
+        info_parts = []
+        if job.get("use_4k"):
+            info_parts.append("4K")
+        if job.get("mirror_video"):
+            info_parts.append("Mirror")
+        if job.get("words_per_caption", 2) != 2:
+            info_parts.append(f"{job.get('words_per_caption')} words/cap")
+        
+        # Add effects info if different from defaults
+        blur = job.get("blur_radius", 25)
+        bg_scale = job.get("bg_scale_extra", 1.08)
+        dim = job.get("dim_factor", 0.55)
+        if blur != 25 or bg_scale != 1.08 or dim != 0.55:
+            info_parts.append(f"effects:blur={blur}/scale={bg_scale:.2f}/dim={dim:.2f}")
+        
+        return " [" + ", ".join(info_parts) + "]" if info_parts else ""
+
     def add_job(self):
         try:
             video = self.video_var.get().strip()
@@ -3935,15 +3958,8 @@ class App:
                 "dim_factor": globals().get('DIM_FACTOR', 0.55)
             }
             self.jobs.append(job)
-            # Show more complete job info in the display
-            info_parts = []
-            if job.get("use_4k"):
-                info_parts.append("4K")
-            if job.get("mirror_video"):
-                info_parts.append("Mirror")
-            if job.get("words_per_caption", 2) != 2:
-                info_parts.append(f"{job.get('words_per_caption')}w/cap")
-            info = " [" + ", ".join(info_parts) + "]" if info_parts else ""
+            # Show complete job info in the display using helper
+            info = self._format_job_info(job)
             display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'}){info}"
             self.job_listbox.insert('end', display)
         except Exception as e:
@@ -3956,23 +3972,8 @@ class App:
             if j.get("custom_top_ratio") is not None:
                 tag = f" (crop {int(j['custom_top_ratio']*100)}%/{int(j['custom_bottom_ratio']*100)}%)"
             
-            # Add more job info
-            info_parts = []
-            if j.get("use_4k"):
-                info_parts.append("4K")
-            if j.get("mirror_video"):
-                info_parts.append("Mirror")
-            if j.get("words_per_caption", 2) != 2:
-                info_parts.append(f"{j.get('words_per_caption')}w/cap")
-            
-            # Add effects info
-            blur = j.get("blur_radius", 25)
-            bg_scale = j.get("bg_scale_extra", 1.08)
-            dim = j.get("dim_factor", 0.55)
-            if blur != 25 or bg_scale != 1.08 or dim != 0.55:
-                info_parts.append(f"fx:blur={blur}/scale={bg_scale:.2f}/dim={dim:.2f}")
-            
-            info = " [" + ", ".join(info_parts) + "]" if info_parts else ""
+            # Use helper to format job info consistently
+            info = self._format_job_info(j)
             
             display = f"{i}. {os.path.basename(j['video'])} | {os.path.basename(j['voice'])} | {os.path.basename(j['music'])}{tag}{info}"
             self.job_listbox.insert(tk.END, display)
