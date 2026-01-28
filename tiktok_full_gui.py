@@ -1540,7 +1540,79 @@ def _make_ffmpeg_params_for_codec(codec):
             "-movflags", "+faststart"
         ]
 
-def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
+# ----------------- Video Effects (CapCut-style) -----------------
+def apply_video_effects(frame, effect_settings):
+    """
+    Apply CapCut-style effects to a video frame.
+    
+    Args:
+        frame: numpy array or PIL Image representing the frame
+        effect_settings: dict containing effect parameters
+        
+    Returns:
+        Modified frame as numpy array or PIL Image (same type as input)
+    """
+    import numpy as np
+    
+    # Convert to PIL if needed
+    is_numpy = isinstance(frame, np.ndarray)
+    if is_numpy:
+        img = Image.fromarray(frame.astype('uint8'), 'RGB')
+    else:
+        img = frame
+    
+    # Apply Sharpness/Resilience effect
+    if effect_settings.get('effect_sharpness', False):
+        intensity = effect_settings.get('effect_sharpness_intensity', 1.5)
+        sharpness = ImageEnhance.Sharpness(img)
+        img = sharpness.enhance(intensity)
+    
+    # Apply Saturation/Vibrance effect
+    if effect_settings.get('effect_saturation', False):
+        intensity = effect_settings.get('effect_saturation_intensity', 1.3)
+        color = ImageEnhance.Color(img)
+        img = color.enhance(intensity)
+    
+    # Apply Contrast/HDR effect
+    if effect_settings.get('effect_contrast', False):
+        intensity = effect_settings.get('effect_contrast_intensity', 1.2)
+        contrast = ImageEnhance.Contrast(img)
+        img = contrast.enhance(intensity)
+    
+    # Apply Brightness effect
+    if effect_settings.get('effect_brightness', False):
+        intensity = effect_settings.get('effect_brightness_intensity', 1.15)
+        brightness = ImageEnhance.Brightness(img)
+        img = brightness.enhance(intensity)
+    
+    # Apply Vintage/Film Grain effect
+    if effect_settings.get('effect_vintage', False):
+        grain_intensity = effect_settings.get('effect_vintage_intensity', 0.3)
+        # Add film grain noise
+        width, height = img.size
+        noise = np.random.normal(0, grain_intensity * 25, (height, width, 3))
+        img_array = np.array(img).astype('float')
+        img_array = np.clip(img_array + noise, 0, 255)
+        img = Image.fromarray(img_array.astype('uint8'), 'RGB')
+        
+        # Apply slight sepia tone for vintage look
+        sepia_r = np.array([[0.393 + 0.607 * (1 - grain_intensity), 0.769 - 0.769 * (1 - grain_intensity), 0.189 - 0.189 * (1 - grain_intensity)]])
+        sepia_g = np.array([[0.349 - 0.349 * (1 - grain_intensity), 0.686 + 0.314 * (1 - grain_intensity), 0.168 - 0.168 * (1 - grain_intensity)]])
+        sepia_b = np.array([[0.272 - 0.272 * (1 - grain_intensity), 0.534 - 0.534 * (1 - grain_intensity), 0.131 + 0.869 * (1 - grain_intensity)]])
+        
+        img_array = np.array(img)
+        r = np.dot(img_array, sepia_r.T)
+        g = np.dot(img_array, sepia_g.T)
+        b = np.dot(img_array, sepia_b.T)
+        sepia_img = np.dstack([r, g, b])
+        img = Image.fromarray(np.clip(sepia_img, 0, 255).astype('uint8'), 'RGB')
+    
+    # Convert back to numpy if needed
+    if is_numpy:
+        return np.array(img)
+    return img
+
+def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None):
     """
     Compose final video with blurred background and caption overlays.
     
@@ -1590,6 +1662,30 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     fg_scale = max(1.0, min_scale_to_fit) * 1.03
     fg_scale = min(fg_scale, 1.06)
     fg = video_clip.resize(fg_scale).set_position(("center", "center")).set_duration(video_clip.duration)
+    
+    # Apply video effects (CapCut-style) if enabled
+    if effect_settings and any([
+        effect_settings.get('effect_sharpness', False),
+        effect_settings.get('effect_saturation', False),
+        effect_settings.get('effect_contrast', False),
+        effect_settings.get('effect_brightness', False),
+        effect_settings.get('effect_vintage', False)
+    ]):
+        try:
+            log(f"[EFFECTS] Applying CapCut-style effects to video...")
+            active_effects = []
+            if effect_settings.get('effect_sharpness'): active_effects.append('Resilience')
+            if effect_settings.get('effect_saturation'): active_effects.append('Vibrance')
+            if effect_settings.get('effect_contrast'): active_effects.append('HDR')
+            if effect_settings.get('effect_brightness'): active_effects.append('Brightness')
+            if effect_settings.get('effect_vintage'): active_effects.append('Vintage')
+            log(f"[EFFECTS] Active effects: {', '.join(active_effects)}")
+            
+            # Apply effects to each frame
+            fg = fg.fl_image(lambda frame: apply_video_effects(frame, effect_settings))
+            log(f"[EFFECTS] ✓ Effects applied successfully")
+        except Exception as e:
+            log(f"[EFFECTS] Warning: Could not apply effects: {e}")
     
     try:
         log(f"[compose] Foreground scaled: {fg_scale:.3f}x")
@@ -1909,7 +2005,7 @@ def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bott
     log(f"Crop done. Cropped size: {cropped_video.size}, duration: {cropped_video.duration:.2f}s")
     return cropped_video
 
-def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
+def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None):
     """Helper to temporarily override global CAPTION_FONT_PREFERRED for the duration of compose."""
     old = globals().get('CAPTION_FONT_PREFERRED')
     try:
@@ -1920,7 +2016,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings)
     finally:
         try:
             if preferred_font and old is not None:
@@ -1974,7 +2070,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -2282,7 +2378,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
                 log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
 
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption)
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
@@ -2359,6 +2455,19 @@ def queue_worker(jobs, q):
     log(f"[QUEUE] Starting queue with {len(jobs)} job(s).")
     for i, job in enumerate(jobs, start=1):
         log(f"\n===== START JOB {i}/{len(jobs)} =====")
+        # Extract effect settings from job
+        effect_settings = {
+            'effect_sharpness': job.get("effect_sharpness", False),
+            'effect_sharpness_intensity': job.get("effect_sharpness_intensity", 1.5),
+            'effect_saturation': job.get("effect_saturation", False),
+            'effect_saturation_intensity': job.get("effect_saturation_intensity", 1.3),
+            'effect_contrast': job.get("effect_contrast", False),
+            'effect_contrast_intensity': job.get("effect_contrast_intensity", 1.2),
+            'effect_brightness': job.get("effect_brightness", False),
+            'effect_brightness_intensity': job.get("effect_brightness_intensity", 1.15),
+            'effect_vintage': job.get("effect_vintage", False),
+            'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
+        }
         process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"),
                            custom_top_ratio=job.get("custom_top_ratio"),
                            custom_bottom_ratio=job.get("custom_bottom_ratio"),
@@ -2367,7 +2476,8 @@ def queue_worker(jobs, q):
                            use_4k=job.get("use_4k", False),
                            blur_radius=job.get("blur_radius"),
                            bg_scale_extra=job.get("bg_scale_extra"),
-                           dim_factor=job.get("dim_factor"))
+                           dim_factor=job.get("dim_factor"),
+                           effect_settings=effect_settings)
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -2712,6 +2822,93 @@ class App:
         )
         words_per_caption_spinbox.grid(row=row, column=1, sticky="w", padx=(6,0))
         ttk.Label(left_frame, text="(1=single word, 2-3=groups)").grid(row=row, column=2, sticky="w", padx=(3,0))
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+
+        # --- Video Effects (CapCut-style) ---
+        ttk.Label(left_frame, text="Video Effects", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        # Sharpness/Resilience effect
+        self.effect_sharpness_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Resilience (Sharpness)", variable=self.effect_sharpness_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="💎").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_sharpness_intensity_var = tk.DoubleVar(value=1.5)
+        sharpness_scale = tk.Scale(left_frame, from_=0.5, to=3.0, resolution=0.1, orient='horizontal', 
+                                   length=120, showvalue=0, variable=self.effect_sharpness_intensity_var)
+        sharpness_scale.grid(row=row, column=1, padx=(6,0))
+        self.sharpness_label = ttk.Label(left_frame, text=f"{self.effect_sharpness_intensity_var.get():.1f}x")
+        self.sharpness_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_sharpness_intensity_var.trace('w', lambda *args: self.sharpness_label.config(text=f"{self.effect_sharpness_intensity_var.get():.1f}x"))
+        row += 1
+
+        # Saturation boost
+        self.effect_saturation_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Vibrance (Saturation)", variable=self.effect_saturation_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="🌈").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_saturation_intensity_var = tk.DoubleVar(value=1.3)
+        saturation_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.1, orient='horizontal', 
+                                    length=120, showvalue=0, variable=self.effect_saturation_intensity_var)
+        saturation_scale.grid(row=row, column=1, padx=(6,0))
+        self.saturation_label = ttk.Label(left_frame, text=f"{self.effect_saturation_intensity_var.get():.1f}x")
+        self.saturation_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_saturation_intensity_var.trace('w', lambda *args: self.saturation_label.config(text=f"{self.effect_saturation_intensity_var.get():.1f}x"))
+        row += 1
+
+        # Contrast enhancement
+        self.effect_contrast_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="HDR (Contrast)", variable=self.effect_contrast_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="⚡").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_contrast_intensity_var = tk.DoubleVar(value=1.2)
+        contrast_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.1, orient='horizontal', 
+                                 length=120, showvalue=0, variable=self.effect_contrast_intensity_var)
+        contrast_scale.grid(row=row, column=1, padx=(6,0))
+        self.contrast_label = ttk.Label(left_frame, text=f"{self.effect_contrast_intensity_var.get():.1f}x")
+        self.contrast_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_contrast_intensity_var.trace('w', lambda *args: self.contrast_label.config(text=f"{self.effect_contrast_intensity_var.get():.1f}x"))
+        row += 1
+
+        # Brightness adjustment
+        self.effect_brightness_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Brightness Boost", variable=self.effect_brightness_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="☀️").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_brightness_intensity_var = tk.DoubleVar(value=1.15)
+        brightness_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.05, orient='horizontal', 
+                                    length=120, showvalue=0, variable=self.effect_brightness_intensity_var)
+        brightness_scale.grid(row=row, column=1, padx=(6,0))
+        self.brightness_label = ttk.Label(left_frame, text=f"{self.effect_brightness_intensity_var.get():.2f}x")
+        self.brightness_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_brightness_intensity_var.trace('w', lambda *args: self.brightness_label.config(text=f"{self.effect_brightness_intensity_var.get():.2f}x"))
+        row += 1
+
+        # Film grain / Vintage
+        self.effect_vintage_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Vintage (Film Grain)", variable=self.effect_vintage_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="📽️").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Grain:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_vintage_intensity_var = tk.DoubleVar(value=0.3)
+        vintage_scale = tk.Scale(left_frame, from_=0.1, to=1.0, resolution=0.05, orient='horizontal', 
+                                length=120, showvalue=0, variable=self.effect_vintage_intensity_var)
+        vintage_scale.grid(row=row, column=1, padx=(6,0))
+        self.vintage_label = ttk.Label(left_frame, text=f"{self.effect_vintage_intensity_var.get():.2f}")
+        self.vintage_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_vintage_intensity_var.trace('w', lambda *args: self.vintage_label.config(text=f"{self.effect_vintage_intensity_var.get():.2f}"))
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
@@ -3948,6 +4145,21 @@ class App:
         if blur != 25 or bg_scale != 1.08 or dim != 0.55:
             info_parts.append(f"effects:blur={blur}/scale={bg_scale:.2f}/dim={dim:.2f}")
         
+        # Video effects (CapCut-style)
+        effects_active = []
+        if job.get("effect_sharpness"):
+            effects_active.append("Resilience")
+        if job.get("effect_saturation"):
+            effects_active.append("Vibrance")
+        if job.get("effect_contrast"):
+            effects_active.append("HDR")
+        if job.get("effect_brightness"):
+            effects_active.append("Brightness")
+        if job.get("effect_vintage"):
+            effects_active.append("Vintage")
+        if effects_active:
+            info_parts.append(f"fx:{','.join(effects_active)}")
+        
         return " [" + ", ".join(info_parts) + "]" if info_parts else ""
 
     def add_job(self):
@@ -3990,7 +4202,18 @@ class App:
                 # Font and border settings
                 "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
                 "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
-                "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3)
+                "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3),
+                # Video effects (CapCut-style)
+                "effect_sharpness": self.effect_sharpness_var.get(),
+                "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
+                "effect_saturation": self.effect_saturation_var.get(),
+                "effect_saturation_intensity": self.effect_saturation_intensity_var.get(),
+                "effect_contrast": self.effect_contrast_var.get(),
+                "effect_contrast_intensity": self.effect_contrast_intensity_var.get(),
+                "effect_brightness": self.effect_brightness_var.get(),
+                "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
+                "effect_vintage": self.effect_vintage_var.get(),
+                "effect_vintage_intensity": self.effect_vintage_intensity_var.get()
             }
             self.jobs.append(job)
             # Show complete job info in the display using helper
@@ -4069,6 +4292,23 @@ class App:
             if hasattr(self, 'target_language_var'):
                 self.target_language_var.set(job.get("target_language", "none"))
             self.silence_threshold_var.set(job.get("silence_threshold_ms", 300))
+            
+            # Load video effects (CapCut-style)
+            if hasattr(self, 'effect_sharpness_var'):
+                self.effect_sharpness_var.set(job.get("effect_sharpness", False))
+                self.effect_sharpness_intensity_var.set(job.get("effect_sharpness_intensity", 1.5))
+            if hasattr(self, 'effect_saturation_var'):
+                self.effect_saturation_var.set(job.get("effect_saturation", False))
+                self.effect_saturation_intensity_var.set(job.get("effect_saturation_intensity", 1.3))
+            if hasattr(self, 'effect_contrast_var'):
+                self.effect_contrast_var.set(job.get("effect_contrast", False))
+                self.effect_contrast_intensity_var.set(job.get("effect_contrast_intensity", 1.2))
+            if hasattr(self, 'effect_brightness_var'):
+                self.effect_brightness_var.set(job.get("effect_brightness", False))
+                self.effect_brightness_intensity_var.set(job.get("effect_brightness_intensity", 1.15))
+            if hasattr(self, 'effect_vintage_var'):
+                self.effect_vintage_var.set(job.get("effect_vintage", False))
+                self.effect_vintage_intensity_var.set(job.get("effect_vintage_intensity", 0.3))
             
             # Load font and border settings
             text_color = job.get("caption_text_color", (255, 255, 255, 255))
@@ -4169,10 +4409,34 @@ class App:
                    # Font and border settings
                    "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
                    "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
-                   "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3)}
+                   "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3),
+                   # Video effects (CapCut-style)
+                   "effect_sharpness": self.effect_sharpness_var.get(),
+                   "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
+                   "effect_saturation": self.effect_saturation_var.get(),
+                   "effect_saturation_intensity": self.effect_saturation_intensity_var.get(),
+                   "effect_contrast": self.effect_contrast_var.get(),
+                   "effect_contrast_intensity": self.effect_contrast_intensity_var.get(),
+                   "effect_brightness": self.effect_brightness_var.get(),
+                   "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
+                   "effect_vintage": self.effect_vintage_var.get(),
+                   "effect_vintage_intensity": self.effect_vintage_intensity_var.get()}
             q = self.q
+            # Extract effect settings
+            effect_settings = {
+                'effect_sharpness': job.get("effect_sharpness", False),
+                'effect_sharpness_intensity': job.get("effect_sharpness_intensity", 1.5),
+                'effect_saturation': job.get("effect_saturation", False),
+                'effect_saturation_intensity': job.get("effect_saturation_intensity", 1.3),
+                'effect_contrast': job.get("effect_contrast", False),
+                'effect_contrast_intensity': job.get("effect_contrast_intensity", 1.2),
+                'effect_brightness': job.get("effect_brightness", False),
+                'effect_brightness_intensity': job.get("effect_brightness_intensity", 1.15),
+                'effect_vintage': job.get("effect_vintage", False),
+                'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
+            }
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor")}, daemon=True)
+            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings}, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')
