@@ -110,6 +110,628 @@ from moviepy.audio.fx.all import audio_fadeout
 
 import whisper
 
+# ----------------- TRANSLATION & AI VOICE MODULES -----------------
+try:
+    from googletrans import Translator
+    TRANSLATION_AVAILABLE = True
+except ImportError:
+    TRANSLATION_AVAILABLE = False
+    Translator = None
+
+try:
+    from gtts import gTTS
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+    gTTS = None
+
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    requests = None
+
+# ----------------- TRANSLATION FUNCTIONS -----------------
+def translate_text(text, target_language='en', log=None):
+    """
+    Translate text to target language using Google Translate API.
+    
+    Args:
+        text: Text to translate
+        target_language: Target language code (e.g., 'en', 'es', 'fr', 'ro')
+        log: Optional logging function
+    
+    Returns:
+        Translated text or original text if translation fails
+    """
+    if not TRANSLATION_AVAILABLE:
+        if log:
+            log("[TRANSLATE] googletrans not available - skipping translation")
+        return text
+    
+    if not text or not text.strip():
+        return text
+    
+    try:
+        translator = Translator()
+        result = translator.translate(text, dest=target_language)
+        if log:
+            log(f"[TRANSLATE] '{text[:50]}...' -> '{result.text[:50]}...' ({target_language})")
+        return result.text
+    except Exception as e:
+        if log:
+            log(f"[TRANSLATE ERROR] Failed to translate: {e}")
+        return text
+
+def translate_segments(segments, target_language='en', log=None):
+    """
+    Translate all caption segments to target language.
+    
+    Args:
+        segments: List of caption segments from Whisper
+        target_language: Target language code
+        log: Optional logging function
+    
+    Returns:
+        List of segments with translated text
+    """
+    if not TRANSLATION_AVAILABLE or target_language == 'none':
+        return segments
+    
+    if log:
+        log(f"[TRANSLATE] Translating {len(segments)} segments to {target_language}...")
+    
+    translated = []
+    for i, seg in enumerate(segments):
+        try:
+            original_text = seg.get("text", "")
+            translated_text = translate_text(original_text, target_language, log=None)
+            
+            # Create new segment with translated text
+            new_seg = seg.copy()
+            new_seg["text"] = translated_text
+            new_seg["original_text"] = original_text
+            translated.append(new_seg)
+        except Exception as e:
+            if log:
+                log(f"[TRANSLATE ERROR] Failed segment {i}: {e}")
+            translated.append(seg)
+    
+    if log:
+        log(f"[TRANSLATE] Translation complete!")
+    
+    return translated
+
+# ----------------- AI VOICE REPLACEMENT FUNCTIONS -----------------
+
+def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=None, log=None):
+    """
+    Generate Text-to-Speech audio using GenAI Pro API.
+    
+    Args:
+        text: Text to convert to speech
+        language: Language code for TTS
+        output_path: Path to save audio file (temp file if None)
+        api_key: GenAI Pro API key (JWT token)
+        log: Optional logging function
+    
+    Returns:
+        Path to generated audio file or None if failed
+    """
+    if not REQUESTS_AVAILABLE:
+        if log:
+            log("[GenAI Pro] requests library not available")
+        return None
+    
+    if not api_key:
+        if log:
+            log("[GenAI Pro] No API key provided")
+        return None
+    
+    if not text or not text.strip():
+        return None
+    
+    try:
+        import requests
+        import time
+        
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='genaipro_tts_')
+            os.close(fd)
+        
+        # Map language codes to voice IDs (you can expand this mapping)
+        # Check if a custom voice ID is specified, otherwise use language defaults
+        global TTS_VOICE_ID
+        if TTS_VOICE_ID and TTS_VOICE_ID != 'auto':
+            voice_id = TTS_VOICE_ID
+        else:
+            voice_map = {
+                'en': 'uju3wxzG5OhpWcoi3SMy',  # Default English voice
+                'es': 'uju3wxzG5OhpWcoi3SMy',  # Using same for now, can be customized
+                'fr': 'uju3wxzG5OhpWcoi3SMy',
+                'de': 'uju3wxzG5OhpWcoi3SMy',
+                'it': 'uju3wxzG5OhpWcoi3SMy',
+                'pt': 'uju3wxzG5OhpWcoi3SMy',
+                'ro': 'uju3wxzG5OhpWcoi3SMy',
+                'ru': 'uju3wxzG5OhpWcoi3SMy',
+                'zh': 'uju3wxzG5OhpWcoi3SMy',
+                'ja': 'uju3wxzG5OhpWcoi3SMy',
+                'ko': 'uju3wxzG5OhpWcoi3SMy',
+            }
+            voice_id = voice_map.get(language, 'uju3wxzG5OhpWcoi3SMy')
+        
+        # Step 1: Submit TTS task
+        if log:
+            log(f"[GenAI Pro] Submitting TTS task ({len(text)} chars)...")
+        
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+        
+        task_payload = {
+            'input': text,
+            'voice_id': voice_id,
+            'model_id': 'eleven_turbo_v2_5',  # Fast model
+            'speed': 1.0,
+            'style': 0.0,
+            'use_speaker_boost': False,
+            'similarity': 0.75,
+            'stability': 0.5
+        }
+        
+        response = requests.post(
+            'https://genaipro.vn/api/v1/labs/task',
+            headers=headers,
+            json=task_payload,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            if log:
+                log(f"[GenAI Pro ERROR] Task submission failed: {response.status_code} - {response.text}")
+            return None
+        
+        task_data = response.json()
+        # GenAI Pro might return 'task_id' or 'id' field
+        task_id = task_data.get('task_id') or task_data.get('id')
+        
+        if not task_id:
+            if log:
+                log(f"[GenAI Pro ERROR] No task_id in response: {task_data}")
+            return None
+        
+        if log:
+            log(f"[GenAI Pro] Task submitted with ID: {task_id}")
+            log(f"[GenAI Pro DEBUG] Full submission response: {task_data}")
+        
+        # Step 2: Poll for task completion - wait as long as needed for GenAI Pro
+        max_polls = 1800  # Wait up to 30 minutes (1800 iterations * 2 seconds = 3600 seconds = 60 minutes total)
+        poll_interval = 2  # Poll every 2 seconds to reduce API calls
+        
+        if log:
+            log(f"[GenAI Pro] Waiting for audio generation... (will wait as long as needed, max 60 minutes)")
+        
+        for i in range(max_polls):
+            time.sleep(poll_interval)
+            
+            elapsed_seconds = (i + 1) * poll_interval
+            # Show progress every 10 seconds or at start
+            if i == 0 or elapsed_seconds % 10 == 0:
+                elapsed_mins = elapsed_seconds // 60
+                elapsed_secs = elapsed_seconds % 60
+                if log:
+                    log(f"[GenAI Pro] ⏳ Waiting: {elapsed_mins}m {elapsed_secs}s elapsed - Still processing...")
+            
+            status_response = requests.get(
+                'https://genaipro.vn/api/v1/labs/task',
+                headers=headers,
+                timeout=10
+            )
+            
+            if status_response.status_code != 200:
+                if log:
+                    log(f"[GenAI Pro ERROR] Status check failed: {status_response.status_code}")
+                continue
+            
+            tasks = status_response.json()
+            
+            # Find our task in the list
+            our_task = None
+            if isinstance(tasks, list):
+                for task in tasks:
+                    # Check both 'task_id' and 'id' fields
+                    task_identifier = task.get('task_id') or task.get('id')
+                    if task_identifier == task_id:
+                        our_task = task
+                        break
+            elif isinstance(tasks, dict):
+                # Could be a single task response or a wrapper
+                task_identifier = tasks.get('task_id') or tasks.get('id')
+                if task_identifier == task_id:
+                    our_task = tasks
+                elif 'tasks' in tasks and isinstance(tasks['tasks'], list):
+                    # Response might have tasks in a 'tasks' field
+                    for task in tasks['tasks']:
+                        task_identifier = task.get('task_id') or task.get('id')
+                        if task_identifier == task_id:
+                            our_task = task
+                            break
+                elif 'data' in tasks and isinstance(tasks['data'], list):
+                    # Response might have tasks in a 'data' field
+                    for task in tasks['data']:
+                        task_identifier = task.get('task_id') or task.get('id')
+                        if task_identifier == task_id:
+                            our_task = task
+                            break
+            
+            if our_task:
+                status = our_task.get('status', '').lower()
+                result = our_task.get('result', '')
+                
+                # DEBUG: Log full task object every 20 seconds to see what fields are available
+                if i % 10 == 0 and log:
+                    log(f"[GenAI Pro DEBUG] Current task object: {our_task}")
+                
+                # Check if task is complete - either by status OR by result field being populated
+                # GenAI Pro fills the 'result' field with audio URL when done
+                is_complete = (status in ['completed', 'done', 'success', 'succeeded', 'finished'] or 
+                              (result and result != ''))
+                
+                if is_complete:
+                    elapsed_seconds = (i + 1) * poll_interval
+                    elapsed_mins = elapsed_seconds // 60
+                    elapsed_secs = elapsed_seconds % 60
+                    if log:
+                        log(f"[GenAI Pro] ✓ Audio generation complete! (took {elapsed_mins}m {elapsed_secs}s)")
+                        log(f"[GenAI Pro DEBUG] Complete task - All fields: {list(our_task.keys())}")
+                        log(f"[GenAI Pro DEBUG] Complete task - Full object: {our_task}")
+                    
+                    # Try multiple possible field names for the audio URL, including 'result'
+                    audio_url = (our_task.get('result') or
+                                our_task.get('output_url') or 
+                                our_task.get('audio_url') or 
+                                our_task.get('result_url') or
+                                our_task.get('file_url') or
+                                our_task.get('url'))
+                    
+                    if not audio_url:
+                        if log:
+                            log(f"[GenAI Pro ERROR] Task completed but no audio URL found")
+                            log(f"[GenAI Pro ERROR] status={status}, result={result}")
+                            log(f"[GenAI Pro ERROR] Checked fields: result, output_url, audio_url, result_url, file_url, url")
+                            log(f"[GenAI Pro ERROR] All available fields in task: {list(our_task.keys())}")
+                        return None
+                    
+                    # Step 3: Download the audio file
+                    if log:
+                        log(f"[GenAI Pro] 📥 Downloading audio file from: {audio_url}")
+                    
+                    audio_response = requests.get(audio_url, timeout=30)
+                    
+                    if audio_response.status_code == 200:
+                        with open(output_path, 'wb') as f:
+                            f.write(audio_response.content)
+                        
+                        if log:
+                            log(f"[GenAI Pro] ✅ TTS generated successfully: {output_path}")
+                        return output_path
+                    else:
+                        if log:
+                            log(f"[GenAI Pro ERROR] Failed to download audio: {audio_response.status_code}")
+                        return None
+                
+                elif status in ['failed', 'error', 'cancelled', 'canceled']:
+                    if log:
+                        log(f"[GenAI Pro ERROR] ❌ Task failed with status '{status}': {our_task}")
+                    return None
+                
+                # Show status periodically for non-completed tasks
+                elif i % 10 == 0 and log and i > 0:
+                    log(f"[GenAI Pro] Status: {status} (still processing...)")
+            else:
+                # Task not found in response - log for debugging
+                if i == 0 and log:
+                    log(f"[GenAI Pro DEBUG] Task {task_id} not found in initial status check.")
+                    log(f"[GenAI Pro DEBUG] Response type: {type(tasks)}")
+                    log(f"[GenAI Pro DEBUG] Full response: {tasks}")
+                elif i % 30 == 0 and log and i > 0:
+                    log(f"[GenAI Pro DEBUG] Still waiting... Task {task_id} not found in status response.")
+                    # Log response structure periodically
+                    if isinstance(tasks, list) and len(tasks) > 0:
+                        log(f"[GenAI Pro DEBUG] Sample task structure: {tasks[0]}")
+                    elif isinstance(tasks, dict):
+                        log(f"[GenAI Pro DEBUG] Response keys: {list(tasks.keys())}")
+        
+        # If we get here, the task didn't complete within the timeout
+        if log:
+            elapsed_total = max_polls * poll_interval
+            elapsed_mins = elapsed_total // 60
+            log(f"[GenAI Pro ERROR] ⏱️ Task timeout after {elapsed_mins} minutes. Task may still be processing on GenAI Pro.")
+        return None
+        
+    except Exception as e:
+        if log:
+            log(f"[GenAI Pro ERROR] Exception: {e}")
+        return None
+
+def remove_silence_from_audio(audio_path, output_path=None, log=None, min_silence_ms=300):
+    """
+    Remove long silences from audio file while keeping natural speech pauses.
+    
+    Args:
+        audio_path: Path to input audio file
+        output_path: Path to save processed audio (temp file if None)
+        log: Optional logging function
+        min_silence_ms: Minimum silence length in milliseconds to remove (default: 300ms)
+    
+    Returns:
+        Tuple of (output_path, silence_map) where silence_map is a list of
+        (original_start, original_end, new_start, new_end) for each kept segment
+    """
+    try:
+        from pydub import AudioSegment
+        from pydub.silence import detect_nonsilent
+    except ImportError:
+        if log:
+            log("[SILENCE] pydub not available - skipping silence removal")
+        return audio_path, []
+    
+    try:
+        if log:
+            log(f"[SILENCE] Loading audio: {audio_path}")
+        
+        # Load audio
+        audio = AudioSegment.from_file(audio_path)
+        
+        if log:
+            log(f"[SILENCE] Original duration: {len(audio)/1000.0:.2f}s")
+        
+        # Detect non-silent chunks (balanced - remove gaps based on user setting)
+        # min_silence_len: minimum length of silence to consider (default 300ms)
+        # silence_thresh: volume threshold for silence (audio.dBFS - 16 = fairly sensitive)
+        nonsilent_ranges = detect_nonsilent(
+            audio,
+            min_silence_len=min_silence_ms,  # User-configurable threshold
+            silence_thresh=audio.dBFS - 16  # Detect even quiet parts as non-silent
+        )
+        
+        if not nonsilent_ranges:
+            if log:
+                log("[SILENCE] No non-silent segments found!")
+            return audio_path, []
+        
+        if log:
+            log(f"[SILENCE] Found {len(nonsilent_ranges)} non-silent segments")
+        
+        # Concatenate all non-silent segments
+        output_audio = AudioSegment.empty()
+        silence_map = []
+        new_position = 0
+        
+        for i, (start_ms, end_ms) in enumerate(nonsilent_ranges):
+            segment = audio[start_ms:end_ms]
+            output_audio += segment
+            
+            # Track mapping: original time -> new time
+            segment_duration = end_ms - start_ms
+            silence_map.append((
+                start_ms / 1000.0,  # original start in seconds
+                end_ms / 1000.0,    # original end in seconds
+                new_position / 1000.0,  # new start in seconds
+                (new_position + segment_duration) / 1000.0  # new end in seconds
+            ))
+            new_position += segment_duration
+        
+        if log:
+            orig_dur = len(audio) / 1000.0
+            new_dur = len(output_audio) / 1000.0
+            removed = orig_dur - new_dur
+            log(f"[SILENCE] New duration: {new_dur:.2f}s (removed {removed:.2f}s of silence)")
+        
+        # Save processed audio
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='audio_no_silence_')
+            os.close(fd)
+        
+        output_audio.export(output_path, format="mp3")
+        
+        if log:
+            log(f"[SILENCE] ✅ Saved silence-removed audio: {output_path}")
+        
+        return output_path, silence_map
+        
+    except Exception as e:
+        if log:
+            log(f"[SILENCE ERROR] Failed to remove silence: {e}")
+        return audio_path, []
+
+def map_timestamps_after_silence_removal(segments, silence_map, log=None):
+    """
+    Re-map caption segment timestamps after silence removal.
+    
+    Args:
+        segments: List of caption segments with 'start' and 'end' times
+        silence_map: List of (orig_start, orig_end, new_start, new_end) from remove_silence_from_audio
+        log: Optional logging function
+    
+    Returns:
+        List of segments with updated 'start' and 'end' times
+    """
+    if not silence_map:
+        if log:
+            log("[TIMESTAMP] No silence map - returning original segments")
+        return segments
+    
+    if log:
+        log(f"[TIMESTAMP] Re-mapping {len(segments)} segments to compressed audio timeline")
+    
+    def map_time(original_time):
+        """Map an original timestamp to the new timeline after silence removal."""
+        # Find which segment contains this timestamp
+        for orig_start, orig_end, new_start, new_end in silence_map:
+            if orig_start <= original_time <= orig_end:
+                # Time falls within this segment
+                # Calculate relative position within the segment
+                relative_pos = (original_time - orig_start) / (orig_end - orig_start) if (orig_end - orig_start) > 0 else 0
+                # Map to new timeline
+                return new_start + relative_pos * (new_end - new_start)
+        
+        # If time doesn't fall in any segment, find the closest segment
+        # (this handles edge cases and slight timestamp mismatches)
+        closest_segment = min(silence_map, key=lambda seg: min(abs(seg[0] - original_time), abs(seg[1] - original_time)))
+        orig_start, orig_end, new_start, new_end = closest_segment
+        
+        if original_time < orig_start:
+            return new_start  # Before first segment
+        else:
+            return new_end  # After last segment
+    
+    # Create new segments with mapped timestamps
+    mapped_segments = []
+    for seg in segments:
+        new_seg = seg.copy()
+        orig_start = seg.get('start', 0)
+        orig_end = seg.get('end', 0)
+        
+        new_seg['start'] = map_time(orig_start)
+        new_seg['end'] = map_time(orig_end)
+        
+        # If segment has word-level timestamps, map those too
+        if 'words' in seg and seg['words']:
+            new_words = []
+            for word in seg['words']:
+                new_word = word.copy()
+                if 'start' in word:
+                    new_word['start'] = map_time(word['start'])
+                if 'end' in word:
+                    new_word['end'] = map_time(word['end'])
+                new_words.append(new_word)
+            new_seg['words'] = new_words
+        
+        mapped_segments.append(new_seg)
+    
+    if log:
+        orig_total = segments[-1]['end'] if segments else 0
+        new_total = mapped_segments[-1]['end'] if mapped_segments else 0
+        log(f"[TIMESTAMP] Timeline compressed from {orig_total:.2f}s to {new_total:.2f}s")
+    
+    return mapped_segments
+
+def generate_tts_audio(text, language='en', output_path=None, log=None):
+    """
+    Generate Text-to-Speech audio from text using GenAI Pro (if API key available) or gTTS (fallback).
+    
+    Args:
+        text: Text to convert to speech
+        language: Language code for TTS
+        output_path: Path to save audio file (temp file if None)
+        log: Optional logging function
+    
+    Returns:
+        Path to generated audio file or None if failed
+    """
+    # Try to load API key from config
+    api_key = None
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                api_key = config.get("api_key", "").strip()
+    except Exception:
+        pass
+    
+    # Try GenAI Pro first if API key is available
+    if api_key:
+        if log:
+            log("="*60)
+            log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
+            log(f"[TTS] Using GenAI Pro API for high-quality synthesis")
+            log(f"[TTS] Text length: {len(text)} characters")
+            log(f"[TTS] Language: {language}")
+            log("="*60)
+        result = generate_tts_with_genaipro(text, language, output_path, api_key, log)
+        if result:
+            if log:
+                log("="*60)
+                log("[TTS] ✅ AI VOICE GENERATION COMPLETE!")
+                log(f"[TTS] Audio file ready: {result}")
+                log("="*60)
+            return result
+        if log:
+            log("[TTS] ⚠️  GenAI Pro failed, falling back to gTTS...")
+    
+    # Fallback to gTTS
+    if not TTS_AVAILABLE:
+        if log:
+            log("[TTS] gTTS not available - skipping voice generation")
+        return None
+    
+    if not text or not text.strip():
+        return None
+    
+    try:
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='tts_')
+            os.close(fd)
+        
+        tts = gTTS(text=text, lang=language, slow=False)
+        tts.save(output_path)
+        
+        if log:
+            log(f"[TTS/gTTS] Generated audio: {output_path} (length: {len(text)} chars)")
+        
+        return output_path
+    except Exception as e:
+        if log:
+            log(f"[TTS ERROR] Failed to generate audio: {e}")
+        return None
+
+def replace_voice_with_tts(caption_segments, language='en', log=None):
+    """
+    Generate AI voice audio from caption segments.
+    
+    Args:
+        caption_segments: List of caption segments with translated text
+        language: Language code for TTS
+        log: Optional logging function
+    
+    Returns:
+        Path to generated audio file or None if failed
+    """
+    if not TTS_AVAILABLE:
+        if log:
+            log("[TTS] gTTS not available - cannot replace voice")
+        return None
+    
+    if log:
+        log(f"[TTS] Generating AI voice from {len(caption_segments)} segments...")
+    
+    try:
+        # NOTE: This implementation combines all segments into one continuous audio track.
+        # For better synchronization, a future enhancement would be to:
+        # 1. Generate TTS for each segment individually
+        # 2. Concatenate audio clips with proper timing based on segment start/end times
+        # 3. Add silence between segments to match original timing
+        # Current approach works well when video speed is adjusted to match audio duration.
+        
+        # Combine all segment texts
+        full_text = " ".join([seg.get("text", "") for seg in caption_segments])
+        
+        # Generate TTS audio
+        output_path = generate_tts_audio(full_text, language=language, log=log)
+        
+        if output_path and log:
+            log(f"[TTS] Voice replacement complete: {output_path}")
+        
+        return output_path
+    except Exception as e:
+        if log:
+            log(f"[TTS ERROR] Failed to replace voice: {e}")
+        return None
+
 # ----------------- SETTINGS (defaults) -----------------
 WIDTH = 1080
 HEIGHT = 1920
@@ -133,6 +755,20 @@ CAPTION_TEXT_COLOR = (255, 255, 255, 255)
 CAPTION_STROKE_COLOR = (0, 0, 0, 150)
 # Stroke width (pixels) for caption border
 CAPTION_STROKE_WIDTH = max(1, int(CAPTION_FONT_SIZE * 0.05))
+
+# Translation and AI Voice settings
+TRANSLATION_ENABLED = False
+TARGET_LANGUAGE = 'none'  # 'none', 'en', 'es', 'fr', 'ro', etc.
+USE_AI_VOICE_REPLACEMENT = False
+TTS_LANGUAGE = 'en'
+TTS_VOICE_ID = 'auto'  # 'auto' or specific voice ID
+# Premium TTS API keys (for better quality voices)
+# Supported: 'elevenlabs', 'openai', 'azure'
+TTS_ENGINE = 'gtts'  # Options: 'gtts' (free, basic), 'elevenlabs', 'openai', 'azure'
+ELEVENLABS_API_KEY = None
+OPENAI_API_KEY = None
+AZURE_SPEECH_KEY = None
+AZURE_SPEECH_REGION = None
 
 FPS = 24
 
@@ -536,7 +1172,7 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
                         if log: log(f"[whisper-cleanup] failed to remove {full}: {e}")
     return removed
 
-def _load_whisper_model_with_retries(model_name="medium", tries=3, log=None):
+def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
     last_exc = None
     for attempt in range(1, tries + 1):
         try:
@@ -570,27 +1206,48 @@ def _load_whisper_model_with_retries(model_name="medium", tries=3, log=None):
         raise last_exc
     raise RuntimeError(f"Could not load whisper model '{model_name}' for unknown reason.")
 
-def transcribe_captions(voice_path, log=None):
+def transcribe_captions(voice_path, log=None, translate_to=None):
+    """
+    Transcribe audio to text captions using Whisper, with optional translation.
+    
+    Args:
+        voice_path: Path to audio file
+        log: Optional logging function
+        translate_to: Target language code for translation (None or 'none' to skip)
+    
+    Returns:
+        List of caption segments
+    """
     def _default_log(s):
         try:
             print(s)
         except Exception:
             pass
     log_fn = _default_log if log is None else log
+    
+    # Use Whisper for transcription
     try:
-        model = _load_whisper_model_with_retries("medium", tries=3, log=log_fn)
-    except Exception as e_medium:
-        log_fn(f"[whisper] Failed to load 'medium' model after retries: {e_medium}")
-        log_fn("[whisper] Falling back to 'small' model (faster, less accurate).")
+        model = _load_whisper_model_with_retries("large-v3", tries=3, log=log_fn)
+    except Exception as e_large:
+        log_fn(f"[whisper] Failed to load 'large-v3' model after retries: {e_large}")
+        log_fn("[whisper] Falling back to 'medium' model (faster, less accurate).")
         try:
-            model = _load_whisper_model_with_retries("small", tries=2, log=log_fn)
-        except Exception as e_small:
-            log_fn(f"[whisper] Failed to load 'small' model as well: {e_small}")
-            raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_small
-    log_fn("[whisper] Transcribing audio (this may take a while)...")
-    result = model.transcribe(voice_path)
+            model = _load_whisper_model_with_retries("medium", tries=2, log=log_fn)
+        except Exception as e_medium:
+            log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
+            raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
+    log_fn("[whisper] Transcribing audio with word-level timestamps (this may take a while)...")
+    # Enable word_timestamps for precise caption synchronization
+    result = model.transcribe(voice_path, word_timestamps=True)
     log_fn("[whisper] Transcription finished.")
-    return result["segments"]
+    segments = result["segments"]
+    
+    # Apply translation if requested
+    if translate_to and translate_to != 'none' and TRANSLATION_ENABLED:
+        log_fn(f"[TRANSCRIBE] Translating to {translate_to}...")
+        segments = translate_segments(segments, target_language=translate_to, log=log_fn)
+    
+    return segments
 
 # ----------------- caption generation -----------------
 def generate_caption_image(text, preferred_font=None, log=None):
@@ -883,7 +1540,7 @@ def _make_ffmpeg_params_for_codec(codec):
             "-movflags", "+faststart"
         ]
 
-def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR):
+def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
     """
     Compose final video with blurred background and caption overlays.
     
@@ -943,10 +1600,13 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     caption_clips = []
     MIN_GROUP_DURATION = 0.25
     
+    # Use the words_per_caption parameter (from UI control)
+    tpl = words_per_caption
+    
     try:
-        tpl = TEMPLATE_WORDS.get(CAPTION_TEMPLATE, 2)
+        log(f"[COMPOSE] Using {tpl} word(s) per caption (CapCut-style)")
     except Exception:
-        tpl = 2
+        pass
     
     for seg_idx, segment in enumerate(caption_segments):
         try:
@@ -971,14 +1631,44 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             except Exception:
                 pass
             
-            # split text into groups of tpl words
-            words = text.split()
-            groups = [" ".join(words[i:i+tpl]) for i in range(0, len(words), tpl)]
-            raw_group_dur = seg_dur / max(1, len(groups))
+            # Use word-level timestamps if available (CapCut-style auto-captions)
+            # Check if segment has word-level timing data
+            word_data = segment.get("words", [])
             
-            for i, grp_text in enumerate(groups):
-                g_start = start_t + i * raw_group_dur
-                g_dur = max(MIN_GROUP_DURATION, raw_group_dur)
+            if word_data:
+                # Word-by-word captions like CapCut
+                groups_with_timing = []
+                for word_idx in range(0, len(word_data), tpl):
+                    # Group up to tpl words together
+                    word_group = word_data[word_idx:word_idx + tpl]
+                    grp_text = " ".join([w.get("word", "").strip() for w in word_group])
+                    # Use the start time of the first word and end time of the last word
+                    grp_start = word_group[0].get("start", start_t)
+                    grp_end = word_group[-1].get("end", end_t)
+                    groups_with_timing.append({
+                        "text": grp_text,
+                        "start": grp_start,
+                        "end": grp_end
+                    })
+            else:
+                # Fallback: split text evenly if no word timestamps
+                words = text.split()
+                groups_with_timing = []
+                raw_group_dur = seg_dur / max(1, len(words) // tpl + (1 if len(words) % tpl else 0))
+                for i in range(0, len(words), tpl):
+                    grp_text = " ".join(words[i:i+tpl])
+                    g_start = start_t + (i // tpl) * raw_group_dur
+                    g_end = min(end_t, g_start + raw_group_dur)
+                    groups_with_timing.append({
+                        "text": grp_text,
+                        "start": g_start,
+                        "end": g_end
+                    })
+            
+            for i, group_data in enumerate(groups_with_timing):
+                grp_text = group_data["text"]
+                g_start = group_data["start"]
+                g_dur = max(MIN_GROUP_DURATION, group_data["end"] - group_data["start"])
                 if g_start >= end_t:
                     g_start = max(start_t, end_t - g_dur)
                 
@@ -1219,7 +1909,7 @@ def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bott
     log(f"Crop done. Cropped size: {cropped_video.size}, duration: {cropped_video.duration:.2f}s")
     return cropped_video
 
-def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR):
+def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
     """Helper to temporarily override global CAPTION_FONT_PREFERRED for the duration of compose."""
     old = globals().get('CAPTION_FONT_PREFERRED')
     try:
@@ -1230,7 +1920,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption)
     finally:
         try:
             if preferred_font and old is not None:
@@ -1284,7 +1974,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -1301,9 +1991,35 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         if not os.path.exists(video_path):
             log(f"Error: VIDEO missing: {video_path}")
             return
-        if not os.path.exists(voice_path):
-            log(f"Error: VOICE missing: {voice_path}")
-            return
+        
+        # Voice is now optional - extract from video if not provided
+        voice_from_video = False
+        if not voice_path or not os.path.exists(voice_path):
+            log("[VOICE] No separate voice file provided - extracting audio from video...")
+            voice_from_video = True
+            # Extract audio from video to a temporary file
+            temp_voice_path = tempfile.mktemp(suffix='.mp3', prefix='extracted_voice_')
+            try:
+                video_clip_for_audio = VideoFileClip(video_path)
+                if video_clip_for_audio.audio is None:
+                    log("[VOICE ERROR] Video has no audio track!")
+                    if not USE_AI_VOICE_REPLACEMENT:
+                        log("[VOICE ERROR] Cannot proceed without voice audio or AI voice enabled.")
+                        return
+                    log("[VOICE] Will generate AI voice from text/captions only.")
+                    voice_path = None
+                else:
+                    video_clip_for_audio.audio.write_audiofile(temp_voice_path, logger=None)
+                    voice_path = temp_voice_path
+                    log(f"[VOICE] ✓ Extracted audio from video: {temp_voice_path}")
+                    video_clip_for_audio.close()
+            except Exception as e:
+                log(f"[VOICE ERROR] Failed to extract audio from video: {e}")
+                if not USE_AI_VOICE_REPLACEMENT:
+                    return
+                log("[VOICE] Will proceed with AI voice generation only.")
+                voice_path = None
+        
         if not os.path.exists(music_path):
             log(f"Error: MUSIC missing: {music_path}")
             return
@@ -1398,18 +2114,153 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             fg_clip = mirror_x(fg_clip)
             log("✓ Video mirrored successfully")
 
-        voice_clip = AudioFileClip(voice_path).volumex(VOICE_GAIN)
-        music_clip = AudioFileClip(music_path)
-        target_duration = voice_clip.duration
-        log(f"Voice duration (target): {target_duration:.2f}s")
-        music_matched = make_music_match_duration(music_clip, target_duration, log)
-        mixed_audio = CompositeAudioClip([music_matched, voice_clip.set_start(0)]).set_duration(target_duration)
+        # Handle audio based on whether we have a voice file
+        if voice_path and os.path.exists(voice_path):
+            voice_clip = AudioFileClip(voice_path).volumex(VOICE_GAIN)
+            music_clip = AudioFileClip(music_path)
+            target_duration = voice_clip.duration
+            log(f"Voice duration (target): {target_duration:.2f}s")
+            music_matched = make_music_match_duration(music_clip, target_duration, log)
+            mixed_audio = CompositeAudioClip([music_matched, voice_clip.set_start(0)]).set_duration(target_duration)
+            
+            synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
+            
+            # Transcribe captions ONLY if AI voice replacement is NOT enabled
+            # If AI voice is enabled, we'll transcribe from the TTS audio later
+            if not USE_AI_VOICE_REPLACEMENT:
+                log("[CAPTION] Transcribing captions from original voice...")
+                caption_segments = transcribe_captions(
+                    voice_path, 
+                    log, 
+                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                )
+            else:
+                log("[CAPTION] Deferring caption generation until after TTS voice is created...")
+                # Generate initial caption segments from original voice for TTS generation
+                caption_segments = transcribe_captions(
+                    voice_path, 
+                    log, 
+                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                )
+        else:
+            # No voice file - use video duration as target
+            log("[NO VOICE] Using video duration as target")
+            target_duration = fg_clip.duration
+            music_clip = AudioFileClip(music_path)
+            music_matched = make_music_match_duration(music_clip, target_duration, log)
+            mixed_audio = music_matched.set_duration(target_duration)
+            synced_video = fg_clip
+            caption_segments = []
+            
+            # If AI voice is enabled, we still need to generate it even without a voice file
+            # We'll need to create dummy caption segments from user input or skip captions
+            if USE_AI_VOICE_REPLACEMENT:
+                log("[NO VOICE + AI TTS] Will generate AI voice without captions")
+                # For now, we'll skip caption generation when there's no voice to transcribe
+                # The TTS will be generated below if caption_segments exists or can be created
+            else:
+                log("[NO VOICE] No captions will be generated (no voice to transcribe)")
+        
+        # Optional: Replace voice with AI-generated TTS or generate from scratch
+        if USE_AI_VOICE_REPLACEMENT:
+            if caption_segments:
+                log("")
+                log("━"*60)
+                log("[AI VOICE] 🎵 GENERATING AI VOICE REPLACEMENT")
+                log(f"[AI VOICE] Segments to synthesize: {len(caption_segments)}")
+                log(f"[AI VOICE] Target language: {TTS_LANGUAGE}")
+                log("━"*60)
+                log("")
+                
+                tts_audio_path = replace_voice_with_tts(
+                    caption_segments, 
+                    language=TTS_LANGUAGE,
+                    log=log
+                )
+                if tts_audio_path:
+                    # Replace voice_clip with TTS audio
+                    try:
+                        log("")
+                        log("[AI VOICE] 🔊 Integrating AI voice into video...")
+                        
+                        # STEP 1: Remove all silences from TTS audio FIRST for continuous speech
+                        log("")
+                        log("[AI VOICE] 📝 Removing silences from TTS audio for continuous playback...")
+                        silence_threshold_ms = self.silence_threshold_var.get()
+                        log(f"[AI VOICE] Using silence threshold: {silence_threshold_ms}ms")
+                        compressed_tts_path, silence_map = remove_silence_from_audio(
+                            tts_audio_path, 
+                            output_path=None,
+                            log=log,
+                            min_silence_ms=silence_threshold_ms
+                        )
+                        
+                        # STEP 2: Re-transcribe captions from the SILENCE-REMOVED audio
+                        # This ensures captions match exactly with the final compressed audio
+                        # CapCut-style: transcribe from final audio for perfect sync
+                        log("")
+                        log("[AI VOICE] 📝 TRANSCRIBING CAPTIONS FROM SILENCE-REMOVED TTS AUDIO")
+                        log("[AI VOICE] CapCut-style: Captions generated from final compressed audio...")
+                        caption_segments = transcribe_captions(
+                            compressed_tts_path,  # Use compressed audio instead of original
+                            log, 
+                            translate_to=None  # Already translated during TTS generation
+                        )
+                        log(f"[AI VOICE] ✓ Generated {len(caption_segments)} caption segments with perfect timing")
+                        log("")
+                        
+                        # No need for timestamp remapping - captions already match the compressed audio!
+                        
+                        # STEP 2.5: Extend last caption to cover full video duration
+                        # This ensures captions display throughout the entire video
+                        compressed_tts_clip = AudioFileClip(compressed_tts_path)
+                        tts_final_duration = compressed_tts_clip.duration
+                        compressed_tts_clip.close()
+                        
+                        if caption_segments:
+                            last_caption_end = caption_segments[-1].get('end', 0)
+                            if last_caption_end < tts_final_duration:
+                                # Extend last caption to match video/audio duration
+                                caption_segments[-1]['end'] = tts_final_duration
+                                log(f"[AI VOICE] Extended last caption from {last_caption_end:.2f}s to {tts_final_duration:.2f}s (full video duration)")
+                        
+                        # Load the silence-removed TTS audio
+                        tts_clip = AudioFileClip(compressed_tts_path).volumex(VOICE_GAIN)
+                        
+                        # Use TTS duration as the new target - DO NOT speed up/slow down the voice
+                        tts_duration = tts_clip.duration
+                        log(f"[AI VOICE] TTS voice duration (after silence removal): {tts_duration:.2f}s")
+                        log(f"[AI VOICE] Keeping TTS voice at original speed (natural sound)")
+                        
+                        # Adjust music to match TTS duration
+                        log(f"[AI VOICE] Adjusting music to match TTS duration...")
+                        music_matched = make_music_match_duration(music_clip, tts_duration, log)
+                        
+                        # Composite ONLY TTS + music (no original voice to avoid duplicate audio)
+                        log(f"[AI VOICE] 🎬 Compositing audio tracks (TTS + Music only)...")
+                        mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(tts_duration)
+                        
+                        # Adjust VIDEO speed to match TTS duration (slow down or speed up video)
+                        log(f"[AI VOICE] 🎬 Adjusting video speed to sync with TTS voice...")
+                        synced_video = adjust_video_speed(fg_clip, tts_duration, log, max_change=2.0)
+                        
+                        log("")
+                        log("━"*60)
+                        log("[AI VOICE] ✅ VOICE REPLACEMENT SUCCESSFUL!")
+                        log("[AI VOICE] Voice plays continuously (silences removed)")
+                        log("[AI VOICE] Captions synchronized with word timestamps")
+                        log("[AI VOICE] Video speed adjusted to match AI voice (voice kept at natural speed)")
+                        log("━"*60)
+                        log("")
+                    except Exception as e:
+                        log(f"[AI VOICE ERROR] ❌ Failed to use TTS audio: {e}")
+                        import traceback
+                        log(traceback.format_exc())
+            else:
+                log("[AI VOICE] No captions available - AI voice replacement skipped")
+                log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
 
-        synced_video = adjust_video_speed(fg_clip, mixed_audio.duration, log, max_change=2.0)
-
-        caption_segments = transcribe_captions(voice_path, log)
-
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log)
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, words_per_caption=words_per_caption)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
@@ -1454,6 +2305,17 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     q.put(f"[cleanup] Could not remove temp dir {temp_dir}: {e_rm}")
         except Exception:
             pass
+        
+        # Remove temp voice file if it was created
+        try:
+            if 'temp_voice_path' in locals() and temp_voice_path and os.path.exists(temp_voice_path):
+                try:
+                    os.remove(temp_voice_path)
+                    q.put(f"[cleanup] Removed temp voice file: {temp_voice_path}")
+                except Exception as e_rm:
+                    q.put(f"[cleanup] Could not remove temp voice file {temp_voice_path}: {e_rm}")
+        except Exception:
+            pass
 
     # restore stdout/stderr no matter what
     try:
@@ -1472,7 +2334,8 @@ def queue_worker(jobs, q):
         process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"),
                            custom_top_ratio=job.get("custom_top_ratio"),
                            custom_bottom_ratio=job.get("custom_bottom_ratio"),
-                           mirror_video=job.get("mirror_video", False))
+                           mirror_video=job.get("mirror_video", False),
+                           words_per_caption=job.get("words_per_caption", 2))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -1609,7 +2472,7 @@ class App:
         ttk.Button(left_frame, text="Browse...", command=self.browse_video).grid(row=row, column=2, padx=6)
         row += 1
 
-        ttk.Label(left_frame, text="VOICE:").grid(row=row, column=0, sticky="w")
+        ttk.Label(left_frame, text="VOICE (optional):").grid(row=row, column=0, sticky="w")
         self.voice_var = tk.StringVar(value="")
         self.voice_entry = ttk.Entry(left_frame, textvariable=self.voice_var)
         self.voice_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
@@ -1661,6 +2524,165 @@ class App:
         self.music_gain_scale.grid(row=row, column=1, padx=(6,0))
         self.music_gain_label = ttk.Label(left_frame, text=f"{self.music_gain_var.get():.2f}x")
         self.music_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+
+        # --- Translation Controls ---
+        ttk.Label(left_frame, text="Translation & AI Voice", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        self.translation_enabled_var = tk.BooleanVar(value=TRANSLATION_ENABLED)
+        ttk.Checkbutton(left_frame, text="Enable translation", variable=self.translation_enabled_var, 
+                       command=self.on_translation_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        ttk.Label(left_frame, text="Target language:").grid(row=row, column=0, sticky="e")
+        self.target_language_var = tk.StringVar(value=TARGET_LANGUAGE)
+        languages = ['none', 'en', 'es', 'fr', 'de', 'it', 'pt', 'ro', 'ru', 'zh-cn', 'ja', 'ko']
+        language_combo = ttk.Combobox(left_frame, textvariable=self.target_language_var, values=languages, state='readonly', width=10)
+        language_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
+        language_combo.bind('<<ComboboxSelected>>', self.on_language_selected)
+        ttk.Label(left_frame, text="(for captions)").grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
+        ttk.Checkbutton(left_frame, text="Replace voice with AI (TTS)", variable=self.use_ai_voice_var,
+                       command=self.on_ai_voice_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        ttk.Label(left_frame, text="TTS language:").grid(row=row, column=0, sticky="e")
+        self.tts_language_var = tk.StringVar(value=TTS_LANGUAGE)
+        tts_languages = ['en', 'es', 'fr', 'de', 'it', 'pt', 'ro', 'ru', 'zh', 'ja', 'ko']
+        tts_combo = ttk.Combobox(left_frame, textvariable=self.tts_language_var, values=tts_languages, state='readonly', width=10)
+        tts_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
+        tts_combo.bind('<<ComboboxSelected>>', self.on_tts_language_selected)
+        ttk.Label(left_frame, text="(voice output)").grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        # Voice selection dropdown - shows voices for selected TTS language
+        ttk.Label(left_frame, text="Voice:").grid(row=row, column=0, sticky="e")
+        
+        # Available voices per language (from GenAI Pro API)
+        self.voice_options = {
+            'en': ['Auto (Default)', 'Voice 1', 'Voice 2', 'Voice 3'],
+            'es': ['Auto (Default)', 'Voice 1', 'Voice 2'],
+            'fr': ['Auto (Default)', 'Voice 1', 'Voice 2'],
+            'de': ['Auto (Default)', 'Voice 1'],
+            'it': ['Auto (Default)', 'Voice 1'],
+            'pt': ['Auto (Default)', 'Voice 1'],
+            'ro': ['Auto (Default)', 'Voice 1'],
+            'ru': ['Auto (Default)', 'Voice 1'],
+            'zh': ['Auto (Default)', 'Voice 1'],
+            'ja': ['Auto (Default)', 'Voice 1'],
+            'ko': ['Auto (Default)', 'Voice 1'],
+        }
+        
+        # Voice ID mappings (extend this as you discover more voice IDs from GenAI Pro)
+        self.voice_id_map = {
+            'Auto (Default)': 'auto',
+            'Voice 1': 'uju3wxzG5OhpWcoi3SMy',
+            'Voice 2': 'uju3wxzG5OhpWcoi3SMy',  # Replace with actual voice IDs
+            'Voice 3': 'uju3wxzG5OhpWcoi3SMy',  # Replace with actual voice IDs
+        }
+        
+        self.tts_voice_var = tk.StringVar(value='Auto (Default)')
+        current_voices = self.voice_options.get(TTS_LANGUAGE, ['Auto (Default)'])
+        self.tts_voice_combo = ttk.Combobox(left_frame, textvariable=self.tts_voice_var, 
+                                            values=current_voices, state='readonly', width=15)
+        self.tts_voice_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
+        self.tts_voice_combo.bind('<<ComboboxSelected>>', self.on_voice_selected)
+        ttk.Label(left_frame, text="(select voice)").grid(row=row, column=2, sticky='w', padx=(4,0))
+        
+        # Load custom voices on startup
+        self.update_voice_dropdown(TTS_LANGUAGE)
+        
+        row += 1
+
+        # API Key input for premium TTS services
+        ttk.Label(left_frame, text="TTS API Key:").grid(row=row, column=0, sticky="e")
+        
+        # Load saved API key
+        saved_api_key = ""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    saved_api_key = config.get("api_key", "")
+        except Exception:
+            pass
+        
+        self.tts_api_key_var = tk.StringVar(value=saved_api_key)
+        self.tts_api_key_entry = ttk.Entry(left_frame, textvariable=self.tts_api_key_var, show="*", width=30)
+        self.tts_api_key_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        row += 1
+        
+        # Button to save API key
+        ttk.Button(left_frame, text="Save API Key", command=self.on_save_api_key).grid(row=row, column=1, sticky="w", padx=(6,0))
+        row += 1
+        
+        # Custom Voice Management Section
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+        
+        ttk.Label(left_frame, text="Custom Voice ID:").grid(row=row, column=0, sticky="e")
+        self.custom_voice_id_var = tk.StringVar()
+        self.custom_voice_id_entry = ttk.Entry(left_frame, textvariable=self.custom_voice_id_var, width=30)
+        self.custom_voice_id_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        row += 1
+        
+        ttk.Label(left_frame, text="Voice Name:").grid(row=row, column=0, sticky="e")
+        self.custom_voice_name_var = tk.StringVar()
+        self.custom_voice_name_entry = ttk.Entry(left_frame, textvariable=self.custom_voice_name_var, width=30)
+        self.custom_voice_name_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        row += 1
+        
+        ttk.Label(left_frame, text="Language Category:").grid(row=row, column=0, sticky="e")
+        self.custom_voice_lang_var = tk.StringVar(value="en")
+        lang_options = ["en", "es", "fr", "de", "it", "pt", "ro", "ru", "zh", "ja", "ko", "ar"]
+        self.custom_voice_lang_combo = ttk.Combobox(left_frame, textvariable=self.custom_voice_lang_var, values=lang_options, state="readonly", width=10)
+        self.custom_voice_lang_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
+        row += 1
+        
+        ttk.Button(left_frame, text="Save Custom Voice", command=self.on_save_custom_voice).grid(row=row, column=1, sticky="w", padx=(6,0))
+        row += 1
+        
+        # Silence Removal Threshold Section
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+        
+        ttk.Label(left_frame, text="Silence Threshold (ms):").grid(row=row, column=0, sticky="e")
+        self.silence_threshold_var = tk.IntVar(value=300)
+        silence_threshold_spinbox = ttk.Spinbox(
+            left_frame, 
+            from_=100, 
+            to=2000, 
+            increment=50,
+            textvariable=self.silence_threshold_var,
+            width=10
+        )
+        silence_threshold_spinbox.grid(row=row, column=1, sticky="w", padx=(6,0))
+        ttk.Label(left_frame, text="(Gaps to remove from AI voice)").grid(row=row, column=2, sticky="w", padx=(3,0))
+        row += 1
+        
+        # Words per caption control (CapCut-style)
+        ttk.Label(left_frame, text="Words per caption:").grid(row=row, column=0, sticky="e")
+        self.words_per_caption_var = tk.IntVar(value=2)
+        words_per_caption_spinbox = ttk.Spinbox(
+            left_frame, 
+            from_=1, 
+            to=3, 
+            increment=1,
+            textvariable=self.words_per_caption_var,
+            width=10
+        )
+        words_per_caption_spinbox.grid(row=row, column=1, sticky="w", padx=(6,0))
+        ttk.Label(left_frame, text="(1=single word, 2-3=groups)").grid(row=row, column=2, sticky="w", padx=(3,0))
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1
 
         ttk.Label(left_frame, text="Top:").grid(row=row, column=0, sticky="e")
@@ -2090,6 +3112,201 @@ class App:
                 self.music_gain_label.config(text=f"{gain:.2f}x")
         except Exception:
             pass
+    
+    def on_translation_toggle(self):
+        """Callback when translation checkbox is toggled"""
+        try:
+            enabled = self.translation_enabled_var.get()
+            globals()['TRANSLATION_ENABLED'] = enabled
+            if enabled and not TRANSLATION_AVAILABLE:
+                messagebox.showwarning(
+                    "Translation Unavailable",
+                    "Translation library (googletrans) is not installed.\nPlease install it with: pip install googletrans==4.0.0rc1"
+                )
+                self.translation_enabled_var.set(False)
+                globals()['TRANSLATION_ENABLED'] = False
+        except Exception as e:
+            print(f"Translation toggle error: {e}")
+    
+    def on_language_selected(self, event=None):
+        """Callback when target language is selected"""
+        try:
+            lang = self.target_language_var.get()
+            globals()['TARGET_LANGUAGE'] = lang
+        except Exception as e:
+            print(f"Language selection error: {e}")
+    
+    def on_ai_voice_toggle(self):
+        """Callback when AI voice replacement checkbox is toggled"""
+        try:
+            enabled = self.use_ai_voice_var.get()
+            globals()['USE_AI_VOICE_REPLACEMENT'] = enabled
+            if enabled and not TTS_AVAILABLE:
+                messagebox.showwarning(
+                    "TTS Unavailable",
+                    "Text-to-Speech library (gTTS) is not installed.\nPlease install it with: pip install gtts"
+                )
+                self.use_ai_voice_var.set(False)
+                globals()['USE_AI_VOICE_REPLACEMENT'] = False
+        except Exception as e:
+            print(f"AI voice toggle error: {e}")
+    
+    def on_tts_language_selected(self, event=None):
+        """Callback when TTS language is selected"""
+        try:
+            lang = self.tts_language_var.get()
+            globals()['TTS_LANGUAGE'] = lang
+            
+            # Update voice dropdown based on selected language (including custom voices)
+            self.update_voice_dropdown(lang)
+        except Exception as e:
+            print(f"TTS language selection error: {e}")
+    
+    def load_custom_voices(self):
+        """Load custom voices from config file"""
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    return config.get("custom_voices", {})
+        except Exception as e:
+            print(f"Error loading custom voices: {e}")
+        return {}
+    
+    def update_voice_dropdown(self, language=None):
+        """Update voice dropdown with default and custom voices for the selected language"""
+        try:
+            if language is None:
+                language = self.tts_language_var.get()
+            
+            # Start with default voices
+            voices = self.voice_options.get(language, ['Auto (Default)']).copy()
+            
+            # Load and add custom voices
+            custom_voices = self.load_custom_voices()
+            if language in custom_voices:
+                for voice_data in custom_voices[language]:
+                    if isinstance(voice_data, dict):
+                        voice_name = voice_data.get("name")
+                        voice_id = voice_data.get("id")
+                        if voice_name and voice_id:
+                            # Add to voices list if not already there
+                            if voice_name not in voices:
+                                voices.append(voice_name)
+                            # Update the voice ID map
+                            self.voice_id_map[voice_name] = voice_id
+            
+            # Update the combobox
+            self.tts_voice_combo['values'] = voices
+            self.tts_voice_var.set('Auto (Default)')  # Reset to auto
+            globals()['TTS_VOICE_ID'] = 'auto'
+            
+            print(f"[Voice Dropdown] Updated for {language}: {len(voices)} voices available")
+        except Exception as e:
+            print(f"Update voice dropdown error: {e}")
+    
+    def on_voice_selected(self, event=None):
+        """Callback when a specific voice is selected"""
+        try:
+            voice_name = self.tts_voice_var.get()
+            voice_id = self.voice_id_map.get(voice_name, 'auto')
+            globals()['TTS_VOICE_ID'] = voice_id
+            print(f"[Voice Selection] Selected: {voice_name} (ID: {voice_id})")
+        except Exception as e:
+            print(f"Voice selection error: {e}")
+    
+    def on_save_api_key(self):
+        """Callback when Save API Key button is clicked"""
+        try:
+            api_key = self.tts_api_key_var.get().strip()
+            if not api_key:
+                messagebox.showwarning("No API Key", "Please enter an API key.")
+                return
+            
+            # Save to config file
+            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+            config = {"api_key": api_key}
+            
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(config, f)
+                messagebox.showinfo("API Key Saved", "Your API key has been saved successfully!")
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save API key: {e}")
+        except Exception as e:
+            print(f"Save API key error: {e}")
+    
+    def on_save_custom_voice(self):
+        """Callback when Save Custom Voice button is clicked"""
+        try:
+            voice_id = self.custom_voice_id_var.get().strip()
+            voice_name = self.custom_voice_name_var.get().strip()
+            language = self.custom_voice_lang_var.get()
+            
+            if not voice_id:
+                messagebox.showwarning("No Voice ID", "Please enter a voice ID.")
+                return
+            
+            if not voice_name:
+                messagebox.showwarning("No Voice Name", "Please enter a name for this voice.")
+                return
+            
+            # Load existing config
+            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+            config = {}
+            try:
+                if os.path.exists(config_path):
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+            except Exception:
+                pass
+            
+            # Add custom voices section if not exists
+            if "custom_voices" not in config:
+                config["custom_voices"] = {}
+            
+            # Add the custom voice
+            if language not in config["custom_voices"]:
+                config["custom_voices"][language] = []
+            
+            # Check if voice name already exists for this language
+            existing_voices = config["custom_voices"][language]
+            voice_exists = any(v["name"] == voice_name for v in existing_voices if isinstance(v, dict))
+            
+            if voice_exists:
+                response = messagebox.askyesno(
+                    "Voice Exists", 
+                    f"A voice named '{voice_name}' already exists for {language}. Do you want to update it?"
+                )
+                if not response:
+                    return
+                # Remove the old one
+                config["custom_voices"][language] = [v for v in existing_voices if not (isinstance(v, dict) and v.get("name") == voice_name)]
+            
+            # Add the new voice
+            config["custom_voices"][language].append({
+                "name": voice_name,
+                "id": voice_id
+            })
+            
+            # Save config
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=2)
+                messagebox.showinfo("Custom Voice Saved", f"Voice '{voice_name}' has been saved for {language.upper()}!")
+                
+                # Clear the input fields
+                self.custom_voice_id_var.set("")
+                self.custom_voice_name_var.set("")
+                
+                # Reload voices in the dropdown
+                self.update_voice_dropdown()
+                
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save custom voice: {e}")
+        except Exception as e:
+            print(f"Save custom voice error: {e}")
     
     def on_4k_toggle(self):
         """Toggle between HD (1080x1920) and 4K (2160x3840) resolution"""
@@ -2662,8 +3879,8 @@ class App:
             voice = self.voice_var.get().strip()
             music = self.music_var.get().strip()
             output = self.output_var.get().strip() or "final_tiktok.mp4"
-            if not video or not voice or not music:
-                messagebox.showwarning("Missing fields", "Please select VIDEO, VOICE and MUSIC before adding a job.")
+            if not video or not music:
+                messagebox.showwarning("Missing fields", "Please select VIDEO and MUSIC before adding a job.")
                 return
             # preferred font: prefer selected_font_path (.ttf) else selected_font family name
             try:
@@ -2682,7 +3899,8 @@ class App:
                 "font": pref_font,
                 "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
-                "mirror_video": self.mirror_video_var.get()
+                "mirror_video": self.mirror_video_var.get(),
+                "words_per_caption": self.words_per_caption_var.get()
             }
             self.jobs.append(job)
             display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'})"
@@ -2717,8 +3935,8 @@ class App:
             voice = self.voice_var.get().strip()
             music = self.music_var.get().strip()
             output = self.output_var.get().strip() or "final_tiktok.mp4"
-            if not video or not voice or not music:
-                messagebox.showwarning("Missing fields", "Please select VIDEO, VOICE and MUSIC before running.")
+            if not video or not music:
+                messagebox.showwarning("Missing fields", "Please select VIDEO and MUSIC before running.")
                 return
             try:
                 pref_font = None
@@ -2748,7 +3966,8 @@ class App:
             messagebox.showerror("Run error", str(e))
 
     def _run_single_thread(self, video, voice, music, output, top_ratio, bottom_ratio):
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio)
+        words_per_caption = self.words_per_caption_var.get()
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
