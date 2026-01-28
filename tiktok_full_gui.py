@@ -2751,6 +2751,8 @@ class App:
             self.job_listbox.config(selectbackground='#2b2b2b', selectforeground='#FFFFFF', highlightthickness=1, highlightbackground='#222222', bd=2, relief='groove')
         except Exception:
             pass
+        # Add double-click binding to load job settings
+        self.job_listbox.bind('<Double-Button-1>', self.on_job_double_click)
         left_frame.rowconfigure(row, weight=1)
         row += 1
 
@@ -3908,12 +3910,36 @@ class App:
     def _format_job_info(self, job):
         """Format job information for display, showing all relevant settings."""
         info_parts = []
+        
+        # Resolution and basic settings
         if job.get("use_4k"):
             info_parts.append("4K")
         if job.get("mirror_video"):
             info_parts.append("Mirror")
         if job.get("words_per_caption", 2) != 2:
             info_parts.append(f"{job.get('words_per_caption')} words/cap")
+        
+        # AI and translation settings
+        if job.get("use_ai_voice"):
+            info_parts.append("AI-TTS")
+        if job.get("translation_enabled"):
+            lang = job.get("target_language", "?")
+            info_parts.append(f"Translate:{lang}")
+        
+        # Silence threshold (only show if AI voice is enabled and not default)
+        if job.get("use_ai_voice") and job.get("silence_threshold_ms", 300) != 300:
+            info_parts.append(f"silence:{job.get('silence_threshold_ms')}ms")
+        
+        # Font color (show if not default white)
+        text_color = job.get("caption_text_color", (255, 255, 255, 255))
+        if text_color != (255, 255, 255, 255):
+            info_parts.append(f"color:RGB({text_color[0]},{text_color[1]},{text_color[2]})")
+        
+        # Stroke/border settings (show if not default)
+        stroke_color = job.get("caption_stroke_color", (0, 0, 0, 150))
+        stroke_width = job.get("caption_stroke_width", 3)
+        if stroke_color != (0, 0, 0, 150) or stroke_width != 3:
+            info_parts.append(f"border:w={stroke_width},RGB({stroke_color[0]},{stroke_color[1]},{stroke_color[2]})")
         
         # Add effects info if different from defaults
         blur = job.get("blur_radius", 25)
@@ -3955,7 +3981,16 @@ class App:
                 "use_4k": self.use_4k_var.get(),
                 "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
                 "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
-                "dim_factor": globals().get('DIM_FACTOR', 0.55)
+                "dim_factor": globals().get('DIM_FACTOR', 0.55),
+                # AI and caption settings
+                "use_ai_voice": self.use_ai_voice_var.get(),
+                "translation_enabled": self.translation_enabled_var.get(),
+                "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
+                "silence_threshold_ms": self.silence_threshold_var.get(),
+                # Font and border settings
+                "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
+                "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
+                "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3)
             }
             self.jobs.append(job)
             # Show complete job info in the display using helper
@@ -3990,6 +4025,115 @@ class App:
                 pass
         self._refresh_job_listbox()
 
+    def on_job_double_click(self, event):
+        """Load job settings when double-clicking a job in the list."""
+        try:
+            # Get selected job index
+            sel = self.job_listbox.curselection()
+            if not sel:
+                return
+            
+            job_idx = sel[0]
+            if job_idx >= len(self.jobs):
+                return
+            
+            job = self.jobs[job_idx]
+            
+            # Load file paths
+            self.video_var.set(job.get("video", ""))
+            self.voice_var.set(job.get("voice", ""))
+            self.music_var.set(job.get("music", ""))
+            self.output_var.set(job.get("output", ""))
+            
+            # Load basic settings
+            self.mirror_video_var.set(job.get("mirror_video", False))
+            self.words_per_caption_var.set(job.get("words_per_caption", 2))
+            self.use_4k_var.set(job.get("use_4k", False))
+            
+            # Load crop settings
+            if job.get("custom_top_ratio") is not None:
+                self.use_custom_crop_var.set(True)
+                self.top_percent_var.set(job.get("custom_top_ratio", 0.0) * 100.0)
+                self.bottom_percent_var.set(job.get("custom_bottom_ratio", 0.0) * 100.0)
+            else:
+                self.use_custom_crop_var.set(False)
+            
+            # Load effects settings
+            globals()['STATIC_BG_BLUR_RADIUS'] = job.get("blur_radius", 25)
+            globals()['BG_SCALE_EXTRA'] = job.get("bg_scale_extra", 1.08)
+            globals()['DIM_FACTOR'] = job.get("dim_factor", 0.55)
+            
+            # Load AI and translation settings
+            self.use_ai_voice_var.set(job.get("use_ai_voice", False))
+            self.translation_enabled_var.set(job.get("translation_enabled", False))
+            if hasattr(self, 'target_language_var'):
+                self.target_language_var.set(job.get("target_language", "none"))
+            self.silence_threshold_var.set(job.get("silence_threshold_ms", 300))
+            
+            # Load font and border settings
+            text_color = job.get("caption_text_color", (255, 255, 255, 255))
+            stroke_color = job.get("caption_stroke_color", (0, 0, 0, 150))
+            stroke_width = job.get("caption_stroke_width", 3)
+            
+            globals()['CAPTION_TEXT_COLOR'] = text_color
+            globals()['CAPTION_STROKE_COLOR'] = stroke_color
+            globals()['CAPTION_STROKE_WIDTH'] = stroke_width
+            
+            # Update UI elements for colors if they exist
+            try:
+                if hasattr(self, 'text_color_canvas') and self.text_color_canvas:
+                    col = f'#{text_color[0]:02x}{text_color[1]:02x}{text_color[2]:02x}'
+                    self.text_color_canvas.delete('all')
+                    self.text_color_canvas.create_oval(2,2,26,26, fill=col, outline='white')
+            except Exception:
+                pass
+            
+            try:
+                if hasattr(self, 'stroke_color_canvas') and self.stroke_color_canvas:
+                    col = f'#{stroke_color[0]:02x}{stroke_color[1]:02x}{stroke_color[2]:02x}'
+                    self.stroke_color_canvas.delete('all')
+                    self.stroke_color_canvas.create_oval(2,2,26,26, fill=col, outline='white')
+            except Exception:
+                pass
+            
+            try:
+                if hasattr(self, 'stroke_width_var'):
+                    self.stroke_width_var.set(stroke_width)
+                if hasattr(self, 'stroke_width_label') and self.stroke_width_label:
+                    self.stroke_width_label.config(text=str(int(stroke_width)))
+            except Exception:
+                pass
+            
+            # Load font if specified
+            font_path = job.get("font")
+            if font_path:
+                try:
+                    self.selected_font_path = font_path
+                    self.selected_font = os.path.basename(font_path) if font_path else None
+                except Exception:
+                    pass
+            
+            # Update video preview if video file exists
+            video_path = job.get("video", "")
+            if video_path and os.path.exists(video_path):
+                try:
+                    # Trigger mini preview update
+                    self._mini_update_worker_async()
+                except Exception as e:
+                    print(f"Could not update preview: {e}")
+            
+            # Log the load action
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"\n[LOAD] Loaded settings from job #{job_idx + 1}\n")
+                self.log_widget.see('end')
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+                
+        except Exception as e:
+            messagebox.showerror("Error loading job", str(e))
+
     def on_run_single(self):
         try:
             video = self.video_var.get().strip()
@@ -4016,7 +4160,16 @@ class App:
                    "use_4k": self.use_4k_var.get(),
                    "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
                    "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
-                   "dim_factor": globals().get('DIM_FACTOR', 0.55)}
+                   "dim_factor": globals().get('DIM_FACTOR', 0.55),
+                   # AI and caption settings
+                   "use_ai_voice": self.use_ai_voice_var.get(),
+                   "translation_enabled": self.translation_enabled_var.get(),
+                   "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
+                   "silence_threshold_ms": self.silence_threshold_var.get(),
+                   # Font and border settings
+                   "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
+                   "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
+                   "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3)}
             q = self.q
             # Run in background thread so GUI remains responsive
             t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor")}, daemon=True)
