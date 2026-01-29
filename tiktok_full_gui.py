@@ -1654,14 +1654,22 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
 
-    # foreground: slight zoom to avoid letterbox/freeze effect
+    # foreground: zoom to fill borders (especially left/right)
+    # Calculate scale to fill the canvas width completely while maintaining aspect ratio
     try:
-        min_scale_to_fit = min(WIDTH / video_clip.w, HEIGHT / video_clip.h)
+        # Scale to fill width completely (ensures left/right borders are filled)
+        scale_w = WIDTH / video_clip.w
+        scale_h = HEIGHT / video_clip.h
+        # Use the larger scale to ensure canvas is completely filled
+        fg_scale = max(scale_w, scale_h)
+        # Add a small extra zoom to ensure no gaps at edges
+        fg_scale = fg_scale * 1.01
     except Exception:
-        min_scale_to_fit = 1.0
-    fg_scale = max(1.0, min_scale_to_fit) * 1.03
-    fg_scale = min(fg_scale, 1.06)
-    fg = video_clip.resize(fg_scale).set_position(("center", "center")).set_duration(video_clip.duration)
+        fg_scale = 1.0
+    
+    # Remove original audio from video clip to prevent duplicate audio
+    # Only the mixed_audio (TTS + music) should be used
+    fg = video_clip.without_audio().resize(fg_scale).set_position(("center", "center")).set_duration(video_clip.duration)
     
     # Apply video effects (CapCut-style) if enabled
     if effect_settings and any([
@@ -1688,7 +1696,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             log(f"[EFFECTS] Warning: Could not apply effects: {e}")
     
     try:
-        log(f"[compose] Foreground scaled: {fg_scale:.3f}x")
+        log(f"[compose] Foreground scaled: {fg_scale:.3f}x (fills canvas completely)")
     except Exception:
         pass
 
@@ -2224,6 +2232,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         else:
             log("Pre-render failed or missing — falling back to MoviePy in-memory crop/resize.")
             fg_clip = cropped.resize(fg_scale).set_position(("center", "center")).set_duration(cropped.duration)
+        
+        # Remove original audio from video clip to prevent duplicate audio
+        # Only the mixed_audio (voice/TTS + music) should be used
+        log("Removing original audio from video clip...")
+        fg_clip = fg_clip.without_audio()
+        log("✓ Original video audio removed (will use voice/TTS + music only)")
         
         # Apply mirror if enabled
         if mirror_video:
