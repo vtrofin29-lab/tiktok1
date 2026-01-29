@@ -2880,14 +2880,16 @@ class App:
 
         # Sharpness/Resilience effect
         self.effect_sharpness_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(left_frame, text="Resilience (Sharpness)", variable=self.effect_sharpness_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(left_frame, text="Resilience (Sharpness)", variable=self.effect_sharpness_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
         ttk.Label(left_frame, text="💎").grid(row=row, column=2, sticky="w")
         row += 1
         
         ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
         self.effect_sharpness_intensity_var = tk.DoubleVar(value=1.5)
         sharpness_scale = tk.Scale(left_frame, from_=0.5, to=3.0, resolution=0.1, orient='horizontal', 
-                                   length=120, showvalue=0, variable=self.effect_sharpness_intensity_var)
+                                   length=120, showvalue=0, variable=self.effect_sharpness_intensity_var,
+                                   command=lambda v: self._mini_update_worker_async())
         sharpness_scale.grid(row=row, column=1, padx=(6,0))
         self.sharpness_label = ttk.Label(left_frame, text=f"{self.effect_sharpness_intensity_var.get():.1f}x")
         self.sharpness_label.grid(row=row, column=2, sticky='w', padx=(4,0))
@@ -2896,14 +2898,16 @@ class App:
 
         # Saturation boost
         self.effect_saturation_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(left_frame, text="Vibrance (Saturation)", variable=self.effect_saturation_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(left_frame, text="Vibrance (Saturation)", variable=self.effect_saturation_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
         ttk.Label(left_frame, text="🌈").grid(row=row, column=2, sticky="w")
         row += 1
         
         ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
         self.effect_saturation_intensity_var = tk.DoubleVar(value=1.3)
         saturation_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.1, orient='horizontal', 
-                                    length=120, showvalue=0, variable=self.effect_saturation_intensity_var)
+                                    length=120, showvalue=0, variable=self.effect_saturation_intensity_var,
+                                    command=lambda v: self._mini_update_worker_async())
         saturation_scale.grid(row=row, column=1, padx=(6,0))
         self.saturation_label = ttk.Label(left_frame, text=f"{self.effect_saturation_intensity_var.get():.1f}x")
         self.saturation_label.grid(row=row, column=2, sticky='w', padx=(4,0))
@@ -2912,14 +2916,16 @@ class App:
 
         # Contrast enhancement
         self.effect_contrast_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(left_frame, text="HDR (Contrast)", variable=self.effect_contrast_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(left_frame, text="HDR (Contrast)", variable=self.effect_contrast_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
         ttk.Label(left_frame, text="⚡").grid(row=row, column=2, sticky="w")
         row += 1
         
         ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
         self.effect_contrast_intensity_var = tk.DoubleVar(value=1.2)
         contrast_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.1, orient='horizontal', 
-                                 length=120, showvalue=0, variable=self.effect_contrast_intensity_var)
+                                 length=120, showvalue=0, variable=self.effect_contrast_intensity_var,
+                                 command=lambda v: self._mini_update_worker_async())
         contrast_scale.grid(row=row, column=1, padx=(6,0))
         self.contrast_label = ttk.Label(left_frame, text=f"{self.effect_contrast_intensity_var.get():.1f}x")
         self.contrast_label.grid(row=row, column=2, sticky='w', padx=(4,0))
@@ -2928,14 +2934,16 @@ class App:
 
         # Brightness adjustment
         self.effect_brightness_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(left_frame, text="Brightness Boost", variable=self.effect_brightness_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(left_frame, text="Brightness Boost", variable=self.effect_brightness_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
         ttk.Label(left_frame, text="☀️").grid(row=row, column=2, sticky="w")
         row += 1
         
         ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
         self.effect_brightness_intensity_var = tk.DoubleVar(value=1.15)
         brightness_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.05, orient='horizontal', 
-                                    length=120, showvalue=0, variable=self.effect_brightness_intensity_var)
+                                    length=120, showvalue=0, variable=self.effect_brightness_intensity_var,
+                                    command=lambda v: self._mini_update_worker_async())
         brightness_scale.grid(row=row, column=1, padx=(6,0))
         self.brightness_label = ttk.Label(left_frame, text=f"{self.effect_brightness_intensity_var.get():.2f}x")
         self.brightness_label.grid(row=row, column=2, sticky='w', padx=(4,0))
@@ -2944,14 +2952,16 @@ class App:
 
         # Film grain / Vintage
         self.effect_vintage_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(left_frame, text="Vintage (Film Grain)", variable=self.effect_vintage_var).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(left_frame, text="Vintage (Film Grain)", variable=self.effect_vintage_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
         ttk.Label(left_frame, text="📽️").grid(row=row, column=2, sticky="w")
         row += 1
         
         ttk.Label(left_frame, text="Grain:").grid(row=row, column=0, sticky="e", padx=(20,0))
         self.effect_vintage_intensity_var = tk.DoubleVar(value=0.3)
         vintage_scale = tk.Scale(left_frame, from_=0.1, to=1.0, resolution=0.05, orient='horizontal', 
-                                length=120, showvalue=0, variable=self.effect_vintage_intensity_var)
+                                length=120, showvalue=0, variable=self.effect_vintage_intensity_var,
+                                command=lambda v: self._mini_update_worker_async())
         vintage_scale.grid(row=row, column=1, padx=(6,0))
         self.vintage_label = ttk.Label(left_frame, text=f"{self.effect_vintage_intensity_var.get():.2f}")
         self.vintage_label.grid(row=row, column=2, sticky='w', padx=(4,0))
@@ -4621,6 +4631,21 @@ class App:
             pass
 
 
+    def _get_current_effect_settings(self):
+        """Get current effect settings from UI for preview."""
+        return {
+            'effect_sharpness': self.effect_sharpness_var.get(),
+            'effect_sharpness_intensity': self.effect_sharpness_intensity_var.get(),
+            'effect_saturation': self.effect_saturation_var.get(),
+            'effect_saturation_intensity': self.effect_saturation_intensity_var.get(),
+            'effect_contrast': self.effect_contrast_var.get(),
+            'effect_contrast_intensity': self.effect_contrast_intensity_var.get(),
+            'effect_brightness': self.effect_brightness_var.get(),
+            'effect_brightness_intensity': self.effect_brightness_intensity_var.get(),
+            'effect_vintage': self.effect_vintage_var.get(),
+            'effect_vintage_intensity': self.effect_vintage_intensity_var.get()
+        }
+
     def _mini_update_worker_async(self):
         video = self.video_var.get().strip()
         if not video or not os.path.isfile(video):
@@ -4645,6 +4670,16 @@ class App:
     def _mini_extract_and_update(self, video_path, time_val):
         try:
             img, scale = extract_and_scale_frame(video_path, time_sec=time_val, desired_width=360)
+            
+            # Apply video effects to preview
+            effect_settings = self._get_current_effect_settings()
+            if any([effect_settings.get('effect_sharpness', False),
+                    effect_settings.get('effect_saturation', False),
+                    effect_settings.get('effect_contrast', False),
+                    effect_settings.get('effect_brightness', False),
+                    effect_settings.get('effect_vintage', False)]):
+                img = apply_video_effects(img, effect_settings)
+            
             self.mini_base_img = img
             self.mini_scale = scale
             top_pct = float(self.top_percent_var.get())/100.0
@@ -4749,6 +4784,16 @@ class App:
                     new_w = desired_width
                     new_h = int(round(h * scale))
                     img = img.resize((new_w, new_h), Image.LANCZOS)
+                    
+                    # Apply video effects to preview
+                    effect_settings = self._get_current_effect_settings()
+                    if any([effect_settings.get('effect_sharpness', False),
+                            effect_settings.get('effect_saturation', False),
+                            effect_settings.get('effect_contrast', False),
+                            effect_settings.get('effect_brightness', False),
+                            effect_settings.get('effect_vintage', False)]):
+                        img = apply_video_effects(img, effect_settings)
+                    
                     top_pct = float(self.top_percent_var.get())/100.0
                     bottom_pct = float(self.bottom_percent_var.get())/100.0
                     composed = overlay_crop_on_image(img, top_pct, bottom_pct)
