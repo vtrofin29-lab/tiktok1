@@ -1657,13 +1657,10 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     # foreground: zoom to fill borders (especially left/right)
     # Calculate scale to fill the canvas width completely while maintaining aspect ratio
     try:
-        # Scale to fill width completely (ensures left/right borders are filled)
+        # Scale to fill width only (left/right borders filled, top/bottom may have borders)
         scale_w = WIDTH / video_clip.w
-        scale_h = HEIGHT / video_clip.h
-        # Use the larger scale to ensure canvas is completely filled
-        fg_scale = max(scale_w, scale_h)
-        # Add a small extra zoom to ensure no gaps at edges
-        fg_scale = fg_scale * 1.01
+        # Use width scale only - fills left/right, allows top/bottom borders
+        fg_scale = scale_w * 1.01  # Add 1% extra to ensure no gaps at edges
     except Exception:
         fg_scale = 1.0
     
