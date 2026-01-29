@@ -2997,6 +2997,24 @@ class App:
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1
 
+        # Settings Preset Section
+        ttk.Label(left_frame, text="Settings Presets:").grid(row=row, column=0, sticky="w")
+        row += 1
+        preset_btns = ttk.Frame(left_frame)
+        try:
+            preset_btns.configure(style='TFrame')
+            preset_btns.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        preset_btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6,0))
+        ttk.Button(preset_btns, text="💾 Save Preset", command=self.save_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="📂 Load Preset", command=self.load_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="🔄 Reset to Defaults", command=self.reset_to_defaults).pack(side="left", padx=4)
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+
         ttk.Label(left_frame, text="Job queue:").grid(row=row, column=0, sticky="w")
         row += 1
         self.job_listbox = tk.Listbox(left_frame, height=10, selectmode=tk.EXTENDED, bg='#111111', fg='#FFFFFF')
@@ -5079,6 +5097,310 @@ class App:
         except Exception as e:
             messagebox.showerror("Load failed", f"Could not load crop settings: {e}")
 
+    def save_preset(self):
+        """Save all current settings to a preset file."""
+        try:
+            preset_data = {
+                # File paths (optional - user might not want to save these)
+                "video_path": self.video_var.get(),
+                "voice_path": self.voice_var.get(),
+                "music_path": self.music_var.get(),
+                "output_path": self.output_var.get(),
+                
+                # Video settings
+                "mirror_video": self.mirror_video_var.get(),
+                "use_4k": self.use_4k_var.get(),
+                "use_custom_crop": self.use_custom_crop_var.get(),
+                "top_percent": self.top_percent_var.get(),
+                "bottom_percent": self.bottom_percent_var.get(),
+                
+                # Audio settings
+                "voice_gain": self.voice_gain_var.get(),
+                "music_gain": self.music_gain_var.get(),
+                
+                # Translation/TTS settings
+                "translation_enabled": self.translation_enabled_var.get(),
+                "target_language": self.target_language_var.get(),
+                "use_ai_voice": self.use_ai_voice_var.get(),
+                "tts_language": self.tts_language_var.get(),
+                "tts_voice": self.tts_voice_var.get(),
+                "silence_threshold": self.silence_threshold_var.get(),
+                
+                # Caption settings
+                "words_per_caption": self.words_per_caption_var.get(),
+                "caption_text_color": list(globals()['CAPTION_TEXT_COLOR']),
+                "caption_stroke_color": list(globals()['CAPTION_STROKE_COLOR']),
+                "caption_stroke_width": self.stroke_width_var.get(),
+                "caption_y_offset": self.caption_y_offset_var.get(),
+                
+                # Video effects
+                "effect_sharpness": self.effect_sharpness_var.get(),
+                "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
+                "effect_saturation": self.effect_saturation_var.get(),
+                "effect_saturation_intensity": self.effect_saturation_intensity_var.get(),
+                "effect_contrast": self.effect_contrast_var.get(),
+                "effect_contrast_intensity": self.effect_contrast_intensity_var.get(),
+                "effect_brightness": self.effect_brightness_var.get(),
+                "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
+                "effect_vintage": self.effect_vintage_var.get(),
+                "effect_vintage_intensity": self.effect_vintage_intensity_var.get(),
+                
+                # Background effects
+                "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
+                "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
+                "dim_factor": globals().get('DIM_FACTOR', 0.55),
+            }
+            
+            # Save to file
+            preset_file = Path.home() / ".tiktok_preset.json"
+            with open(preset_file, 'w', encoding='utf-8') as f:
+                json.dump(preset_data, f, indent=2)
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n💾 Settings preset saved to: {preset_file}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+            
+            messagebox.showinfo("Preset Saved", f"All settings saved successfully!\n\nLocation: {preset_file}")
+        except Exception as e:
+            messagebox.showerror("Save Failed", f"Could not save preset: {e}")
+
+    def load_preset(self):
+        """Load settings from preset file and apply them to the UI."""
+        preset_file = Path.home() / ".tiktok_preset.json"
+        
+        if not preset_file.exists():
+            messagebox.showwarning("No Preset", f"No preset file found at:\n{preset_file}\n\nSave a preset first!")
+            return
+        
+        try:
+            with open(preset_file, 'r', encoding='utf-8') as f:
+                preset_data = json.load(f)
+            
+            # Apply file paths (optional)
+            if preset_data.get("video_path"):
+                self.video_var.set(preset_data["video_path"])
+            if preset_data.get("voice_path"):
+                self.voice_var.set(preset_data["voice_path"])
+            if preset_data.get("music_path"):
+                self.music_var.set(preset_data["music_path"])
+            if preset_data.get("output_path"):
+                self.output_var.set(preset_data["output_path"])
+            
+            # Apply video settings
+            self.mirror_video_var.set(preset_data.get("mirror_video", False))
+            self.use_4k_var.set(preset_data.get("use_4k", False))
+            self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
+            self.top_percent_var.set(preset_data.get("top_percent", CROP_TOP_RATIO*100))
+            self.bottom_percent_var.set(preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100))
+            self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+            self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            
+            # Apply audio settings
+            self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
+            self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            
+            # Apply translation/TTS settings
+            self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
+            self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
+            self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
+            self.silence_threshold_var.set(preset_data.get("silence_threshold", 300))
+            
+            # Apply caption settings
+            self.words_per_caption_var.set(preset_data.get("words_per_caption", 2))
+            if "caption_text_color" in preset_data:
+                globals()['CAPTION_TEXT_COLOR'] = tuple(preset_data["caption_text_color"])
+            if "caption_stroke_color" in preset_data:
+                globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
+            self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
+            self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            
+            # Apply video effects
+            self.effect_sharpness_var.set(preset_data.get("effect_sharpness", False))
+            self.effect_sharpness_intensity_var.set(preset_data.get("effect_sharpness_intensity", 1.5))
+            self.effect_saturation_var.set(preset_data.get("effect_saturation", False))
+            self.effect_saturation_intensity_var.set(preset_data.get("effect_saturation_intensity", 1.3))
+            self.effect_contrast_var.set(preset_data.get("effect_contrast", False))
+            self.effect_contrast_intensity_var.set(preset_data.get("effect_contrast_intensity", 1.2))
+            self.effect_brightness_var.set(preset_data.get("effect_brightness", False))
+            self.effect_brightness_intensity_var.set(preset_data.get("effect_brightness_intensity", 1.15))
+            self.effect_vintage_var.set(preset_data.get("effect_vintage", False))
+            self.effect_vintage_intensity_var.set(preset_data.get("effect_vintage_intensity", 0.3))
+            
+            # Apply background effects
+            globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
+            globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
+            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.55)
+            
+            # Update UI elements that show values
+            self._update_color_canvases()
+            self.update_mini_preview_immediate()
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n📂 Settings preset loaded from: {preset_file}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+            
+            messagebox.showinfo("Preset Loaded", "All settings loaded and applied successfully!")
+        except Exception as e:
+            messagebox.showerror("Load Failed", f"Could not load preset: {e}")
+
+    def load_preset_silent(self):
+        """Load settings from preset file silently (no popup messages) - used for auto-load on startup."""
+        preset_file = Path.home() / ".tiktok_preset.json"
+        
+        if not preset_file.exists():
+            return
+        
+        try:
+            with open(preset_file, 'r', encoding='utf-8') as f:
+                preset_data = json.load(f)
+            
+            # Apply file paths (optional)
+            if preset_data.get("video_path"):
+                self.video_var.set(preset_data["video_path"])
+            if preset_data.get("voice_path"):
+                self.voice_var.set(preset_data["voice_path"])
+            if preset_data.get("music_path"):
+                self.music_var.set(preset_data["music_path"])
+            if preset_data.get("output_path"):
+                self.output_var.set(preset_data["output_path"])
+            
+            # Apply video settings
+            self.mirror_video_var.set(preset_data.get("mirror_video", False))
+            self.use_4k_var.set(preset_data.get("use_4k", False))
+            self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
+            self.top_percent_var.set(preset_data.get("top_percent", CROP_TOP_RATIO*100))
+            self.bottom_percent_var.set(preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100))
+            self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+            self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            
+            # Apply audio settings
+            self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
+            self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            
+            # Apply translation/TTS settings
+            self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
+            self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
+            self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
+            self.silence_threshold_var.set(preset_data.get("silence_threshold", 300))
+            
+            # Apply caption settings
+            self.words_per_caption_var.set(preset_data.get("words_per_caption", 2))
+            if "caption_text_color" in preset_data:
+                globals()['CAPTION_TEXT_COLOR'] = tuple(preset_data["caption_text_color"])
+            if "caption_stroke_color" in preset_data:
+                globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
+            self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
+            self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            
+            # Apply video effects
+            self.effect_sharpness_var.set(preset_data.get("effect_sharpness", False))
+            self.effect_sharpness_intensity_var.set(preset_data.get("effect_sharpness_intensity", 1.5))
+            self.effect_saturation_var.set(preset_data.get("effect_saturation", False))
+            self.effect_saturation_intensity_var.set(preset_data.get("effect_saturation_intensity", 1.3))
+            self.effect_contrast_var.set(preset_data.get("effect_contrast", False))
+            self.effect_contrast_intensity_var.set(preset_data.get("effect_contrast_intensity", 1.2))
+            self.effect_brightness_var.set(preset_data.get("effect_brightness", False))
+            self.effect_brightness_intensity_var.set(preset_data.get("effect_brightness_intensity", 1.15))
+            self.effect_vintage_var.set(preset_data.get("effect_vintage", False))
+            self.effect_vintage_intensity_var.set(preset_data.get("effect_vintage_intensity", 0.3))
+            
+            # Apply background effects
+            globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
+            globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
+            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.55)
+            
+            # Update UI elements that show values
+            self._update_color_canvases()
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n📂 Auto-loaded preset from: {preset_file}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+        except Exception as e:
+            # Silently fail on auto-load
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n⚠️ Could not auto-load preset: {e}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+
+    def reset_to_defaults(self):
+        """Reset all settings to their default values."""
+        result = messagebox.askyesno("Reset to Defaults", 
+                                      "This will reset ALL settings to their default values.\n\nAre you sure?")
+        if not result:
+            return
+        
+        try:
+            # Reset file paths
+            self.video_var.set("")
+            self.voice_var.set("")
+            self.music_var.set("")
+            self.output_var.set("final_tiktok.mp4")
+            
+            # Reset video settings
+            self.mirror_video_var.set(False)
+            self.use_4k_var.set(False)
+            self.use_custom_crop_var.set(False)
+            self.top_percent_var.set(CROP_TOP_RATIO*100)
+            self.bottom_percent_var.set(CROP_BOTTOM_RATIO*100)
+            self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+            self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            
+            # Reset audio settings
+            self.voice_gain_var.set(VOICE_GAIN)
+            self.music_gain_var.set(MUSIC_GAIN)
+            
+            # Reset translation/TTS settings
+            self.translation_enabled_var.set(TRANSLATION_ENABLED)
+            self.target_language_var.set(TARGET_LANGUAGE)
+            self.use_ai_voice_var.set(USE_AI_VOICE_REPLACEMENT)
+            self.tts_language_var.set(TTS_LANGUAGE)
+            self.tts_voice_var.set('Auto (Default)')
+            self.silence_threshold_var.set(300)
+            
+            # Reset caption settings
+            self.words_per_caption_var.set(2)
+            globals()['CAPTION_TEXT_COLOR'] = (255, 255, 255, 255)
+            globals()['CAPTION_STROKE_COLOR'] = (0, 0, 0, 150)
+            self.stroke_width_var.set(max(1, int(CAPTION_FONT_SIZE * 0.05)))
+            self.caption_y_offset_var.set(0)
+            
+            # Reset video effects
+            self.effect_sharpness_var.set(False)
+            self.effect_sharpness_intensity_var.set(1.5)
+            self.effect_saturation_var.set(False)
+            self.effect_saturation_intensity_var.set(1.3)
+            self.effect_contrast_var.set(False)
+            self.effect_contrast_intensity_var.set(1.2)
+            self.effect_brightness_var.set(False)
+            self.effect_brightness_intensity_var.set(1.15)
+            self.effect_vintage_var.set(False)
+            self.effect_vintage_intensity_var.set(0.3)
+            
+            # Reset background effects
+            globals()['STATIC_BG_BLUR_RADIUS'] = 25
+            globals()['BG_SCALE_EXTRA'] = 1.08
+            globals()['DIM_FACTOR'] = 0.55
+            
+            # Update UI
+            self._update_color_canvases()
+            self.update_mini_preview_immediate()
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, "\n🔄 All settings reset to defaults\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+            
+            messagebox.showinfo("Reset Complete", "All settings have been reset to their default values.")
+        except Exception as e:
+            messagebox.showerror("Reset Failed", f"Could not reset settings: {e}")
+
     def poll_queue(self):
         try:
             while True:
@@ -5118,6 +5440,16 @@ class App:
 def main():
     root = tk.Tk()
     app = App(root)
+    
+    # Auto-load preset if it exists
+    preset_file = Path.home() / ".tiktok_preset.json"
+    if preset_file.exists():
+        try:
+            # Use root.after to load preset after UI is fully initialized
+            root.after(100, app.load_preset_silent)
+        except Exception:
+            pass  # Silently ignore errors during auto-load
+    
     root.mainloop()
 
 if __name__ == "__main__":
