@@ -1870,6 +1870,18 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     
     # Composite all layers (FIXED: ensure captions are included)
     try:
+        # Verify audio clip before compositing
+        if audio_clip is None:
+            try:
+                log(f"[COMPOSE WARNING] ⚠️ audio_clip is None! Final video will have no audio!")
+            except Exception:
+                pass
+        else:
+            try:
+                log(f"[COMPOSE] Audio clip duration: {audio_clip.duration:.2f}s")
+            except Exception:
+                pass
+        
         final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
         try:
             log(f"[COMPOSE] ✓ Final composition created successfully")
@@ -2379,16 +2391,31 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         log("[AI VOICE] Voice plays continuously (silences removed)")
                         log("[AI VOICE] Captions synchronized with word timestamps")
                         log("[AI VOICE] Video speed adjusted to match AI voice (voice kept at natural speed)")
+                        log(f"[AI VOICE] Final audio duration: {mixed_audio.duration:.2f}s")
+                        log(f"[AI VOICE] Final video duration: {synced_video.duration:.2f}s")
                         log("━"*60)
                         log("")
                     except Exception as e:
                         log(f"[AI VOICE ERROR] ❌ Failed to use TTS audio: {e}")
                         import traceback
                         log(traceback.format_exc())
+                        log("[AI VOICE ERROR] Falling back to original voice/music audio")
+                else:
+                    log("[AI VOICE] ⚠️ TTS audio generation returned None - using original audio")
             else:
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
                 log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
 
+        # Final verification of what audio is being used
+        log("")
+        log("━"*60)
+        log("[FINAL COMPOSITION] Preparing to create final video...")
+        log(f"[FINAL COMPOSITION] Video duration: {synced_video.duration:.2f}s")
+        log(f"[FINAL COMPOSITION] Audio duration: {mixed_audio.duration:.2f}s")
+        log(f"[FINAL COMPOSITION] Caption segments: {len(caption_segments)}")
+        log("━"*60)
+        log("")
+        
         ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
