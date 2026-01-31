@@ -2087,7 +2087,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -2101,6 +2101,10 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         bg_scale_extra = globals().get('BG_SCALE_EXTRA', 1.08)
     if dim_factor is None:
         dim_factor = globals().get('DIM_FACTOR', 0.55)
+    
+    # Determine if AI voice should be used - prefer parameter over global
+    if use_ai_voice is None:
+        use_ai_voice = globals().get('USE_AI_VOICE_REPLACEMENT', False)
     
     # Set 4K mode if requested
     # NOTE: Using global state for IS_4K_MODE. This is safe because:
@@ -2138,7 +2142,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 video_clip_for_audio = VideoFileClip(video_path)
                 if video_clip_for_audio.audio is None:
                     log("[VOICE ERROR] Video has no audio track!")
-                    if not USE_AI_VOICE_REPLACEMENT:
+                    if not use_ai_voice:
                         log("[VOICE ERROR] Cannot proceed without voice audio or AI voice enabled.")
                         return
                     log("[VOICE] Will generate AI voice from text/captions only.")
@@ -2150,7 +2154,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     video_clip_for_audio.close()
             except Exception as e:
                 log(f"[VOICE ERROR] Failed to extract audio from video: {e}")
-                if not USE_AI_VOICE_REPLACEMENT:
+                if not use_ai_voice:
                     return
                 log("[VOICE] Will proceed with AI voice generation only.")
                 voice_path = None
@@ -2268,7 +2272,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             # Transcribe captions ONLY if AI voice replacement is NOT enabled
             # If AI voice is enabled, we'll transcribe from the TTS audio later
-            if not USE_AI_VOICE_REPLACEMENT:
+            if not use_ai_voice:
                 log("[CAPTION] Transcribing captions from original voice...")
                 caption_segments = transcribe_captions(
                     voice_path, 
@@ -2295,7 +2299,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             # If AI voice is enabled, we still need to generate it even without a voice file
             # We'll need to create dummy caption segments from user input or skip captions
-            if USE_AI_VOICE_REPLACEMENT:
+            if use_ai_voice:
                 log("[NO VOICE + AI TTS] Will generate AI voice without captions")
                 # For now, we'll skip caption generation when there's no voice to transcribe
                 # The TTS will be generated below if caption_segments exists or can be created
@@ -2303,7 +2307,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 log("[NO VOICE] No captions will be generated (no voice to transcribe)")
         
         # Optional: Replace voice with AI-generated TTS or generate from scratch
-        if USE_AI_VOICE_REPLACEMENT:
+        if use_ai_voice:
             if caption_segments:
                 log("")
                 log("━"*60)
@@ -2515,7 +2519,8 @@ def queue_worker(jobs, q):
                            blur_radius=job.get("blur_radius"),
                            bg_scale_extra=job.get("bg_scale_extra"),
                            dim_factor=job.get("dim_factor"),
-                           effect_settings=effect_settings)
+                           effect_settings=effect_settings,
+                           use_ai_voice=job.get("use_ai_voice", False))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -4565,7 +4570,7 @@ class App:
                 'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
             }
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings}, daemon=True)
+            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False)}, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')
@@ -4579,7 +4584,8 @@ class App:
 
     def _run_single_thread(self, video, voice, music, output, top_ratio, bottom_ratio):
         words_per_caption = self.words_per_caption_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption)
+        use_ai_voice = self.use_ai_voice_var.get()
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
