@@ -2087,7 +2087,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -2105,6 +2105,14 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     # Determine if AI voice should be used - prefer parameter over global
     if use_ai_voice is None:
         use_ai_voice = globals().get('USE_AI_VOICE_REPLACEMENT', False)
+    
+    # Determine language settings - prefer parameters over globals
+    if target_language is None:
+        target_language = globals().get('TARGET_LANGUAGE', 'none')
+    if translation_enabled is None:
+        translation_enabled = globals().get('TRANSLATION_ENABLED', False)
+    if tts_language is None:
+        tts_language = globals().get('TTS_LANGUAGE', 'en')
     
     # Set 4K mode if requested
     # NOTE: Using global state for IS_4K_MODE. This is safe because:
@@ -2277,7 +2285,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 caption_segments = transcribe_captions(
                     voice_path, 
                     log, 
-                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                    translate_to=target_language if translation_enabled else None
                 )
             else:
                 log("[CAPTION] Deferring caption generation until after TTS voice is created...")
@@ -2285,7 +2293,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 caption_segments = transcribe_captions(
                     voice_path, 
                     log, 
-                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                    translate_to=target_language if translation_enabled else None
                 )
         else:
             # No voice file - use video duration as target
@@ -2313,13 +2321,13 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 log("━"*60)
                 log("[AI VOICE] 🎵 GENERATING AI VOICE REPLACEMENT")
                 log(f"[AI VOICE] Segments to synthesize: {len(caption_segments)}")
-                log(f"[AI VOICE] Target language: {TTS_LANGUAGE}")
+                log(f"[AI VOICE] Target language: {tts_language}")
                 log("━"*60)
                 log("")
                 
                 tts_audio_path = replace_voice_with_tts(
                     caption_segments, 
-                    language=TTS_LANGUAGE,
+                    language=tts_language,
                     log=log
                 )
                 if tts_audio_path:
@@ -2520,7 +2528,10 @@ def queue_worker(jobs, q):
                            bg_scale_extra=job.get("bg_scale_extra"),
                            dim_factor=job.get("dim_factor"),
                            effect_settings=effect_settings,
-                           use_ai_voice=job.get("use_ai_voice", False))
+                           use_ai_voice=job.get("use_ai_voice", False),
+                           target_language=job.get("target_language", 'none'),
+                           translation_enabled=job.get("translation_enabled", False),
+                           tts_language=job.get("tts_language", 'en'))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -4332,6 +4343,7 @@ class App:
                 "use_ai_voice": self.use_ai_voice_var.get(),
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
+                "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
                 "silence_threshold_ms": self.silence_threshold_var.get(),
                 # Font and border settings
                 "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
@@ -4570,7 +4582,7 @@ class App:
                 'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
             }
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False)}, daemon=True)
+            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en')}, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')
@@ -4585,7 +4597,10 @@ class App:
     def _run_single_thread(self, video, voice, music, output, top_ratio, bottom_ratio):
         words_per_caption = self.words_per_caption_var.get()
         use_ai_voice = self.use_ai_voice_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice)
+        target_language = self.target_language_var.get()
+        translation_enabled = self.translation_enabled_var.get()
+        tts_language = self.tts_language_var.get()
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
