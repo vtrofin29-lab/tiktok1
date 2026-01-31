@@ -1540,7 +1540,79 @@ def _make_ffmpeg_params_for_codec(codec):
             "-movflags", "+faststart"
         ]
 
-def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
+# ----------------- Video Effects (CapCut-style) -----------------
+def apply_video_effects(frame, effect_settings):
+    """
+    Apply CapCut-style effects to a video frame.
+    
+    Args:
+        frame: numpy array or PIL Image representing the frame
+        effect_settings: dict containing effect parameters
+        
+    Returns:
+        Modified frame as numpy array or PIL Image (same type as input)
+    """
+    import numpy as np
+    
+    # Convert to PIL if needed
+    is_numpy = isinstance(frame, np.ndarray)
+    if is_numpy:
+        img = Image.fromarray(frame.astype('uint8'), 'RGB')
+    else:
+        img = frame
+    
+    # Apply Sharpness/Resilience effect
+    if effect_settings.get('effect_sharpness', False):
+        intensity = effect_settings.get('effect_sharpness_intensity', 1.5)
+        sharpness = ImageEnhance.Sharpness(img)
+        img = sharpness.enhance(intensity)
+    
+    # Apply Saturation/Vibrance effect
+    if effect_settings.get('effect_saturation', False):
+        intensity = effect_settings.get('effect_saturation_intensity', 1.3)
+        color = ImageEnhance.Color(img)
+        img = color.enhance(intensity)
+    
+    # Apply Contrast/HDR effect
+    if effect_settings.get('effect_contrast', False):
+        intensity = effect_settings.get('effect_contrast_intensity', 1.2)
+        contrast = ImageEnhance.Contrast(img)
+        img = contrast.enhance(intensity)
+    
+    # Apply Brightness effect
+    if effect_settings.get('effect_brightness', False):
+        intensity = effect_settings.get('effect_brightness_intensity', 1.15)
+        brightness = ImageEnhance.Brightness(img)
+        img = brightness.enhance(intensity)
+    
+    # Apply Vintage/Film Grain effect
+    if effect_settings.get('effect_vintage', False):
+        grain_intensity = effect_settings.get('effect_vintage_intensity', 0.3)
+        # Add film grain noise
+        width, height = img.size
+        noise = np.random.normal(0, grain_intensity * 25, (height, width, 3))
+        img_array = np.array(img).astype('float')
+        img_array = np.clip(img_array + noise, 0, 255)
+        img = Image.fromarray(img_array.astype('uint8'), 'RGB')
+        
+        # Apply slight sepia tone for vintage look
+        sepia_r = np.array([[0.393 + 0.607 * (1 - grain_intensity), 0.769 - 0.769 * (1 - grain_intensity), 0.189 - 0.189 * (1 - grain_intensity)]])
+        sepia_g = np.array([[0.349 - 0.349 * (1 - grain_intensity), 0.686 + 0.314 * (1 - grain_intensity), 0.168 - 0.168 * (1 - grain_intensity)]])
+        sepia_b = np.array([[0.272 - 0.272 * (1 - grain_intensity), 0.534 - 0.534 * (1 - grain_intensity), 0.131 + 0.869 * (1 - grain_intensity)]])
+        
+        img_array = np.array(img)
+        r = np.dot(img_array, sepia_r.T)
+        g = np.dot(img_array, sepia_g.T)
+        b = np.dot(img_array, sepia_b.T)
+        sepia_img = np.dstack([r, g, b])
+        img = Image.fromarray(np.clip(sepia_img, 0, 255).astype('uint8'), 'RGB')
+    
+    # Convert back to numpy if needed
+    if is_numpy:
+        return np.array(img)
+    return img
+
+def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None):
     """
     Compose final video with blurred background and caption overlays.
     
@@ -1582,17 +1654,46 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
 
-    # foreground: slight zoom to avoid letterbox/freeze effect
+    # foreground: zoom to fill borders (especially left/right)
+    # Calculate scale to fill the canvas width completely while maintaining aspect ratio
     try:
-        min_scale_to_fit = min(WIDTH / video_clip.w, HEIGHT / video_clip.h)
+        # Scale to fill width only (left/right borders filled, top/bottom may have borders)
+        scale_w = WIDTH / video_clip.w
+        # Use width scale only - fills left/right, allows top/bottom borders
+        fg_scale = scale_w * 1.01  # Add 1% extra to ensure no gaps at edges
     except Exception:
-        min_scale_to_fit = 1.0
-    fg_scale = max(1.0, min_scale_to_fit) * 1.03
-    fg_scale = min(fg_scale, 1.06)
-    fg = video_clip.resize(fg_scale).set_position(("center", "center")).set_duration(video_clip.duration)
+        fg_scale = 1.0
+    
+    # Remove original audio from video clip to prevent duplicate audio
+    # Only the mixed_audio (TTS + music) should be used
+    fg = video_clip.without_audio().resize(fg_scale).set_position(("center", "center")).set_duration(video_clip.duration)
+    
+    # Apply video effects (CapCut-style) if enabled
+    if effect_settings and any([
+        effect_settings.get('effect_sharpness', False),
+        effect_settings.get('effect_saturation', False),
+        effect_settings.get('effect_contrast', False),
+        effect_settings.get('effect_brightness', False),
+        effect_settings.get('effect_vintage', False)
+    ]):
+        try:
+            log(f"[EFFECTS] Applying CapCut-style effects to video...")
+            active_effects = []
+            if effect_settings.get('effect_sharpness'): active_effects.append('Resilience')
+            if effect_settings.get('effect_saturation'): active_effects.append('Vibrance')
+            if effect_settings.get('effect_contrast'): active_effects.append('HDR')
+            if effect_settings.get('effect_brightness'): active_effects.append('Brightness')
+            if effect_settings.get('effect_vintage'): active_effects.append('Vintage')
+            log(f"[EFFECTS] Active effects: {', '.join(active_effects)}")
+            
+            # Apply effects to each frame
+            fg = fg.fl_image(lambda frame: apply_video_effects(frame, effect_settings))
+            log(f"[EFFECTS] ✓ Effects applied successfully")
+        except Exception as e:
+            log(f"[EFFECTS] Warning: Could not apply effects: {e}")
     
     try:
-        log(f"[compose] Foreground scaled: {fg_scale:.3f}x")
+        log(f"[compose] Foreground scaled: {fg_scale:.3f}x (fills canvas completely)")
     except Exception:
         pass
 
@@ -1769,6 +1870,18 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     
     # Composite all layers (FIXED: ensure captions are included)
     try:
+        # Verify audio clip before compositing
+        if audio_clip is None:
+            try:
+                log(f"[COMPOSE WARNING] ⚠️ audio_clip is None! Final video will have no audio!")
+            except Exception:
+                pass
+        else:
+            try:
+                log(f"[COMPOSE] Audio clip duration: {audio_clip.duration:.2f}s")
+            except Exception:
+                pass
+        
         final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
         try:
             log(f"[COMPOSE] ✓ Final composition created successfully")
@@ -1909,7 +2022,7 @@ def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bott
     log(f"Crop done. Cropped size: {cropped_video.size}, duration: {cropped_video.duration:.2f}s")
     return cropped_video
 
-def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
+def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None):
     """Helper to temporarily override global CAPTION_FONT_PREFERRED for the duration of compose."""
     old = globals().get('CAPTION_FONT_PREFERRED')
     try:
@@ -1920,7 +2033,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings)
     finally:
         try:
             if preferred_font and old is not None:
@@ -1974,12 +2087,46 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = QueueWriter(q)
     temp_fg = None
+    
+    # Set defaults for effects if not provided
+    if blur_radius is None:
+        blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
+    if bg_scale_extra is None:
+        bg_scale_extra = globals().get('BG_SCALE_EXTRA', 1.08)
+    if dim_factor is None:
+        dim_factor = globals().get('DIM_FACTOR', 0.55)
+    
+    # Determine if AI voice should be used - prefer parameter over global
+    if use_ai_voice is None:
+        use_ai_voice = globals().get('USE_AI_VOICE_REPLACEMENT', False)
+    
+    # Determine language settings - prefer parameters over globals
+    if target_language is None:
+        target_language = globals().get('TARGET_LANGUAGE', 'none')
+    if translation_enabled is None:
+        translation_enabled = globals().get('TRANSLATION_ENABLED', False)
+    if tts_language is None:
+        tts_language = globals().get('TTS_LANGUAGE', 'en')
+    
+    # Set 4K mode if requested
+    # NOTE: Using global state for IS_4K_MODE. This is safe because:
+    # 1. Jobs are processed sequentially (one at a time) via queue_worker
+    # 2. Single jobs via on_run_single run in separate threads but don't overlap
+    # 3. The old value is saved and restored in the finally block
+    old_is_4k = globals().get('IS_4K_MODE', False)
+    if use_4k:
+        globals()['IS_4K_MODE'] = True
+        log("[RESOLUTION] Job set to 4K mode (2160x3840)")
+    else:
+        globals()['IS_4K_MODE'] = False
+        log("[RESOLUTION] Job set to HD mode (1080x1920)")
+    
     try:
         load_preferred_font_cached(preferred_font or CAPTION_FONT_PREFERRED, CAPTION_FONT_SIZE, log=log)
         if REQUIRE_FONT_BANGERS and (LOADED_FONT_PATH is None or ("bangers" not in str(LOADED_FONT_PATH).lower())):
@@ -2003,7 +2150,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 video_clip_for_audio = VideoFileClip(video_path)
                 if video_clip_for_audio.audio is None:
                     log("[VOICE ERROR] Video has no audio track!")
-                    if not USE_AI_VOICE_REPLACEMENT:
+                    if not use_ai_voice:
                         log("[VOICE ERROR] Cannot proceed without voice audio or AI voice enabled.")
                         return
                     log("[VOICE] Will generate AI voice from text/captions only.")
@@ -2015,7 +2162,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     video_clip_for_audio.close()
             except Exception as e:
                 log(f"[VOICE ERROR] Failed to extract audio from video: {e}")
-                if not USE_AI_VOICE_REPLACEMENT:
+                if not use_ai_voice:
                     return
                 log("[VOICE] Will proceed with AI voice generation only.")
                 voice_path = None
@@ -2107,6 +2254,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             log("Pre-render failed or missing — falling back to MoviePy in-memory crop/resize.")
             fg_clip = cropped.resize(fg_scale).set_position(("center", "center")).set_duration(cropped.duration)
         
+        # Remove original audio from video clip to prevent duplicate audio
+        # Only the mixed_audio (voice/TTS + music) should be used
+        log("Removing original audio from video clip...")
+        fg_clip = fg_clip.without_audio()
+        log("✓ Original video audio removed (will use voice/TTS + music only)")
+        
         # Apply mirror if enabled
         if mirror_video:
             log("Applying horizontal mirror/flip to video...")
@@ -2127,12 +2280,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             # Transcribe captions ONLY if AI voice replacement is NOT enabled
             # If AI voice is enabled, we'll transcribe from the TTS audio later
-            if not USE_AI_VOICE_REPLACEMENT:
+            if not use_ai_voice:
                 log("[CAPTION] Transcribing captions from original voice...")
                 caption_segments = transcribe_captions(
                     voice_path, 
                     log, 
-                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                    translate_to=target_language if translation_enabled else None
                 )
             else:
                 log("[CAPTION] Deferring caption generation until after TTS voice is created...")
@@ -2140,7 +2293,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 caption_segments = transcribe_captions(
                     voice_path, 
                     log, 
-                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                    translate_to=target_language if translation_enabled else None
                 )
         else:
             # No voice file - use video duration as target
@@ -2154,27 +2307,30 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             # If AI voice is enabled, we still need to generate it even without a voice file
             # We'll need to create dummy caption segments from user input or skip captions
-            if USE_AI_VOICE_REPLACEMENT:
+            if use_ai_voice:
                 log("[NO VOICE + AI TTS] Will generate AI voice without captions")
                 # For now, we'll skip caption generation when there's no voice to transcribe
                 # The TTS will be generated below if caption_segments exists or can be created
             else:
                 log("[NO VOICE] No captions will be generated (no voice to transcribe)")
         
+        # Track if TTS was successfully applied
+        tts_successfully_applied = False
+        
         # Optional: Replace voice with AI-generated TTS or generate from scratch
-        if USE_AI_VOICE_REPLACEMENT:
+        if use_ai_voice:
             if caption_segments:
                 log("")
                 log("━"*60)
                 log("[AI VOICE] 🎵 GENERATING AI VOICE REPLACEMENT")
                 log(f"[AI VOICE] Segments to synthesize: {len(caption_segments)}")
-                log(f"[AI VOICE] Target language: {TTS_LANGUAGE}")
+                log(f"[AI VOICE] Target language: {tts_language}")
                 log("━"*60)
                 log("")
                 
                 tts_audio_path = replace_voice_with_tts(
                     caption_segments, 
-                    language=TTS_LANGUAGE,
+                    language=tts_language,
                     log=log
                 )
                 if tts_audio_path:
@@ -2250,17 +2406,46 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         log("[AI VOICE] Voice plays continuously (silences removed)")
                         log("[AI VOICE] Captions synchronized with word timestamps")
                         log("[AI VOICE] Video speed adjusted to match AI voice (voice kept at natural speed)")
+                        log(f"[AI VOICE] Final audio duration: {mixed_audio.duration:.2f}s")
+                        log(f"[AI VOICE] Final video duration: {synced_video.duration:.2f}s")
                         log("━"*60)
                         log("")
+                        
+                        # Mark that TTS was successfully applied
+                        tts_successfully_applied = True
+                        log("[AI VOICE] 🎯 TTS FLAG SET: TTS audio will be used in final video")
+                        
                     except Exception as e:
                         log(f"[AI VOICE ERROR] ❌ Failed to use TTS audio: {e}")
                         import traceback
                         log(traceback.format_exc())
+                        log("[AI VOICE ERROR] Falling back to original voice/music audio")
+                        tts_successfully_applied = False
+                else:
+                    log("[AI VOICE] ⚠️ TTS audio generation returned None - using original audio")
+                    tts_successfully_applied = False
             else:
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
                 log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
+                tts_successfully_applied = False
 
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, words_per_caption=words_per_caption)
+        # Final verification of what audio is being used
+        log("")
+        log("━"*60)
+        log("[FINAL COMPOSITION] Preparing to create final video...")
+        if tts_successfully_applied:
+            log("[FINAL COMPOSITION] 🎤 USING AI-GENERATED TTS VOICE")
+            log(f"[FINAL COMPOSITION] ✓ TTS voice successfully integrated")
+        else:
+            log("[FINAL COMPOSITION] 🎵 Using original voice/music audio")
+            log(f"[FINAL COMPOSITION] (AI voice was not enabled or failed)")
+        log(f"[FINAL COMPOSITION] Video duration: {synced_video.duration:.2f}s")
+        log(f"[FINAL COMPOSITION] Audio duration: {mixed_audio.duration:.2f}s")
+        log(f"[FINAL COMPOSITION] Caption segments: {len(caption_segments)}")
+        log("━"*60)
+        log("")
+        
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
@@ -2323,6 +2508,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         sys.stderr = old_stderr
     except Exception:
         pass
+    
+    # Restore IS_4K_MODE
+    try:
+        globals()['IS_4K_MODE'] = old_is_4k
+    except Exception:
+        pass
 
 
 def queue_worker(jobs, q):
@@ -2331,11 +2522,33 @@ def queue_worker(jobs, q):
     log(f"[QUEUE] Starting queue with {len(jobs)} job(s).")
     for i, job in enumerate(jobs, start=1):
         log(f"\n===== START JOB {i}/{len(jobs)} =====")
+        # Extract effect settings from job
+        effect_settings = {
+            'effect_sharpness': job.get("effect_sharpness", False),
+            'effect_sharpness_intensity': job.get("effect_sharpness_intensity", 1.5),
+            'effect_saturation': job.get("effect_saturation", False),
+            'effect_saturation_intensity': job.get("effect_saturation_intensity", 1.3),
+            'effect_contrast': job.get("effect_contrast", False),
+            'effect_contrast_intensity': job.get("effect_contrast_intensity", 1.2),
+            'effect_brightness': job.get("effect_brightness", False),
+            'effect_brightness_intensity': job.get("effect_brightness_intensity", 1.15),
+            'effect_vintage': job.get("effect_vintage", False),
+            'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
+        }
         process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"),
                            custom_top_ratio=job.get("custom_top_ratio"),
                            custom_bottom_ratio=job.get("custom_bottom_ratio"),
                            mirror_video=job.get("mirror_video", False),
-                           words_per_caption=job.get("words_per_caption", 2))
+                           words_per_caption=job.get("words_per_caption", 2),
+                           use_4k=job.get("use_4k", False),
+                           blur_radius=job.get("blur_radius"),
+                           bg_scale_extra=job.get("bg_scale_extra"),
+                           dim_factor=job.get("dim_factor"),
+                           effect_settings=effect_settings,
+                           use_ai_voice=job.get("use_ai_voice", False),
+                           target_language=job.get("target_language", 'none'),
+                           translation_enabled=job.get("translation_enabled", False),
+                           tts_language=job.get("tts_language", 'en'))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -2435,14 +2648,61 @@ class App:
         except Exception:
             pass
 
-        left_frame = ttk.Frame(pw, padding=8)
+        # Create a container frame for the left side with scrollbar
+        left_container = ttk.Frame(pw)
+        try:
+            left_container.configure(style='TFrame')
+            left_container.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        
+        # Create Canvas and Scrollbar for scrollable left panel
+        left_canvas = tk.Canvas(left_container, bg='#0b0b0b', highlightthickness=0)
+        left_scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=left_canvas.yview)
+        
+        # Create the actual frame that will contain all controls
+        left_frame = ttk.Frame(left_canvas, padding=8)
         try:
             left_frame.configure(style='TFrame')
             left_frame.config(bg='#0b0b0b')
         except Exception:
             pass
         left_frame.columnconfigure(1, weight=1)
-        pw.add(left_frame, weight=1)
+        
+        # Pack scrollbar and canvas
+        left_scrollbar.pack(side="right", fill="y")
+        left_canvas.pack(side="left", fill="both", expand=True)
+        
+        # Create window in canvas for the frame
+        canvas_frame = left_canvas.create_window((0, 0), window=left_frame, anchor="nw")
+        
+        # Configure canvas scrolling
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        
+        # Update scroll region when frame changes size
+        def configure_scroll_region(event=None):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+            # Also update the canvas window width to match canvas width
+            canvas_width = left_canvas.winfo_width()
+            left_canvas.itemconfig(canvas_frame, width=canvas_width)
+        
+        left_frame.bind("<Configure>", configure_scroll_region)
+        left_canvas.bind("<Configure>", configure_scroll_region)
+        
+        # Enable mousewheel scrolling
+        def on_mousewheel(event):
+            left_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def bind_mousewheel(event):
+            left_canvas.bind_all("<MouseWheel>", on_mousewheel)
+        
+        def unbind_mousewheel(event):
+            left_canvas.unbind_all("<MouseWheel>")
+        
+        left_canvas.bind('<Enter>', bind_mousewheel)
+        left_canvas.bind('<Leave>', unbind_mousewheel)
+        
+        pw.add(left_container, weight=1)
 
         right_outer = ttk.PanedWindow(pw, orient="vertical")
         pw.add(right_outer, weight=2)
@@ -2685,6 +2945,103 @@ class App:
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1
 
+        # --- Video Effects (CapCut-style) ---
+        ttk.Label(left_frame, text="Video Effects", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        # Sharpness/Resilience effect
+        self.effect_sharpness_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Resilience (Sharpness)", variable=self.effect_sharpness_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="💎").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_sharpness_intensity_var = tk.DoubleVar(value=1.5)
+        sharpness_scale = tk.Scale(left_frame, from_=0.5, to=3.0, resolution=0.1, orient='horizontal', 
+                                   length=120, showvalue=0, variable=self.effect_sharpness_intensity_var,
+                                   command=lambda v: self._mini_update_worker_async())
+        sharpness_scale.grid(row=row, column=1, padx=(6,0))
+        self.sharpness_label = ttk.Label(left_frame, text=f"{self.effect_sharpness_intensity_var.get():.1f}x")
+        self.sharpness_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_sharpness_intensity_var.trace('w', lambda *args: self.sharpness_label.config(text=f"{self.effect_sharpness_intensity_var.get():.1f}x"))
+        row += 1
+
+        # Saturation boost
+        self.effect_saturation_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Vibrance (Saturation)", variable=self.effect_saturation_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="🌈").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_saturation_intensity_var = tk.DoubleVar(value=1.3)
+        saturation_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.1, orient='horizontal', 
+                                    length=120, showvalue=0, variable=self.effect_saturation_intensity_var,
+                                    command=lambda v: self._mini_update_worker_async())
+        saturation_scale.grid(row=row, column=1, padx=(6,0))
+        self.saturation_label = ttk.Label(left_frame, text=f"{self.effect_saturation_intensity_var.get():.1f}x")
+        self.saturation_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_saturation_intensity_var.trace('w', lambda *args: self.saturation_label.config(text=f"{self.effect_saturation_intensity_var.get():.1f}x"))
+        row += 1
+
+        # Contrast enhancement
+        self.effect_contrast_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="HDR (Contrast)", variable=self.effect_contrast_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="⚡").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_contrast_intensity_var = tk.DoubleVar(value=1.2)
+        contrast_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.1, orient='horizontal', 
+                                 length=120, showvalue=0, variable=self.effect_contrast_intensity_var,
+                                 command=lambda v: self._mini_update_worker_async())
+        contrast_scale.grid(row=row, column=1, padx=(6,0))
+        self.contrast_label = ttk.Label(left_frame, text=f"{self.effect_contrast_intensity_var.get():.1f}x")
+        self.contrast_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_contrast_intensity_var.trace('w', lambda *args: self.contrast_label.config(text=f"{self.effect_contrast_intensity_var.get():.1f}x"))
+        row += 1
+
+        # Brightness adjustment
+        self.effect_brightness_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Brightness Boost", variable=self.effect_brightness_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="☀️").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_brightness_intensity_var = tk.DoubleVar(value=1.15)
+        brightness_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.05, orient='horizontal', 
+                                    length=120, showvalue=0, variable=self.effect_brightness_intensity_var,
+                                    command=lambda v: self._mini_update_worker_async())
+        brightness_scale.grid(row=row, column=1, padx=(6,0))
+        self.brightness_label = ttk.Label(left_frame, text=f"{self.effect_brightness_intensity_var.get():.2f}x")
+        self.brightness_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_brightness_intensity_var.trace('w', lambda *args: self.brightness_label.config(text=f"{self.effect_brightness_intensity_var.get():.2f}x"))
+        row += 1
+
+        # Film grain / Vintage
+        self.effect_vintage_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Vintage (Film Grain)", variable=self.effect_vintage_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="📽️").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Grain:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_vintage_intensity_var = tk.DoubleVar(value=0.3)
+        vintage_scale = tk.Scale(left_frame, from_=0.1, to=1.0, resolution=0.05, orient='horizontal', 
+                                length=120, showvalue=0, variable=self.effect_vintage_intensity_var,
+                                command=lambda v: self._mini_update_worker_async())
+        vintage_scale.grid(row=row, column=1, padx=(6,0))
+        self.vintage_label = ttk.Label(left_frame, text=f"{self.effect_vintage_intensity_var.get():.2f}")
+        self.vintage_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_vintage_intensity_var.trace('w', lambda *args: self.vintage_label.config(text=f"{self.effect_vintage_intensity_var.get():.2f}"))
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+
         ttk.Label(left_frame, text="Top:").grid(row=row, column=0, sticky="e")
         self.top_percent_var = tk.DoubleVar(value=CROP_TOP_RATIO*100)
         self.top_label = ttk.Label(left_frame, text=f"{self.top_percent_var.get():.1f}%")
@@ -2711,6 +3068,24 @@ class App:
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1
 
+        # Settings Preset Section
+        ttk.Label(left_frame, text="Settings Presets:").grid(row=row, column=0, sticky="w")
+        row += 1
+        preset_btns = ttk.Frame(left_frame)
+        try:
+            preset_btns.configure(style='TFrame')
+            preset_btns.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        preset_btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6,0))
+        ttk.Button(preset_btns, text="💾 Save Preset", command=self.save_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="📂 Load Preset", command=self.load_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="🔄 Reset to Defaults", command=self.reset_to_defaults).pack(side="left", padx=4)
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+
         ttk.Label(left_frame, text="Job queue:").grid(row=row, column=0, sticky="w")
         row += 1
         self.job_listbox = tk.Listbox(left_frame, height=10, selectmode=tk.EXTENDED, bg='#111111', fg='#FFFFFF')
@@ -2719,6 +3094,8 @@ class App:
             self.job_listbox.config(selectbackground='#2b2b2b', selectforeground='#FFFFFF', highlightthickness=1, highlightbackground='#222222', bd=2, relief='groove')
         except Exception:
             pass
+        # Add double-click binding to load job settings
+        self.job_listbox.bind('<Double-Button-1>', self.on_job_double_click)
         left_frame.rowconfigure(row, weight=1)
         row += 1
 
@@ -3026,6 +3403,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3042,6 +3421,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3053,6 +3434,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3062,6 +3445,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3766,6 +4151,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3782,6 +4169,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3793,6 +4182,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3802,6 +4193,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3873,6 +4266,64 @@ class App:
         path = filedialog.asksaveasfilename(title="Output file", defaultextension=".mp4", filetypes=[("MP4 file", "*.mp4")])
         if path: self.output_var.set(path)
 
+    def _format_job_info(self, job):
+        """Format job information for display, showing all relevant settings."""
+        info_parts = []
+        
+        # Resolution and basic settings
+        if job.get("use_4k"):
+            info_parts.append("4K")
+        if job.get("mirror_video"):
+            info_parts.append("Mirror")
+        if job.get("words_per_caption", 2) != 2:
+            info_parts.append(f"{job.get('words_per_caption')} words/cap")
+        
+        # AI and translation settings
+        if job.get("use_ai_voice"):
+            info_parts.append("AI-TTS")
+        if job.get("translation_enabled"):
+            lang = job.get("target_language", "?")
+            info_parts.append(f"Translate:{lang}")
+        
+        # Silence threshold (only show if AI voice is enabled and not default)
+        if job.get("use_ai_voice") and job.get("silence_threshold_ms", 300) != 300:
+            info_parts.append(f"silence:{job.get('silence_threshold_ms')}ms")
+        
+        # Font color (show if not default white)
+        text_color = job.get("caption_text_color", (255, 255, 255, 255))
+        if text_color != (255, 255, 255, 255):
+            info_parts.append(f"color:RGB({text_color[0]},{text_color[1]},{text_color[2]})")
+        
+        # Stroke/border settings (show if not default)
+        stroke_color = job.get("caption_stroke_color", (0, 0, 0, 150))
+        stroke_width = job.get("caption_stroke_width", 3)
+        if stroke_color != (0, 0, 0, 150) or stroke_width != 3:
+            info_parts.append(f"border:w={stroke_width},RGB({stroke_color[0]},{stroke_color[1]},{stroke_color[2]})")
+        
+        # Add effects info if different from defaults
+        blur = job.get("blur_radius", 25)
+        bg_scale = job.get("bg_scale_extra", 1.08)
+        dim = job.get("dim_factor", 0.55)
+        if blur != 25 or bg_scale != 1.08 or dim != 0.55:
+            info_parts.append(f"effects:blur={blur}/scale={bg_scale:.2f}/dim={dim:.2f}")
+        
+        # Video effects (CapCut-style)
+        effects_active = []
+        if job.get("effect_sharpness"):
+            effects_active.append("Resilience")
+        if job.get("effect_saturation"):
+            effects_active.append("Vibrance")
+        if job.get("effect_contrast"):
+            effects_active.append("HDR")
+        if job.get("effect_brightness"):
+            effects_active.append("Brightness")
+        if job.get("effect_vintage"):
+            effects_active.append("Vintage")
+        if effects_active:
+            info_parts.append(f"fx:{','.join(effects_active)}")
+        
+        return " [" + ", ".join(info_parts) + "]" if info_parts else ""
+
     def add_job(self):
         try:
             video = self.video_var.get().strip()
@@ -3900,10 +4351,37 @@ class App:
                 "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "mirror_video": self.mirror_video_var.get(),
-                "words_per_caption": self.words_per_caption_var.get()
+                "words_per_caption": self.words_per_caption_var.get(),
+                "use_4k": self.use_4k_var.get(),
+                "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
+                "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
+                "dim_factor": globals().get('DIM_FACTOR', 0.55),
+                # AI and caption settings
+                "use_ai_voice": self.use_ai_voice_var.get(),
+                "translation_enabled": self.translation_enabled_var.get(),
+                "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
+                "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
+                "silence_threshold_ms": self.silence_threshold_var.get(),
+                # Font and border settings
+                "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
+                "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
+                "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3),
+                # Video effects (CapCut-style)
+                "effect_sharpness": self.effect_sharpness_var.get(),
+                "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
+                "effect_saturation": self.effect_saturation_var.get(),
+                "effect_saturation_intensity": self.effect_saturation_intensity_var.get(),
+                "effect_contrast": self.effect_contrast_var.get(),
+                "effect_contrast_intensity": self.effect_contrast_intensity_var.get(),
+                "effect_brightness": self.effect_brightness_var.get(),
+                "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
+                "effect_vintage": self.effect_vintage_var.get(),
+                "effect_vintage_intensity": self.effect_vintage_intensity_var.get()
             }
             self.jobs.append(job)
-            display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'})"
+            # Show complete job info in the display using helper
+            info = self._format_job_info(job)
+            display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'}){info}"
             self.job_listbox.insert('end', display)
         except Exception as e:
             messagebox.showerror("Error adding job", str(e))
@@ -3914,7 +4392,11 @@ class App:
             tag = ""
             if j.get("custom_top_ratio") is not None:
                 tag = f" (crop {int(j['custom_top_ratio']*100)}%/{int(j['custom_bottom_ratio']*100)}%)"
-            display = f"{i}. {os.path.basename(j['video'])} | {os.path.basename(j['voice'])} | {os.path.basename(j['music'])}{tag}"
+            
+            # Use helper to format job info consistently
+            info = self._format_job_info(j)
+            
+            display = f"{i}. {os.path.basename(j['video'])} | {os.path.basename(j['voice'])} | {os.path.basename(j['music'])}{tag}{info}"
             self.job_listbox.insert(tk.END, display)
 
     def remove_job(self):
@@ -3928,6 +4410,132 @@ class App:
             except Exception:
                 pass
         self._refresh_job_listbox()
+
+    def on_job_double_click(self, event):
+        """Load job settings when double-clicking a job in the list."""
+        try:
+            # Get selected job index
+            sel = self.job_listbox.curselection()
+            if not sel:
+                return
+            
+            job_idx = sel[0]
+            if job_idx >= len(self.jobs):
+                return
+            
+            job = self.jobs[job_idx]
+            
+            # Load file paths
+            self.video_var.set(job.get("video", ""))
+            self.voice_var.set(job.get("voice", ""))
+            self.music_var.set(job.get("music", ""))
+            self.output_var.set(job.get("output", ""))
+            
+            # Load basic settings
+            self.mirror_video_var.set(job.get("mirror_video", False))
+            self.words_per_caption_var.set(job.get("words_per_caption", 2))
+            self.use_4k_var.set(job.get("use_4k", False))
+            
+            # Load crop settings
+            if job.get("custom_top_ratio") is not None:
+                self.use_custom_crop_var.set(True)
+                self.top_percent_var.set(job.get("custom_top_ratio", 0.0) * 100.0)
+                self.bottom_percent_var.set(job.get("custom_bottom_ratio", 0.0) * 100.0)
+            else:
+                self.use_custom_crop_var.set(False)
+            
+            # Load effects settings
+            globals()['STATIC_BG_BLUR_RADIUS'] = job.get("blur_radius", 25)
+            globals()['BG_SCALE_EXTRA'] = job.get("bg_scale_extra", 1.08)
+            globals()['DIM_FACTOR'] = job.get("dim_factor", 0.55)
+            
+            # Load AI and translation settings
+            self.use_ai_voice_var.set(job.get("use_ai_voice", False))
+            self.translation_enabled_var.set(job.get("translation_enabled", False))
+            if hasattr(self, 'target_language_var'):
+                self.target_language_var.set(job.get("target_language", "none"))
+            self.silence_threshold_var.set(job.get("silence_threshold_ms", 300))
+            
+            # Load video effects (CapCut-style)
+            if hasattr(self, 'effect_sharpness_var'):
+                self.effect_sharpness_var.set(job.get("effect_sharpness", False))
+                self.effect_sharpness_intensity_var.set(job.get("effect_sharpness_intensity", 1.5))
+            if hasattr(self, 'effect_saturation_var'):
+                self.effect_saturation_var.set(job.get("effect_saturation", False))
+                self.effect_saturation_intensity_var.set(job.get("effect_saturation_intensity", 1.3))
+            if hasattr(self, 'effect_contrast_var'):
+                self.effect_contrast_var.set(job.get("effect_contrast", False))
+                self.effect_contrast_intensity_var.set(job.get("effect_contrast_intensity", 1.2))
+            if hasattr(self, 'effect_brightness_var'):
+                self.effect_brightness_var.set(job.get("effect_brightness", False))
+                self.effect_brightness_intensity_var.set(job.get("effect_brightness_intensity", 1.15))
+            if hasattr(self, 'effect_vintage_var'):
+                self.effect_vintage_var.set(job.get("effect_vintage", False))
+                self.effect_vintage_intensity_var.set(job.get("effect_vintage_intensity", 0.3))
+            
+            # Load font and border settings
+            text_color = job.get("caption_text_color", (255, 255, 255, 255))
+            stroke_color = job.get("caption_stroke_color", (0, 0, 0, 150))
+            stroke_width = job.get("caption_stroke_width", 3)
+            
+            globals()['CAPTION_TEXT_COLOR'] = text_color
+            globals()['CAPTION_STROKE_COLOR'] = stroke_color
+            globals()['CAPTION_STROKE_WIDTH'] = stroke_width
+            
+            # Update UI elements for colors if they exist
+            try:
+                if hasattr(self, 'text_color_canvas') and self.text_color_canvas:
+                    col = f'#{text_color[0]:02x}{text_color[1]:02x}{text_color[2]:02x}'
+                    self.text_color_canvas.delete('all')
+                    self.text_color_canvas.create_oval(2,2,26,26, fill=col, outline='white')
+            except Exception:
+                pass
+            
+            try:
+                if hasattr(self, 'stroke_color_canvas') and self.stroke_color_canvas:
+                    col = f'#{stroke_color[0]:02x}{stroke_color[1]:02x}{stroke_color[2]:02x}'
+                    self.stroke_color_canvas.delete('all')
+                    self.stroke_color_canvas.create_oval(2,2,26,26, fill=col, outline='white')
+            except Exception:
+                pass
+            
+            try:
+                if hasattr(self, 'stroke_width_var'):
+                    self.stroke_width_var.set(stroke_width)
+                if hasattr(self, 'stroke_width_label') and self.stroke_width_label:
+                    self.stroke_width_label.config(text=str(int(stroke_width)))
+            except Exception:
+                pass
+            
+            # Load font if specified
+            font_path = job.get("font")
+            if font_path:
+                try:
+                    self.selected_font_path = font_path
+                    self.selected_font = os.path.basename(font_path) if font_path else None
+                except Exception:
+                    pass
+            
+            # Update video preview if video file exists
+            video_path = job.get("video", "")
+            if video_path and os.path.exists(video_path):
+                try:
+                    # Trigger mini preview update
+                    self._mini_update_worker_async()
+                except Exception as e:
+                    print(f"Could not update preview: {e}")
+            
+            # Log the load action
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"\n[LOAD] Loaded settings from job #{job_idx + 1}\n")
+                self.log_widget.see('end')
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+                
+        except Exception as e:
+            messagebox.showerror("Error loading job", str(e))
 
     def on_run_single(self):
         try:
@@ -3950,10 +4558,48 @@ class App:
             job = {"video": video, "voice": voice, "music": music, "output": output, "font": pref_font,
                    "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                    "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
-                   "mirror_video": self.mirror_video_var.get()}
+                   "mirror_video": self.mirror_video_var.get(),
+                   "words_per_caption": self.words_per_caption_var.get(),
+                   "use_4k": self.use_4k_var.get(),
+                   "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
+                   "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
+                   "dim_factor": globals().get('DIM_FACTOR', 0.55),
+                   # AI and caption settings
+                   "use_ai_voice": self.use_ai_voice_var.get(),
+                   "translation_enabled": self.translation_enabled_var.get(),
+                   "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
+                   "silence_threshold_ms": self.silence_threshold_var.get(),
+                   # Font and border settings
+                   "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
+                   "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
+                   "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3),
+                   # Video effects (CapCut-style)
+                   "effect_sharpness": self.effect_sharpness_var.get(),
+                   "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
+                   "effect_saturation": self.effect_saturation_var.get(),
+                   "effect_saturation_intensity": self.effect_saturation_intensity_var.get(),
+                   "effect_contrast": self.effect_contrast_var.get(),
+                   "effect_contrast_intensity": self.effect_contrast_intensity_var.get(),
+                   "effect_brightness": self.effect_brightness_var.get(),
+                   "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
+                   "effect_vintage": self.effect_vintage_var.get(),
+                   "effect_vintage_intensity": self.effect_vintage_intensity_var.get()}
             q = self.q
+            # Extract effect settings
+            effect_settings = {
+                'effect_sharpness': job.get("effect_sharpness", False),
+                'effect_sharpness_intensity': job.get("effect_sharpness_intensity", 1.5),
+                'effect_saturation': job.get("effect_saturation", False),
+                'effect_saturation_intensity': job.get("effect_saturation_intensity", 1.3),
+                'effect_contrast': job.get("effect_contrast", False),
+                'effect_contrast_intensity': job.get("effect_contrast_intensity", 1.2),
+                'effect_brightness': job.get("effect_brightness", False),
+                'effect_brightness_intensity': job.get("effect_brightness_intensity", 1.15),
+                'effect_vintage': job.get("effect_vintage", False),
+                'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
+            }
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False)}, daemon=True)
+            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en')}, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')
@@ -3967,7 +4613,11 @@ class App:
 
     def _run_single_thread(self, video, voice, music, output, top_ratio, bottom_ratio):
         words_per_caption = self.words_per_caption_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption)
+        use_ai_voice = self.use_ai_voice_var.get()
+        target_language = self.target_language_var.get()
+        translation_enabled = self.translation_enabled_var.get()
+        tts_language = self.tts_language_var.get()
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
@@ -4027,6 +4677,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4043,6 +4695,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4054,6 +4708,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4063,9 +4719,26 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
+
+    def _get_current_effect_settings(self):
+        """Get current effect settings from UI for preview."""
+        return {
+            'effect_sharpness': self.effect_sharpness_var.get(),
+            'effect_sharpness_intensity': self.effect_sharpness_intensity_var.get(),
+            'effect_saturation': self.effect_saturation_var.get(),
+            'effect_saturation_intensity': self.effect_saturation_intensity_var.get(),
+            'effect_contrast': self.effect_contrast_var.get(),
+            'effect_contrast_intensity': self.effect_contrast_intensity_var.get(),
+            'effect_brightness': self.effect_brightness_var.get(),
+            'effect_brightness_intensity': self.effect_brightness_intensity_var.get(),
+            'effect_vintage': self.effect_vintage_var.get(),
+            'effect_vintage_intensity': self.effect_vintage_intensity_var.get()
+        }
 
     def _mini_update_worker_async(self):
         video = self.video_var.get().strip()
@@ -4091,6 +4764,16 @@ class App:
     def _mini_extract_and_update(self, video_path, time_val):
         try:
             img, scale = extract_and_scale_frame(video_path, time_sec=time_val, desired_width=360)
+            
+            # Apply video effects to preview
+            effect_settings = self._get_current_effect_settings()
+            if any([effect_settings.get('effect_sharpness', False),
+                    effect_settings.get('effect_saturation', False),
+                    effect_settings.get('effect_contrast', False),
+                    effect_settings.get('effect_brightness', False),
+                    effect_settings.get('effect_vintage', False)]):
+                img = apply_video_effects(img, effect_settings)
+            
             self.mini_base_img = img
             self.mini_scale = scale
             top_pct = float(self.top_percent_var.get())/100.0
@@ -4195,6 +4878,16 @@ class App:
                     new_w = desired_width
                     new_h = int(round(h * scale))
                     img = img.resize((new_w, new_h), Image.LANCZOS)
+                    
+                    # Apply video effects to preview
+                    effect_settings = self._get_current_effect_settings()
+                    if any([effect_settings.get('effect_sharpness', False),
+                            effect_settings.get('effect_saturation', False),
+                            effect_settings.get('effect_contrast', False),
+                            effect_settings.get('effect_brightness', False),
+                            effect_settings.get('effect_vintage', False)]):
+                        img = apply_video_effects(img, effect_settings)
+                    
                     top_pct = float(self.top_percent_var.get())/100.0
                     bottom_pct = float(self.bottom_percent_var.get())/100.0
                     composed = overlay_crop_on_image(img, top_pct, bottom_pct)
@@ -4295,6 +4988,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4311,6 +5006,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4322,6 +5019,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4331,6 +5030,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4472,6 +5173,310 @@ class App:
         except Exception as e:
             messagebox.showerror("Load failed", f"Could not load crop settings: {e}")
 
+    def save_preset(self):
+        """Save all current settings to a preset file."""
+        try:
+            preset_data = {
+                # File paths (optional - user might not want to save these)
+                "video_path": self.video_var.get(),
+                "voice_path": self.voice_var.get(),
+                "music_path": self.music_var.get(),
+                "output_path": self.output_var.get(),
+                
+                # Video settings
+                "mirror_video": self.mirror_video_var.get(),
+                "use_4k": self.use_4k_var.get(),
+                "use_custom_crop": self.use_custom_crop_var.get(),
+                "top_percent": self.top_percent_var.get(),
+                "bottom_percent": self.bottom_percent_var.get(),
+                
+                # Audio settings
+                "voice_gain": self.voice_gain_var.get(),
+                "music_gain": self.music_gain_var.get(),
+                
+                # Translation/TTS settings
+                "translation_enabled": self.translation_enabled_var.get(),
+                "target_language": self.target_language_var.get(),
+                "use_ai_voice": self.use_ai_voice_var.get(),
+                "tts_language": self.tts_language_var.get(),
+                "tts_voice": self.tts_voice_var.get(),
+                "silence_threshold": self.silence_threshold_var.get(),
+                
+                # Caption settings
+                "words_per_caption": self.words_per_caption_var.get(),
+                "caption_text_color": list(globals()['CAPTION_TEXT_COLOR']),
+                "caption_stroke_color": list(globals()['CAPTION_STROKE_COLOR']),
+                "caption_stroke_width": self.stroke_width_var.get(),
+                "caption_y_offset": self.caption_y_offset_var.get(),
+                
+                # Video effects
+                "effect_sharpness": self.effect_sharpness_var.get(),
+                "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
+                "effect_saturation": self.effect_saturation_var.get(),
+                "effect_saturation_intensity": self.effect_saturation_intensity_var.get(),
+                "effect_contrast": self.effect_contrast_var.get(),
+                "effect_contrast_intensity": self.effect_contrast_intensity_var.get(),
+                "effect_brightness": self.effect_brightness_var.get(),
+                "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
+                "effect_vintage": self.effect_vintage_var.get(),
+                "effect_vintage_intensity": self.effect_vintage_intensity_var.get(),
+                
+                # Background effects
+                "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
+                "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
+                "dim_factor": globals().get('DIM_FACTOR', 0.55),
+            }
+            
+            # Save to file
+            preset_file = Path.home() / ".tiktok_preset.json"
+            with open(preset_file, 'w', encoding='utf-8') as f:
+                json.dump(preset_data, f, indent=2)
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n💾 Settings preset saved to: {preset_file}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+            
+            messagebox.showinfo("Preset Saved", f"All settings saved successfully!\n\nLocation: {preset_file}")
+        except Exception as e:
+            messagebox.showerror("Save Failed", f"Could not save preset: {e}")
+
+    def load_preset(self):
+        """Load settings from preset file and apply them to the UI."""
+        preset_file = Path.home() / ".tiktok_preset.json"
+        
+        if not preset_file.exists():
+            messagebox.showwarning("No Preset", f"No preset file found at:\n{preset_file}\n\nSave a preset first!")
+            return
+        
+        try:
+            with open(preset_file, 'r', encoding='utf-8') as f:
+                preset_data = json.load(f)
+            
+            # Apply file paths (optional)
+            if preset_data.get("video_path"):
+                self.video_var.set(preset_data["video_path"])
+            if preset_data.get("voice_path"):
+                self.voice_var.set(preset_data["voice_path"])
+            if preset_data.get("music_path"):
+                self.music_var.set(preset_data["music_path"])
+            if preset_data.get("output_path"):
+                self.output_var.set(preset_data["output_path"])
+            
+            # Apply video settings
+            self.mirror_video_var.set(preset_data.get("mirror_video", False))
+            self.use_4k_var.set(preset_data.get("use_4k", False))
+            self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
+            self.top_percent_var.set(preset_data.get("top_percent", CROP_TOP_RATIO*100))
+            self.bottom_percent_var.set(preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100))
+            self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+            self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            
+            # Apply audio settings
+            self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
+            self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            
+            # Apply translation/TTS settings
+            self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
+            self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
+            self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
+            self.silence_threshold_var.set(preset_data.get("silence_threshold", 300))
+            
+            # Apply caption settings
+            self.words_per_caption_var.set(preset_data.get("words_per_caption", 2))
+            if "caption_text_color" in preset_data:
+                globals()['CAPTION_TEXT_COLOR'] = tuple(preset_data["caption_text_color"])
+            if "caption_stroke_color" in preset_data:
+                globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
+            self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
+            self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            
+            # Apply video effects
+            self.effect_sharpness_var.set(preset_data.get("effect_sharpness", False))
+            self.effect_sharpness_intensity_var.set(preset_data.get("effect_sharpness_intensity", 1.5))
+            self.effect_saturation_var.set(preset_data.get("effect_saturation", False))
+            self.effect_saturation_intensity_var.set(preset_data.get("effect_saturation_intensity", 1.3))
+            self.effect_contrast_var.set(preset_data.get("effect_contrast", False))
+            self.effect_contrast_intensity_var.set(preset_data.get("effect_contrast_intensity", 1.2))
+            self.effect_brightness_var.set(preset_data.get("effect_brightness", False))
+            self.effect_brightness_intensity_var.set(preset_data.get("effect_brightness_intensity", 1.15))
+            self.effect_vintage_var.set(preset_data.get("effect_vintage", False))
+            self.effect_vintage_intensity_var.set(preset_data.get("effect_vintage_intensity", 0.3))
+            
+            # Apply background effects
+            globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
+            globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
+            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.55)
+            
+            # Update UI elements that show values
+            self._update_color_canvases()
+            self.update_mini_preview_immediate()
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n📂 Settings preset loaded from: {preset_file}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+            
+            messagebox.showinfo("Preset Loaded", "All settings loaded and applied successfully!")
+        except Exception as e:
+            messagebox.showerror("Load Failed", f"Could not load preset: {e}")
+
+    def load_preset_silent(self):
+        """Load settings from preset file silently (no popup messages) - used for auto-load on startup."""
+        preset_file = Path.home() / ".tiktok_preset.json"
+        
+        if not preset_file.exists():
+            return
+        
+        try:
+            with open(preset_file, 'r', encoding='utf-8') as f:
+                preset_data = json.load(f)
+            
+            # Apply file paths (optional)
+            if preset_data.get("video_path"):
+                self.video_var.set(preset_data["video_path"])
+            if preset_data.get("voice_path"):
+                self.voice_var.set(preset_data["voice_path"])
+            if preset_data.get("music_path"):
+                self.music_var.set(preset_data["music_path"])
+            if preset_data.get("output_path"):
+                self.output_var.set(preset_data["output_path"])
+            
+            # Apply video settings
+            self.mirror_video_var.set(preset_data.get("mirror_video", False))
+            self.use_4k_var.set(preset_data.get("use_4k", False))
+            self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
+            self.top_percent_var.set(preset_data.get("top_percent", CROP_TOP_RATIO*100))
+            self.bottom_percent_var.set(preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100))
+            self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+            self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            
+            # Apply audio settings
+            self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
+            self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            
+            # Apply translation/TTS settings
+            self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
+            self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
+            self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
+            self.silence_threshold_var.set(preset_data.get("silence_threshold", 300))
+            
+            # Apply caption settings
+            self.words_per_caption_var.set(preset_data.get("words_per_caption", 2))
+            if "caption_text_color" in preset_data:
+                globals()['CAPTION_TEXT_COLOR'] = tuple(preset_data["caption_text_color"])
+            if "caption_stroke_color" in preset_data:
+                globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
+            self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
+            self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            
+            # Apply video effects
+            self.effect_sharpness_var.set(preset_data.get("effect_sharpness", False))
+            self.effect_sharpness_intensity_var.set(preset_data.get("effect_sharpness_intensity", 1.5))
+            self.effect_saturation_var.set(preset_data.get("effect_saturation", False))
+            self.effect_saturation_intensity_var.set(preset_data.get("effect_saturation_intensity", 1.3))
+            self.effect_contrast_var.set(preset_data.get("effect_contrast", False))
+            self.effect_contrast_intensity_var.set(preset_data.get("effect_contrast_intensity", 1.2))
+            self.effect_brightness_var.set(preset_data.get("effect_brightness", False))
+            self.effect_brightness_intensity_var.set(preset_data.get("effect_brightness_intensity", 1.15))
+            self.effect_vintage_var.set(preset_data.get("effect_vintage", False))
+            self.effect_vintage_intensity_var.set(preset_data.get("effect_vintage_intensity", 0.3))
+            
+            # Apply background effects
+            globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
+            globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
+            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.55)
+            
+            # Update UI elements that show values
+            self._update_color_canvases()
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n📂 Auto-loaded preset from: {preset_file}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+        except Exception as e:
+            # Silently fail on auto-load
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n⚠️ Could not auto-load preset: {e}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+
+    def reset_to_defaults(self):
+        """Reset all settings to their default values."""
+        result = messagebox.askyesno("Reset to Defaults", 
+                                      "This will reset ALL settings to their default values.\n\nAre you sure?")
+        if not result:
+            return
+        
+        try:
+            # Reset file paths
+            self.video_var.set("")
+            self.voice_var.set("")
+            self.music_var.set("")
+            self.output_var.set("final_tiktok.mp4")
+            
+            # Reset video settings
+            self.mirror_video_var.set(False)
+            self.use_4k_var.set(False)
+            self.use_custom_crop_var.set(False)
+            self.top_percent_var.set(CROP_TOP_RATIO*100)
+            self.bottom_percent_var.set(CROP_BOTTOM_RATIO*100)
+            self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+            self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            
+            # Reset audio settings
+            self.voice_gain_var.set(VOICE_GAIN)
+            self.music_gain_var.set(MUSIC_GAIN)
+            
+            # Reset translation/TTS settings
+            self.translation_enabled_var.set(TRANSLATION_ENABLED)
+            self.target_language_var.set(TARGET_LANGUAGE)
+            self.use_ai_voice_var.set(USE_AI_VOICE_REPLACEMENT)
+            self.tts_language_var.set(TTS_LANGUAGE)
+            self.tts_voice_var.set('Auto (Default)')
+            self.silence_threshold_var.set(300)
+            
+            # Reset caption settings
+            self.words_per_caption_var.set(2)
+            globals()['CAPTION_TEXT_COLOR'] = (255, 255, 255, 255)
+            globals()['CAPTION_STROKE_COLOR'] = (0, 0, 0, 150)
+            self.stroke_width_var.set(max(1, int(CAPTION_FONT_SIZE * 0.05)))
+            self.caption_y_offset_var.set(0)
+            
+            # Reset video effects
+            self.effect_sharpness_var.set(False)
+            self.effect_sharpness_intensity_var.set(1.5)
+            self.effect_saturation_var.set(False)
+            self.effect_saturation_intensity_var.set(1.3)
+            self.effect_contrast_var.set(False)
+            self.effect_contrast_intensity_var.set(1.2)
+            self.effect_brightness_var.set(False)
+            self.effect_brightness_intensity_var.set(1.15)
+            self.effect_vintage_var.set(False)
+            self.effect_vintage_intensity_var.set(0.3)
+            
+            # Reset background effects
+            globals()['STATIC_BG_BLUR_RADIUS'] = 25
+            globals()['BG_SCALE_EXTRA'] = 1.08
+            globals()['DIM_FACTOR'] = 0.55
+            
+            # Update UI
+            self._update_color_canvases()
+            self.update_mini_preview_immediate()
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, "\n🔄 All settings reset to defaults\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+            
+            messagebox.showinfo("Reset Complete", "All settings have been reset to their default values.")
+        except Exception as e:
+            messagebox.showerror("Reset Failed", f"Could not reset settings: {e}")
+
     def poll_queue(self):
         try:
             while True:
@@ -4511,6 +5516,16 @@ class App:
 def main():
     root = tk.Tk()
     app = App(root)
+    
+    # Auto-load preset if it exists
+    preset_file = Path.home() / ".tiktok_preset.json"
+    if preset_file.exists():
+        try:
+            # Use root.after to load preset after UI is fully initialized
+            root.after(100, app.load_preset_silent)
+        except Exception:
+            pass  # Silently ignore errors during auto-load
+    
     root.mainloop()
 
 if __name__ == "__main__":
