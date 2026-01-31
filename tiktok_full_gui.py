@@ -2314,6 +2314,9 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             else:
                 log("[NO VOICE] No captions will be generated (no voice to transcribe)")
         
+        # Track if TTS was successfully applied
+        tts_successfully_applied = False
+        
         # Optional: Replace voice with AI-generated TTS or generate from scratch
         if use_ai_voice:
             if caption_segments:
@@ -2407,21 +2410,35 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         log(f"[AI VOICE] Final video duration: {synced_video.duration:.2f}s")
                         log("━"*60)
                         log("")
+                        
+                        # Mark that TTS was successfully applied
+                        tts_successfully_applied = True
+                        log("[AI VOICE] 🎯 TTS FLAG SET: TTS audio will be used in final video")
+                        
                     except Exception as e:
                         log(f"[AI VOICE ERROR] ❌ Failed to use TTS audio: {e}")
                         import traceback
                         log(traceback.format_exc())
                         log("[AI VOICE ERROR] Falling back to original voice/music audio")
+                        tts_successfully_applied = False
                 else:
                     log("[AI VOICE] ⚠️ TTS audio generation returned None - using original audio")
+                    tts_successfully_applied = False
             else:
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
                 log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
+                tts_successfully_applied = False
 
         # Final verification of what audio is being used
         log("")
         log("━"*60)
         log("[FINAL COMPOSITION] Preparing to create final video...")
+        if tts_successfully_applied:
+            log("[FINAL COMPOSITION] 🎤 USING AI-GENERATED TTS VOICE")
+            log(f"[FINAL COMPOSITION] ✓ TTS voice successfully integrated")
+        else:
+            log("[FINAL COMPOSITION] 🎵 Using original voice/music audio")
+            log(f"[FINAL COMPOSITION] (AI voice was not enabled or failed)")
         log(f"[FINAL COMPOSITION] Video duration: {synced_video.duration:.2f}s")
         log(f"[FINAL COMPOSITION] Audio duration: {mixed_audio.duration:.2f}s")
         log(f"[FINAL COMPOSITION] Caption segments: {len(caption_segments)}")
