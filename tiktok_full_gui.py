@@ -2002,6 +2002,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     codec_try_order = []
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         codec_try_order.append(PREFERRED_NVENC_CODEC)
+        log(f"[EXPORT] GPU acceleration enabled for export (NVENC: {PREFERRED_NVENC_CODEC})")
+    else:
+        log("[EXPORT] Using CPU encoding for export (libx264)")
     codec_try_order.append("libx264")
 
     STALL_TIMEOUT = 90
@@ -2037,7 +2040,10 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         for attempt in range(MAX_ATTEMPTS_PER_CODEC):
             ffmpeg_params = _make_ffmpeg_params_for_codec(codec)
             threads_setting = 4  # Use 4 threads for better performance (was 0/auto)
-            log(f"Export attempt: codec={codec}, params={ffmpeg_params}, threads={threads_setting}, attempt={attempt+1}")
+            # Log GPU usage status for user clarity
+            gpu_status = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
+            log(f"[EXPORT] Starting export with {gpu_status}")
+            log(f"[EXPORT] Codec: {codec}, Params: {ffmpeg_params}, Threads: {threads_setting}, Attempt: {attempt+1}")
             result = {"ok": False, "error": None}
             writer_thread = threading.Thread(target=_run_write, args=(final, output_path, codec, ffmpeg_params, threads_setting, result), daemon=True)
             writer_thread.start()
@@ -2071,7 +2077,8 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                             break
             writer_thread.join(timeout=1.0)
             if result.get("ok"):
-                log("[export-monitor] Export finished successfully.")
+                gpu_used = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
+                log(f"[EXPORT] ✅ Export finished successfully using {gpu_used}")
                 ok_probe, probe_out = probe_file_with_ffmpeg(output_path)
                 if ok_probe:
                     log("Export OK — ffmpeg probe didn't find fatal errors.")
