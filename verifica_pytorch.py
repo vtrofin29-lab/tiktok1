@@ -151,11 +151,17 @@ def check_architectures():
             print("CUDA nu este disponibil - nu pot verifica arhitecturile")
             return False
         
-        arch_list = torch.cuda.get_arch_list()
-        print(f"Arhitecturi suportate: {arch_list}")
+        # Get GPU's actual compute capability
+        capability = torch.cuda.get_device_capability(0)
+        gpu_arch = f"sm_{capability[0]}{capability[1]}"  # e.g., sm_120 for 12.0
+        compute_cap = capability[0] + capability[1] / 10
         
-        # Check for sm_90 (Blackwell - RTX 50 series)
-        has_sm90 = 'sm_90' in arch_list
+        arch_list = torch.cuda.get_arch_list()
+        print(f"Arhitecturi suportate de PyTorch: {arch_list}")
+        print(f"\nGPU-ul tău necesită: {gpu_arch} (compute capability {compute_cap})")
+        
+        # Check if GPU's architecture is supported
+        gpu_supported = gpu_arch in arch_list
         
         print("\nVerificare arhitecturi specifice:")
         important_archs = {
@@ -163,41 +169,57 @@ def check_architectures():
             'sm_80': 'Ampere (RTX 30xx, A100)',
             'sm_86': 'Ampere (RTX 30xx)',
             'sm_89': 'Ada Lovelace (RTX 40xx)',
-            'sm_90': 'Blackwell (RTX 50xx) - NECESAR pentru RTX 5070!'
+            'sm_90': 'Blackwell early (unele GPU-uri de test)',
+            'sm_120': 'Blackwell production (RTX 5070 REAL!)'
         }
         
         for arch, description in important_archs.items():
             if arch in arch_list:
-                marker = "✅" if arch != 'sm_90' else "✅✅✅"
-                print(f"  {marker} {arch}: {description}")
+                marker = "✅"
+                status = ""
             else:
-                marker = "  " if arch != 'sm_90' else "❌❌❌"
-                print(f"  {marker} {arch}: {description} - LIPSĂ")
+                marker = "  "
+                status = " - LIPSĂ"
+            
+            # Highlight the GPU's required architecture
+            if arch == gpu_arch:
+                if arch in arch_list:
+                    print(f"  ✅✅✅ {arch}: {description} - ACESTA ESTE GPU-UL TĂU!")
+                else:
+                    print(f"  ❌❌❌ {arch}: {description} - GPU-UL TĂU NECESITĂ ACEASTA, DAR LIPSEȘTE!")
+            else:
+                print(f"  {marker} {arch}: {description}{status}")
         
         print()
-        if has_sm90:
+        if gpu_supported:
             print("=" * 70)
-            print("✅✅✅ EXCELENT! PyTorch suportă RTX 5070!")
+            print("✅✅✅ EXCELENT! PyTorch suportă GPU-ul tău!")
             print("=" * 70)
-            print("sm_90 (Blackwell) găsit în arhitecturi")
-            print("RTX 5070 va funcționa la viteză maximă!")
+            print(f"{gpu_arch} găsit în arhitecturile suportate")
+            print("GPU-ul va funcționa la viteză maximă!")
             return True
         else:
             print("=" * 70)
-            print("❌❌❌ PROBLEMĂ CRITICĂ! PyTorch NU suportă RTX 5070!")
+            print("⚠️⚠️⚠️  ATENȚIE! GPU-ul tău este PREA NOU pentru PyTorch actual!")
             print("=" * 70)
-            print("sm_90 (Blackwell) LIPSEȘTE din arhitecturi!")
-            print("\nAceasta este CAUZA erorii tale!")
-            print("\n🔧 SOLUȚIE:")
-            print("   1. Dezinstalează PyTorch actual:")
+            print(f"\nGPU-ul tău necesită: {gpu_arch}")
+            print(f"PyTorch suportă maxim: {max(arch_list)}")
+            print(f"\nGPU-ul tău (compute {compute_cap}) este mai nou decât ce suportă PyTorch {torch.__version__}!")
+            print("\nAceasta este CAUZA erorii 'sm_120 is not compatible'!")
+            print("\n📋 OPȚIUNI:")
+            print("\n   🔧 OPȚIUNEA 1: PyTorch Nightly (experimental)")
+            print("      PyTorch nightly poate avea suport pentru sm_120")
             print("      pip uninstall torch torchvision torchaudio -y")
-            print("\n   2. Curăță cache:")
-            print("      pip cache purge")
-            print("\n   3. Instalează PyTorch cu suport RTX 5070:")
-            print("      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --no-cache-dir")
-            print("\n   4. Verifică din nou:")
-            print("      python verifica_pytorch.py")
-            print("\n   5. Repornește aplicația COMPLET")
+            print("      pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu121")
+            print("\n   ⏰ OPȚIUNEA 2: Așteaptă update oficial PyTorch")
+            print("      PyTorch stable va adăuga sm_120 în viitoarele versiuni")
+            print("      Estimare: Q1-Q2 2026")
+            print("\n   💻 OPȚIUNEA 3: Folosește CPU pentru acum (ACTUAL)")
+            print("      Aplicația funcționează pe CPU (mai lent)")
+            print("      Nu trebuie să faci nimic - CPU fallback e activ")
+            print("      Performanță: ~15-20 minute (în loc de 5-8 pe GPU)")
+            print("\n   ℹ️  RTX 5070 este atât de nou încât PyTorch nu îl suportă încă!")
+            print("      Vezi RTX_5070_SM120_PREA_NOU_RO.md pentru detalii complete")
             return False
         
     except Exception as e:
@@ -257,6 +279,7 @@ def print_summary(results):
     print_section("REZUMAT FINAL")
     
     all_ok = all(results.values())
+    arch_supported = results.get('Arhitectură GPU suportată', False)
     
     print("\nStare verificări:")
     for check, status in results.items():
@@ -265,13 +288,25 @@ def print_summary(results):
     
     print("\n" + "=" * 70)
     if all_ok:
-        print("🎉 TOTUL ESTE OK! PyTorch este configurat corect pentru RTX 5070!")
+        print("🎉 TOTUL ESTE OK! PyTorch este configurat corect pentru GPU-ul tău!")
         print("=" * 70)
         print("\n✅ Aplicația ar trebui să funcționeze pe GPU la viteză maximă!")
         print("✅ Repornește aplicația dacă nu ai făcut-o deja")
         print("\nPerformanță așteptată:")
         print("  • Video de 5 minute: ~7 minute procesare totală")
         print("  • Whisper transcription: 5-8 minute pe GPU")
+    elif not arch_supported:
+        print("⚠️  GPU-UL TĂU ESTE PREA NOU pentru PyTorch actual!")
+        print("=" * 70)
+        print("\n⚠️  RTX 5070 necesită sm_120, dar PyTorch suportă doar până la sm_90")
+        print("\n🔧 SOLUȚIE RECOMANDATĂ:")
+        print("   1. Încearcă PyTorch Nightly (poate avea sm_120)")
+        print("   2. SAU folosește CPU pentru acum (CPU fallback funcționează)")
+        print("   3. SAU așteaptă update oficial PyTorch (Q1-Q2 2026)")
+        print("\n💡 Între timp, aplicația va funcționa pe CPU:")
+        print("   • Mai lent (~15-20 minute în loc de 5-8)")
+        print("   • Dar FUNCȚIONEAZĂ și produce rezultate corecte!")
+        print("\n📖 Vezi RTX_5070_SM120_PREA_NOU_RO.md pentru detalii complete")
     else:
         print("❌ PROBLEME DETECTATE - PyTorch nu este configurat corect")
         print("=" * 70)
@@ -296,7 +331,7 @@ def main():
     results['PyTorch instalat'] = check_pytorch()
     results['CUDA disponibil'] = check_cuda()
     results['GPU detectat'] = check_gpu()
-    results['sm_90 suportat'] = check_architectures()  # MOST IMPORTANT!
+    results['Arhitectură GPU suportată'] = check_architectures()  # MOST IMPORTANT!
     results['nvidia-smi funcționează'] = check_nvidia_smi()
     
     # Print summary
