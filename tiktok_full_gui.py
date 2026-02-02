@@ -109,6 +109,7 @@ from moviepy.video.fx.all import speedx
 from moviepy.audio.fx.all import audio_fadeout
 
 import whisper
+import torch  # For GPU detection in Whisper
 
 # ----------------- TRANSLATION & AI VOICE MODULES -----------------
 try:
@@ -1204,11 +1205,20 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
 
 def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
     last_exc = None
+    
+    # Detect GPU availability for Whisper
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if log:
+        if device == "cuda":
+            log(f"[whisper] GPU detected - will use CUDA acceleration for transcription")
+        else:
+            log(f"[whisper] No GPU detected - will use CPU (slower)")
+    
     for attempt in range(1, tries + 1):
         try:
-            if log: log(f"[whisper] Loading model '{model_name}' (attempt {attempt}/{tries})...")
-            model = whisper.load_model(model_name)
-            if log: log(f"[whisper] Model '{model_name}' loaded successfully.")
+            if log: log(f"[whisper] Loading model '{model_name}' on {device.upper()} (attempt {attempt}/{tries})...")
+            model = whisper.load_model(model_name, device=device)
+            if log: log(f"[whisper] Model '{model_name}' loaded successfully on {device.upper()}.")
             return model
         except RuntimeError as e:
             msg = str(e).lower()
@@ -1267,8 +1277,14 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
             log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
             raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
     log_fn("[whisper] Transcribing audio with word-level timestamps (this may take a while)...")
+    
     # Enable word_timestamps for precise caption synchronization
-    result = model.transcribe(voice_path, word_timestamps=True)
+    # Use FP16 on GPU for faster inference (2x speedup with minimal quality loss)
+    use_fp16 = torch.cuda.is_available()
+    if use_fp16:
+        log_fn("[whisper] Using FP16 precision on GPU for faster transcription (2x speedup)")
+    
+    result = model.transcribe(voice_path, word_timestamps=True, fp16=use_fp16)
     log_fn("[whisper] Transcription finished.")
     segments = result["segments"]
     
