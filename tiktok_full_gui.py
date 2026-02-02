@@ -1291,17 +1291,19 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     log_fn = _default_log if log is None else log
     
     # Use Whisper for transcription
+    # Using 'large' (not large-v3) for accurate word-level timestamps needed for caption sync
+    # Medium/small models are faster but timestamps not accurate enough, causing caption-voice mismatch
     try:
-        model = _load_whisper_model_with_retries("large-v3", tries=3, log=log_fn)
+        model = _load_whisper_model_with_retries("large", tries=3, log=log_fn)
     except Exception as e_large:
-        log_fn(f"[whisper] Failed to load 'large-v3' model after retries: {e_large}")
-        log_fn("[whisper] Falling back to 'medium' model (faster, less accurate).")
+        log_fn(f"[whisper] Failed to load 'large' model after retries: {e_large}")
+        log_fn("[whisper] Falling back to 'medium' model (faster but less accurate timestamps).")
         try:
             model = _load_whisper_model_with_retries("medium", tries=2, log=log_fn)
         except Exception as e_medium:
             log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
             raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
-    log_fn("[whisper] Transcribing audio with word-level timestamps (this may take a while)...")
+    log_fn("[whisper] Transcribing audio with word-level timestamps (5-8 minutes on GPU)...")
     
     # Enable word_timestamps for precise caption synchronization
     # Use FP16 on GPU for faster inference (2x speedup with minimal quality loss)
