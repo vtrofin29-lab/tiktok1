@@ -1206,13 +1206,30 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
 def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
     last_exc = None
     
-    # Detect GPU availability for Whisper
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    if log:
-        if device == "cuda":
-            log(f"[whisper] GPU detected - will use CUDA acceleration for transcription")
+    # Detect GPU availability for Whisper with improved detection
+    device = "cpu"  # Default to CPU
+    cuda_available = False
+    
+    try:
+        cuda_available = torch.cuda.is_available()
+        if cuda_available:
+            device_count = torch.cuda.device_count()
+            if device_count > 0:
+                device = "cuda"
+                if log:
+                    gpu_name = torch.cuda.get_device_name(0)
+                    log(f"[whisper] GPU detected: {gpu_name}")
+                    log(f"[whisper] Will use CUDA acceleration for transcription")
+            else:
+                if log:
+                    log(f"[whisper] CUDA available but no GPU devices found - will use CPU")
         else:
-            log(f"[whisper] No GPU detected - will use CPU (slower)")
+            if log:
+                log(f"[whisper] CUDA not available in PyTorch - will use CPU (slower)")
+                log(f"[whisper] For GPU support, install PyTorch with CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu118")
+    except Exception as e:
+        if log:
+            log(f"[whisper] GPU detection failed ({str(e)}) - will use CPU")
     
     for attempt in range(1, tries + 1):
         try:
@@ -1233,6 +1250,14 @@ def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
                 else:
                     if log: log("[whisper] Could not find model file(s) to remove — retrying download anyway.")
                     time.sleep(1.0 + attempt * 0.5)
+                    continue
+            elif "cuda" in msg and device == "cuda":
+                # CUDA error - try falling back to CPU
+                if log: log(f"[whisper] CUDA error loading model: {e}")
+                if log: log(f"[whisper] Falling back to CPU...")
+                device = "cpu"
+                if attempt < tries:
+                    time.sleep(0.5)
                     continue
             else:
                 if log: log(f"[whisper] RuntimeError loading model '{model_name}': {e}")
