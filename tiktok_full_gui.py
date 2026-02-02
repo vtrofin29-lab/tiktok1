@@ -1343,7 +1343,8 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     segments = result["segments"]
     
     # Apply translation if requested
-    if translate_to and translate_to != 'none' and TRANSLATION_ENABLED:
+    # Translation is enabled when translate_to is specified and not 'none'
+    if translate_to and translate_to != 'none':
         log_fn(f"[TRANSCRIBE] Translating to {translate_to}...")
         segments = translate_segments(segments, target_language=translate_to, log=log_fn)
     
