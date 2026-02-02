@@ -1624,7 +1624,8 @@ def load_crop_settings(filepath=CROP_SETTINGS_FILE):
 # ----------------- Export composer with monitoring & fallback -----------------
 def _make_ffmpeg_params_for_codec(codec):
     if codec in ("h264_nvenc", "hevc_nvenc"):
-        return [
+        # GPU encoding with NVENC + GPU hardware decoding for faster export
+        params = [
             "-rc", "vbr_hq",
             "-cq", "19",
             "-b:v", "0",
@@ -1633,6 +1634,11 @@ def _make_ffmpeg_params_for_codec(codec):
             "-profile:v", "high",
             "-movflags", "+faststart"
         ]
+        # Add GPU hardware decoding if available for full GPU pipeline
+        if USE_HARDWARE_DECODING and USE_GPU_IF_AVAILABLE:
+            # These go at the beginning as input options
+            params = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"] + params
+        return params
     else:
         return [
             "-preset", "ultrafast",  # Changed from veryfast to ultrafast for speed
