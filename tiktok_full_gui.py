@@ -1126,9 +1126,9 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
     # Build command with hardware acceleration if available
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     
-    # Add hardware decoding for speed
+    # Add hardware decoding for speed (without output format to maintain filter compatibility)
     if USE_HARDWARE_DECODING and use_nvenc:
-        cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+        cmd.extend(["-hwaccel", "cuda"])
     
     cmd.extend(["-i", input_path, "-an", "-vf", vf, "-r", str(int(fps))])
     
