@@ -781,6 +781,8 @@ DIM_FACTOR = 0.55
 
 USE_GPU_IF_AVAILABLE = True
 PREFERRED_NVENC_CODEC = "h264_nvenc"
+USE_HARDWARE_DECODING = True  # Enable GPU-accelerated decoding
+NVENC_PRESET_SPEED = "p4"  # p1=fastest, p7=slowest/best quality. p4=balanced for speed
 
 CAPTION_RAISE = 420
 CAPTION_Y_OFFSET = 0  # Vertical offset in pixels (negative = move up, positive = move down)
@@ -1067,19 +1069,35 @@ def ffmpeg_supports_nvenc(codec_name="h264_nvenc"):
 
 def get_export_settings():
     audio_bitrate = "192k"
-    threads = 0
-    libx264_params = ["-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    threads = 4  # Use 4 threads for better CPU utilization (was 0/auto)
+    libx264_params = ["-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]  # Changed from slow to ultrafast
     libx264_codec = "libx264"
-    nvenc_params = ["-rc", "vbr_hq", "-cq", "19", "-b:v", "0", "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
+    nvenc_params = ["-rc", "vbr_hq", "-cq", "19", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
 
 def reencode_with_libx264(input_path, output_path, log=None):
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", input_path,
-           "-c:v", "libx264", "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "high",
-           "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
-    if log: log(f"[ffmpeg] Re-encoding to: {output_path}")
+    # Use hardware acceleration if available
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    
+    # Add hardware decoding
+    if USE_HARDWARE_DECODING and USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
+        cmd.extend(["-hwaccel", "cuda"])
+    
+    cmd.extend(["-i", input_path])
+    
+    # Use NVENC if available, otherwise use faster CPU preset
+    if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
+        cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "vbr_hq", "-cq", "20", "-b:v", "0", 
+                   "-preset", NVENC_PRESET_SPEED, "-pix_fmt", "yuv420p", "-profile:v", "high"])
+    else:
+        cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", 
+                   "-pix_fmt", "yuv420p", "-profile:v", "high"])
+    
+    cmd.extend(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path])
+    
+    if log: log(f"[ffmpeg] Re-encoding to: {output_path} (GPU={'NVENC' if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC) else 'No'})")
     try:
         subprocess.check_call(cmd)
         if log: log("[ffmpeg] Re-encode completed.")
@@ -1103,15 +1121,27 @@ def probe_file_with_ffmpeg(path):
 
 def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, crop_h, scale_w, scale_h, fps, use_nvenc, log):
     vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={scale_w}:{scale_h}:flags=lanczos"
+    
+    # Build command with hardware acceleration if available
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    
+    # Add hardware decoding for speed
+    if USE_HARDWARE_DECODING and use_nvenc:
+        cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+    
+    cmd.extend(["-i", input_path, "-an", "-vf", vf, "-r", str(int(fps))])
+    
     if use_nvenc and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         codec = PREFERRED_NVENC_CODEC
-        vparams = ["-c:v", codec, "-rc", "vbr_hq", "-cq", "19", "-b:v", "0"]
+        # Use faster preset for pre-render (p2 instead of p4)
+        vparams = ["-c:v", codec, "-rc", "vbr_hq", "-cq", "22", "-b:v", "0", "-preset", "p2"]
     else:
         codec = "libx264"
-        vparams = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", input_path,
-           "-an", "-vf", vf, "-r", str(int(fps))] + vparams + ["-pix_fmt", "yuv420p", out_path]
-    if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc})")
+        vparams = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22"]  # Changed from veryfast to ultrafast
+    
+    cmd.extend(vparams + ["-pix_fmt", "yuv420p", out_path])
+    
+    if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc}, hwaccel={USE_HARDWARE_DECODING and use_nvenc})")
     try:
         subprocess.check_call(cmd)
         if log: log(f"[ffmpeg] Pre-render completed: {out_path}")
@@ -1527,14 +1557,14 @@ def _make_ffmpeg_params_for_codec(codec):
             "-rc", "vbr_hq",
             "-cq", "19",
             "-b:v", "0",
-            "-preset", "p7",
+            "-preset", NVENC_PRESET_SPEED,  # Use configurable preset for speed
             "-pix_fmt", "yuv420p",
             "-profile:v", "high",
             "-movflags", "+faststart"
         ]
     else:
         return [
-            "-preset", "veryfast",
+            "-preset", "ultrafast",  # Changed from veryfast to ultrafast for speed
             "-crf", "20",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart"
@@ -1935,8 +1965,8 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     for codec in codec_try_order:
         for attempt in range(MAX_ATTEMPTS_PER_CODEC):
             ffmpeg_params = _make_ffmpeg_params_for_codec(codec)
-            threads_setting = 0
-            log(f"Export attempt: codec={codec}, params={ffmpeg_params}, attempt={attempt+1}")
+            threads_setting = 4  # Use 4 threads for better performance (was 0/auto)
+            log(f"Export attempt: codec={codec}, params={ffmpeg_params}, threads={threads_setting}, attempt={attempt+1}")
             result = {"ok": False, "error": None}
             writer_thread = threading.Thread(target=_run_write, args=(final, output_path, codec, ffmpeg_params, threads_setting, result), daemon=True)
             writer_thread.start()
