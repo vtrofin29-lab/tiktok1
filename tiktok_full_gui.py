@@ -1239,6 +1239,7 @@ def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
             return model
         except RuntimeError as e:
             msg = str(e).lower()
+            error_str = str(e)
             last_exc = e
             if "sha256" in msg or "checksum" in msg or "downloaded but the sha256" in msg:
                 if log: log(f"[whisper] Checksum error for '{model_name}': {e}")
@@ -1252,13 +1253,33 @@ def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
                     time.sleep(1.0 + attempt * 0.5)
                     continue
             elif "cuda" in msg and device == "cuda":
-                # CUDA error - try falling back to CPU
-                if log: log(f"[whisper] CUDA error loading model: {e}")
-                if log: log(f"[whisper] Falling back to CPU...")
-                device = "cpu"
-                if attempt < tries:
-                    time.sleep(0.5)
-                    continue
+                # CUDA error - check if it's architecture mismatch
+                if "no kernel image" in error_str or ("kernel" in error_str and "sm" in error_str):
+                    # Architecture mismatch - PyTorch built without support for this GPU
+                    if log:
+                        log("[whisper] ========================================")
+                        log("[whisper] ERROR: PyTorch Architecture Mismatch!")
+                        log("[whisper] ========================================")
+                        log("[whisper] PyTorch was built without support for your GPU architecture")
+                        log("[whisper] ")
+                        log("[whisper] SOLUTION: Reinstall PyTorch with proper GPU support:")
+                        log("[whisper]   pip uninstall torch torchvision torchaudio")
+                        log("[whisper]   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+                        log("[whisper] ")
+                        log("[whisper] Or as temporary workaround, using CPU (slower)...")
+                        log("[whisper] ========================================")
+                    device = "cpu"
+                    if attempt < tries:
+                        time.sleep(0.5)
+                        continue
+                else:
+                    # Other CUDA error - try falling back to CPU
+                    if log: log(f"[whisper] CUDA error loading model: {e}")
+                    if log: log(f"[whisper] Falling back to CPU...")
+                    device = "cpu"
+                    if attempt < tries:
+                        time.sleep(0.5)
+                        continue
             else:
                 if log: log(f"[whisper] RuntimeError loading model '{model_name}': {e}")
                 raise
