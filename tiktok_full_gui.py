@@ -1236,7 +1236,7 @@ def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
             if log: log(f"[whisper] Loading model '{model_name}' on {device.upper()} (attempt {attempt}/{tries})...")
             model = whisper.load_model(model_name, device=device)
             if log: log(f"[whisper] Model '{model_name}' loaded successfully on {device.upper()}.")
-            return model
+            return model, device  # Return both model and device used
         except RuntimeError as e:
             msg = str(e).lower()
             error_str = str(e)
@@ -1315,20 +1315,26 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     # Using 'large' (not large-v3) for accurate word-level timestamps needed for caption sync
     # Medium/small models are faster but timestamps not accurate enough, causing caption-voice mismatch
     try:
-        model = _load_whisper_model_with_retries("large", tries=3, log=log_fn)
+        model, device = _load_whisper_model_with_retries("large", tries=3, log=log_fn)
     except Exception as e_large:
         log_fn(f"[whisper] Failed to load 'large' model after retries: {e_large}")
         log_fn("[whisper] Falling back to 'medium' model (faster but less accurate timestamps).")
         try:
-            model = _load_whisper_model_with_retries("medium", tries=2, log=log_fn)
+            model, device = _load_whisper_model_with_retries("medium", tries=2, log=log_fn)
         except Exception as e_medium:
             log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
             raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
-    log_fn("[whisper] Transcribing audio with word-level timestamps (5-8 minutes on GPU)...")
+    
+    # Show appropriate message based on actual device being used
+    if device == "cuda":
+        log_fn("[whisper] Transcribing audio with word-level timestamps (5-8 minutes on GPU)...")
+    else:
+        log_fn("[whisper] Transcribing audio with word-level timestamps (15-20 minutes on CPU)...")
     
     # Enable word_timestamps for precise caption synchronization
     # Use FP16 on GPU for faster inference (2x speedup with minimal quality loss)
-    use_fp16 = torch.cuda.is_available()
+    # Only enable FP16 if actually running on GPU
+    use_fp16 = (device == "cuda")
     if use_fp16:
         log_fn("[whisper] Using FP16 precision on GPU for faster transcription (2x speedup)")
     
