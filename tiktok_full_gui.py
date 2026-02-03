@@ -2719,6 +2719,9 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         base_scale_factor = 1.03
         max_scale_limit = 1.06
         
+        # Get user's zoom setting
+        user_zoom = globals().get('VIDEO_ZOOM_SCALE', 1.0)
+        
         if is_4k:
             # For 4K, double the scale factors to maintain same visual zoom
             # This ensures the video is zoomed in properly to cover edges
@@ -2728,6 +2731,9 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             # HD mode - use original logic
             fg_scale = max(1.0, min_scale_to_fit) * base_scale_factor
             fg_scale = min(fg_scale, max_scale_limit)
+        
+        # Apply user's zoom factor (0.5x to 2.0x from slider)
+        fg_scale = fg_scale * user_zoom
         
         scale_w = max(1, int(round(crop_w * fg_scale)))
         scale_h = max(1, int(round(crop_h * fg_scale)))
@@ -2761,6 +2767,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         use_nvenc = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
         
         log(f"CROP: Top {crop_top_pct:.1f}%, Bottom {crop_bottom_pct:.1f}% → {crop_w}x{crop_h}")
+        log(f"ZOOM: User setting {user_zoom:.2f}x")
         log(f"SCALE: {fg_scale:.2f}x → {scale_w}x{scale_h}")
         log(f"CAPTION OFFSET: {y_offset}px ({offset_desc})")
         log(f"MIRROR: {'Enabled' if mirror_video else 'Disabled'}")
