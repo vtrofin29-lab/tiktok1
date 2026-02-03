@@ -2150,6 +2150,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
 
     # Build caption clips (FIXED: single clean loop, no duplication)
     caption_clips = []
+    caption_data_for_ffmpeg = []  # Collect word-group caption data for FFmpeg export
     MIN_GROUP_DURATION = 0.25
     
     # Use the words_per_caption parameter (from UI control)
@@ -2281,6 +2282,13 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     
                     caption_clips.append(img_clip)
                     
+                    # Also collect data for FFmpeg export (word-by-word captions)
+                    caption_data_for_ffmpeg.append({
+                        'text': grp_text,
+                        'start': g_start,
+                        'end': g_start + g_dur
+                    })
+                    
                     try:
                         y_offset_value = globals().get('CAPTION_Y_OFFSET', 0)
                         log(f"[COMPOSE]   ✓ Caption clip created successfully")
@@ -2353,11 +2361,11 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 log(f"[EXPORT] Saving foreground video to: {fg_video_path}")
                 fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
             
-            # Try FFmpeg export
+            # Try FFmpeg export with word-by-word caption data
             ffmpeg_export_successful = _export_with_ffmpeg_filters(
                 bg_path=bg_image_path,
                 fg_path=fg_video_path,
-                caption_segments=caption_segments,
+                caption_segments=caption_data_for_ffmpeg if caption_data_for_ffmpeg else caption_segments,  # Use word-groups if available
                 audio_path=audio_temp_path,
                 output_path=output_path,
                 video_width=WIDTH,
