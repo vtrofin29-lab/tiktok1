@@ -1657,19 +1657,30 @@ def _make_ffmpeg_params_for_codec(codec):
 
 # ----------------- FFmpeg Fast Export Functions -----------------
 
-def _calculate_text_lines(text, max_chars=40):
+def _calculate_text_lines(text, max_chars=40, words_per_line=None):
     """
-    Calculate line breaks for text to fit within max_chars per line.
+    Calculate line breaks for text to fit within max_chars per line or words per line.
     Breaks at word boundaries when possible.
     
     Args:
         text: String to wrap
-        max_chars: Maximum characters per line
+        max_chars: Maximum characters per line (used if words_per_line is None)
+        words_per_line: Maximum words per line (overrides max_chars if provided)
         
     Returns:
         List of text lines
     """
     words = text.split()
+    
+    # If words_per_line is specified, group by word count instead of characters
+    if words_per_line and words_per_line > 0:
+        lines = []
+        for i in range(0, len(words), words_per_line):
+            line_words = words[i:i + words_per_line]
+            lines.append(' '.join(line_words))
+        return lines if lines else [text]
+    
+    # Otherwise use character-based wrapping (original logic)
     lines = []
     current_line = []
     current_length = 0
@@ -1741,7 +1752,7 @@ def _rgba_to_hex(rgba_tuple):
 
 def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_width, video_height, 
                                    fontsize=56, font_path=None, text_color="0xFFFFFF", 
-                                   stroke_color="0x000000", stroke_width=3):
+                                   stroke_color="0x000000", stroke_width=3, words_per_line=None):
     """
     Build FFmpeg drawtext filter for a single caption with custom styling.
     
@@ -1756,19 +1767,21 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
         text_color: Text color in hex format (e.g., '0xFFFFFF')
         stroke_color: Stroke/border color in hex format (e.g., '0x000000')
         stroke_width: Stroke width in pixels
+        words_per_line: Maximum words per line (optional, overrides character-based wrapping)
         
     Returns:
         FFmpeg drawtext filter string
     """
-    # Calculate text wrapping
-    lines = _calculate_text_lines(caption_text, max_chars=40)
+    # Calculate text wrapping with word-based grouping if specified
+    lines = _calculate_text_lines(caption_text, max_chars=40, words_per_line=words_per_line)
     
     # Escape text for FFmpeg
     escaped_lines = [_escape_ffmpeg_text(line) for line in lines]
     text_with_newlines = '\\n'.join(escaped_lines)
     
-    # Position: bottom-center with 50px offset from bottom
-    y_position = video_height - 100  # 100px from bottom for multi-line text
+    # Position: bottom-center with safer offset from bottom
+    # Use h-150 instead of video_height-100 to ensure captions stay within bounds
+    y_position = "h-150"  # 150px from bottom for multi-line text (dynamic, works with any height)
     
     # Build drawtext filter with custom styling
     filter_parts = [
@@ -1778,7 +1791,7 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
         f"borderw={stroke_width}",
         f"bordercolor={stroke_color}",
         f"x=(w-text_w)/2",  # Center horizontally
-        f"y={y_position}",   # Bottom positioning
+        f"y={y_position}",   # Bottom positioning (safe margin)
         f"enable='between(t,{start_time:.3f},{end_time:.3f})'"  # Timing
     ]
     
@@ -1793,7 +1806,7 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
 
 def _build_all_caption_filters(caption_segments, video_width, video_height, 
                                font_path=None, text_color="0xFFFFFF", 
-                               stroke_color="0x000000", stroke_width=3):
+                               stroke_color="0x000000", stroke_width=3, words_per_line=None):
     """
     Build all caption drawtext filters and chain them together with custom styling.
     
@@ -1805,6 +1818,7 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
         text_color: Text color in hex format
         stroke_color: Stroke color in hex format
         stroke_width: Stroke width in pixels
+        words_per_line: Maximum words per line (optional)
         
     Returns:
         Complete filter_complex string for all captions
@@ -1824,7 +1838,8 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
             font_path=font_path,
             text_color=text_color,
             stroke_color=stroke_color,
-            stroke_width=stroke_width
+            stroke_width=stroke_width,
+            words_per_line=words_per_line  # Pass through words_per_line
         )
         filters.append(caption_filter)
     
@@ -1860,6 +1875,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             font_path = globals().get('LOADED_FONT_PATH', None)
             text_color_rgba = globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255))
             stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)
+            words_per_caption = globals().get('WORDS_PER_CAPTION', None)  # Get words per caption setting
             
             # Convert colors to hex for FFmpeg
             text_color_hex = _rgba_to_hex(text_color_rgba)
@@ -1869,26 +1885,30 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 log_fn(f"[EXPORT] Using custom font: {font_path}")
             log_fn(f"[EXPORT] Text color: {text_color_hex} (RGBA: {text_color_rgba})")
             log_fn(f"[EXPORT] Stroke width: {stroke_width}px")
+            if words_per_caption:
+                log_fn(f"[EXPORT] Words per caption: {words_per_caption}")
         except Exception as e:
             log_fn(f"[EXPORT] Warning: Could not get custom settings, using defaults: {e}")
             font_path = None
             text_color_hex = "0xFFFFFF"
             stroke_color_hex = "0x000000"
             stroke_width = 3
+            words_per_caption = None
         
-        # Build caption filters with custom styling
+        # Build caption filters with custom styling and words per caption
         caption_filters = _build_all_caption_filters(
             caption_segments, video_width, video_height,
             font_path=font_path,
             text_color=text_color_hex,
             stroke_color=stroke_color_hex,
-            stroke_width=stroke_width
+            stroke_width=stroke_width,
+            words_per_line=words_per_caption  # Pass words per caption setting
         )
         
         # Build complete filter chain
         # [0:v] = background, [1:v] = foreground
-        # Overlay foreground on background, then add captions
-        filter_chain = f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2"
+        # Overlay foreground on background at x=0 to fill width (no side borders)
+        filter_chain = f"[0:v][1:v]overlay=x=0:y=(H-h)/2"
         
         if caption_filters:
             filter_chain += "," + caption_filters
