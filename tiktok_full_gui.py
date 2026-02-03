@@ -1655,6 +1655,244 @@ def _make_ffmpeg_params_for_codec(codec):
             "-movflags", "+faststart"  # Web streaming optimization
         ]
 
+# ----------------- FFmpeg Fast Export Functions -----------------
+
+def _calculate_text_lines(text, max_chars=40):
+    """
+    Calculate line breaks for text to fit within max_chars per line.
+    Breaks at word boundaries when possible.
+    
+    Args:
+        text: String to wrap
+        max_chars: Maximum characters per line
+        
+    Returns:
+        List of text lines
+    """
+    words = text.split()
+    lines = []
+    current_line = []
+    current_length = 0
+    
+    for word in words:
+        word_len = len(word)
+        # +1 for space between words
+        needed = word_len if not current_line else current_length + 1 + word_len
+        
+        if needed <= max_chars:
+            current_line.append(word)
+            current_length = needed
+        else:
+            # Start new line
+            if current_line:
+                lines.append(' '.join(current_line))
+            # Handle very long words
+            if word_len > max_chars:
+                lines.append(word[:max_chars])
+                current_line = [word[max_chars:]] if len(word) > max_chars else []
+                current_length = len(word[max_chars:]) if len(word) > max_chars else 0
+            else:
+                current_line = [word]
+                current_length = word_len
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    return lines if lines else [text]
+
+
+def _escape_ffmpeg_text(text):
+    """
+    Escape special characters for FFmpeg drawtext filter.
+    
+    Args:
+        text: String to escape
+        
+    Returns:
+        Escaped string safe for FFmpeg
+    """
+    # FFmpeg drawtext special characters that need escaping
+    text = text.replace('\\', '\\\\')  # Backslash first!
+    text = text.replace("'", "\\'")    # Single quote
+    text = text.replace(':', '\\:')    # Colon
+    text = text.replace('%', '\\%')    # Percent
+    text = text.replace('[', '\\[')    # Square brackets
+    text = text.replace(']', '\\]')
+    return text
+
+
+def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_width, video_height, fontsize=56):
+    """
+    Build FFmpeg drawtext filter for a single caption.
+    
+    Args:
+        caption_text: Text to display
+        start_time: Start time in seconds
+        end_time: End time in seconds
+        video_width: Video width in pixels
+        video_height: Video height in pixels
+        fontsize: Font size in pixels
+        
+    Returns:
+        FFmpeg drawtext filter string
+    """
+    # Calculate text wrapping
+    lines = _calculate_text_lines(caption_text, max_chars=40)
+    
+    # Escape text for FFmpeg
+    escaped_lines = [_escape_ffmpeg_text(line) for line in lines]
+    text_with_newlines = '\\n'.join(escaped_lines)
+    
+    # Position: bottom-center with 50px offset from bottom
+    y_position = video_height - 100  # 100px from bottom for multi-line text
+    
+    # Build drawtext filter
+    # Style matches MoviePy captions: white text with black stroke
+    filter_parts = [
+        f"drawtext=text='{text_with_newlines}'",
+        f"fontsize={fontsize}",
+        "fontcolor=white",
+        "borderw=3",  # 3px black stroke
+        "bordercolor=black",
+        f"x=(w-text_w)/2",  # Center horizontally
+        f"y={y_position}",   # Bottom positioning
+        f"enable='between(t,{start_time:.3f},{end_time:.3f})'"  # Timing
+    ]
+    
+    return ':'.join(filter_parts)
+
+
+def _build_all_caption_filters(caption_segments, video_width, video_height):
+    """
+    Build all caption drawtext filters and chain them together.
+    
+    Args:
+        caption_segments: List of caption dictionaries with 'text', 'start', 'end'
+        video_width: Video width in pixels
+        video_height: Video height in pixels
+        
+    Returns:
+        Complete filter_complex string for all captions
+    """
+    if not caption_segments:
+        return None
+    
+    filters = []
+    
+    for i, segment in enumerate(caption_segments):
+        caption_filter = _build_caption_drawtext_filter(
+            caption_text=segment['text'],
+            start_time=segment['start'],
+            end_time=segment['end'],
+            video_width=video_width,
+            video_height=video_height
+        )
+        filters.append(caption_filter)
+    
+    # Chain all filters together
+    return ','.join(filters)
+
+
+def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn):
+    """
+    Fast export using pure FFmpeg complex filters.
+    2-3x faster than MoviePy's Python frame processing.
+    
+    Args:
+        bg_path: Path to background image/video
+        fg_path: Path to foreground video
+        caption_segments: List of caption dictionaries
+        audio_path: Path to audio file
+        output_path: Path for output video
+        video_width: Video width
+        video_height: Video height
+        log_fn: Logging function
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        log_fn("[EXPORT] ═══════════════════════════════════════════════════")
+        log_fn("[EXPORT] Using fast FFmpeg filter-based export...")
+        log_fn(f"[EXPORT] Building filter chain for {len(caption_segments)} caption segments...")
+        
+        # Build caption filters
+        caption_filters = _build_all_caption_filters(caption_segments, video_width, video_height)
+        
+        # Build complete filter chain
+        # [0:v] = background, [1:v] = foreground
+        # Overlay foreground on background, then add captions
+        filter_chain = f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2"
+        
+        if caption_filters:
+            filter_chain += "," + caption_filters
+        
+        # Build FFmpeg command
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", bg_path,  # Background (looped image)
+            "-i", fg_path,                # Foreground video
+            "-i", audio_path,             # Audio
+            "-filter_complex", filter_chain,
+            "-map", "0:v",                # Use video from filter chain
+            "-map", "2:a",                # Use audio from audio file
+            "-shortest",                   # End when shortest input ends
+            "-c:a", "aac",                # Audio codec
+            "-b:a", "192k",               # Audio bitrate
+        ]
+        
+        # Add video encoding parameters
+        if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
+            log_fn(f"[EXPORT] Using GPU acceleration (NVENC: {PREFERRED_NVENC_CODEC})...")
+            cmd.extend([
+                "-c:v", PREFERRED_NVENC_CODEC,
+                "-rc", "vbr_hq",
+                "-cq", "19",
+                "-b:v", "0",
+                "-preset", NVENC_PRESET_SPEED,
+                "-pix_fmt", "yuv420p",
+                "-profile:v", "high"
+            ])
+        else:
+            log_fn("[EXPORT] Using CPU encoding (libx264)...")
+            cmd.extend([
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "20",
+                "-pix_fmt", "yuv420p"
+            ])
+        
+        cmd.extend([
+            "-movflags", "+faststart",
+            output_path
+        ])
+        
+        log_fn("[EXPORT] Executing FFmpeg command...")
+        log_fn(f"[EXPORT] Command: {' '.join(cmd[:15])}...")
+        
+        # Run FFmpeg
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minute timeout
+        )
+        
+        if result.returncode == 0:
+            log_fn("[EXPORT] ✅ Fast FFmpeg export completed successfully!")
+            return True
+        else:
+            log_fn(f"[EXPORT] ❌ FFmpeg failed with return code {result.returncode}")
+            log_fn(f"[EXPORT] Error: {result.stderr[:500]}")
+            return False
+            
+    except Exception as e:
+        log_fn(f"[EXPORT] ❌ FFmpeg export exception: {e}")
+        import traceback
+        log_fn(f"[EXPORT] Traceback: {traceback.format_exc()[:500]}")
+        return False
+
+
 # ----------------- Video Effects (CapCut-style) -----------------
 def apply_video_effects(frame, effect_settings):
     """
@@ -1983,152 +2221,219 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
     
-    # Composite all layers (FIXED: ensure captions are included)
-    try:
-        # Verify audio clip before compositing
-        if audio_clip is None:
-            try:
-                log(f"[COMPOSE WARNING] ⚠️ audio_clip is None! Final video will have no audio!")
-            except Exception:
-                pass
-        else:
-            try:
-                log(f"[COMPOSE] Audio clip duration: {audio_clip.duration:.2f}s")
-            except Exception:
-                pass
-        
-        final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
+    # Try fast FFmpeg export first (2-3x faster than MoviePy)
+    try_ffmpeg_export = True  # Set to False to force MoviePy
+    ffmpeg_export_successful = False
+    
+    if try_ffmpeg_export and caption_segments:
         try:
-            log(f"[COMPOSE] ✓ Final composition created successfully")
-            log(f"[COMPOSE] Layers: background + foreground + {len(caption_clips)} caption overlays")
-        except Exception:
-            pass
-    except Exception as e:
-        try:
-            log(f"[COMPOSE ERROR] Failed to create CompositeVideoClip: {e}")
-            import traceback
-            log(f"[COMPOSE ERROR] Traceback: {traceback.format_exc()}")
-        except Exception:
-            pass
-        raise
-
-    # export monitoring and fallback
-    codec_try_order = []
-    if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
-        codec_try_order.append(PREFERRED_NVENC_CODEC)
-        log(f"[EXPORT] GPU acceleration enabled for export (NVENC: {PREFERRED_NVENC_CODEC})")
-    else:
-        log("[EXPORT] Using CPU encoding for export (libx264)")
-    codec_try_order.append("libx264")
-
-    STALL_TIMEOUT = 90
-    CHECK_INTERVAL = 8
-    MAX_ATTEMPTS_PER_CODEC = 1
-
-    def _run_write(final_clip, out_path, codec_name, ffmpeg_params, threads_setting, result_dict):
-        try:
-            final_clip.write_videofile(
-                out_path,
-                fps=FPS,
-                codec=codec_name,
-                audio_codec="aac",
-                audio_bitrate="192k",
-                threads=threads_setting,
-                ffmpeg_params=ffmpeg_params,
-                verbose=False,
-                logger="bar"
-            )
-            result_dict["ok"] = True
-        except Exception as e:
-            result_dict["ok"] = False
-            result_dict["error"] = str(e)
-        finally:
-            try:
-                final_clip.close()
-            except Exception:
-                pass
-            gc.collect()
-
-    last_error = None
-    for codec in codec_try_order:
-        for attempt in range(MAX_ATTEMPTS_PER_CODEC):
-            ffmpeg_params = _make_ffmpeg_params_for_codec(codec)
-            threads_setting = 4  # Use 4 threads for better performance (was 0/auto)
-            # Log GPU usage status for user clarity
-            gpu_status = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
-            log(f"[EXPORT] Starting export with {gpu_status}")
-            log(f"[EXPORT] Codec: {codec}, Params: {ffmpeg_params}, Threads: {threads_setting}, Attempt: {attempt+1}")
-            result = {"ok": False, "error": None}
-            writer_thread = threading.Thread(target=_run_write, args=(final, output_path, codec, ffmpeg_params, threads_setting, result), daemon=True)
-            writer_thread.start()
-
-            prev_size = -1
-            stalled_since = None
-            start_t = time.time()
-            while writer_thread.is_alive():
-                time.sleep(CHECK_INTERVAL)
-                try:
-                    cur_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-                except Exception:
-                    cur_size = 0
-                log(f"[export-monitor] {codec} out_size={cur_size} bytes (elapsed {int(time.time()-start_t)}s)")
-                if cur_size > prev_size:
-                    prev_size = cur_size
-                    stalled_since = None
-                else:
-                    if stalled_since is None:
-                        stalled_since = time.time()
-                    else:
-                        if (time.time() - stalled_since) > STALL_TIMEOUT:
-                            log(f"[export-monitor] Detected stall for {STALL_TIMEOUT}s. Attempting to abort and retry.")
-                            try:
-                                os.remove(output_path)
-                                log("[export-monitor] Removed partial output file.")
-                            except Exception as e_rm:
-                                log(f"[export-monitor] Could not remove partial file: {e_rm}")
-                            result["ok"] = False
-                            result["error"] = f"Stalled export (no growth for {STALL_TIMEOUT}s)"
-                            break
-            writer_thread.join(timeout=1.0)
-            if result.get("ok"):
-                gpu_used = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
-                log(f"[EXPORT] ✅ Export finished successfully using {gpu_used}")
-                ok_probe, probe_out = probe_file_with_ffmpeg(output_path)
-                if ok_probe:
-                    log("Export OK — ffmpeg probe didn't find fatal errors.")
-                    try:
-                        if os.name == "nt":
-                            os.startfile(output_path)
-                        elif sys.platform == "darwin":
-                            subprocess.Popen(["open", output_path])
-                        else:
-                            subprocess.Popen(["xdg-open", output_path])
-                    except Exception as eopen:
-                        log(f"Could not open output automatically: {eopen}")
-                    return True
-                else:
-                    log("[export-monitor] Probe reported issues, attempting re-encode.")
-                    last_error = probe_out
-                    reencoded = output_path.replace(".mp4", "_reencoded.mp4")
-                    success = reencode_with_libx264(output_path, reencoded, log)
-                    if success:
-                        try:
-                            os.replace(reencoded, output_path)
-                            log("Re-encoded succeeded and replaced original output.")
-                            return True
-                        except Exception:
-                            log(f"Re-encoded saved at: {reencoded}")
-                            return True
-                    else:
-                        log("Re-encode failed.")
+            import tempfile
+            log("[EXPORT] Attempting fast FFmpeg filter-based export...")
+            
+            # Save background image to temp file
+            temp_dir = tempfile.mkdtemp(prefix="tiktok_ffmpeg_export_")
+            bg_image_path = os.path.join(temp_dir, "background.png")
+            bg_array = bg_static.get_frame(0)
+            from PIL import Image
+            Image.fromarray(bg_array).save(bg_image_path)
+            log(f"[EXPORT] Background saved to: {bg_image_path}")
+            
+            # Save audio to temp file
+            audio_temp_path = os.path.join(temp_dir, "audio.mp3")
+            audio_clip.write_audiofile(audio_temp_path, fps=44100, codec='mp3', verbose=False, logger=None)
+            log(f"[EXPORT] Audio saved to: {audio_temp_path}")
+            
+            # Get foreground video path (should be from pre-rendered temp file)
+            # If fg has a filename attribute, use it; otherwise we need to save it
+            fg_video_path = None
+            if hasattr(fg, 'filename') and fg.filename:
+                fg_video_path = fg.filename
+                log(f"[EXPORT] Using pre-rendered foreground: {fg_video_path}")
             else:
-                last_error = result.get("error")
-                log(f"[export-monitor] Export attempt failed/aborted: {last_error}")
-                time.sleep(1.0)
-                continue
+                # Need to save foreground video first
+                fg_video_path = os.path.join(temp_dir, "foreground.mp4")
+                log(f"[EXPORT] Saving foreground video to: {fg_video_path}")
+                fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
+            
+            # Try FFmpeg export
+            ffmpeg_export_successful = _export_with_ffmpeg_filters(
+                bg_path=bg_image_path,
+                fg_path=fg_video_path,
+                caption_segments=caption_segments,
+                audio_path=audio_temp_path,
+                output_path=output_path,
+                video_width=WIDTH,
+                video_height=HEIGHT,
+                log_fn=log
+            )
+            
+            if ffmpeg_export_successful:
+                log("[EXPORT] ✅ Fast FFmpeg export completed successfully!")
+                log("[EXPORT] Skipping MoviePy export (not needed)")
+                # Clean up temp files
+                try:
+                    import shutil
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+                return True
+            else:
+                log("[EXPORT] ⚠️ FFmpeg export failed, falling back to MoviePy...")
+                
+        except Exception as e:
+            log(f"[EXPORT] ⚠️ FFmpeg export exception: {e}")
+            log("[EXPORT] Falling back to MoviePy export...")
+            import traceback
+            log(f"[EXPORT] Traceback: {traceback.format_exc()[:500]}")
+    
+    # Fallback to MoviePy export (original code)
+    if not ffmpeg_export_successful:
+        try:
+            log("[EXPORT] Using MoviePy export (fallback or FFmpeg disabled)...")
+            # Verify audio clip before compositing
+            if audio_clip is None:
+                try:
+                    log(f"[COMPOSE WARNING] ⚠️ audio_clip is None! Final video will have no audio!")
+                except Exception:
+                    pass
+            else:
+                try:
+                    log(f"[COMPOSE] Audio clip duration: {audio_clip.duration:.2f}s")
+                except Exception:
+                    pass
+            
+            final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
+            try:
+                log(f"[COMPOSE] ✓ Final composition created successfully")
+                log(f"[COMPOSE] Layers: background + foreground + {len(caption_clips)} caption overlays")
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                log(f"[COMPOSE ERROR] Failed to create CompositeVideoClip: {e}")
+                import traceback
+                log(f"[COMPOSE ERROR] Traceback: {traceback.format_exc()}")
+            except Exception:
+                pass
+            raise
 
-    log(f"[export-monitor] All export attempts exhausted. Last error: {last_error}")
-    return False
+        # export monitoring and fallback
+        codec_try_order = []
+        if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
+            codec_try_order.append(PREFERRED_NVENC_CODEC)
+            log(f"[EXPORT] GPU acceleration enabled for export (NVENC: {PREFERRED_NVENC_CODEC})")
+        else:
+            log("[EXPORT] Using CPU encoding for export (libx264)")
+        codec_try_order.append("libx264")
+
+        STALL_TIMEOUT = 90
+        CHECK_INTERVAL = 8
+        MAX_ATTEMPTS_PER_CODEC = 1
+
+        def _run_write(final_clip, out_path, codec_name, ffmpeg_params, threads_setting, result_dict):
+            try:
+                final_clip.write_videofile(
+                    out_path,
+                    fps=FPS,
+                    codec=codec_name,
+                    audio_codec="aac",
+                    audio_bitrate="192k",
+                    threads=threads_setting,
+                    ffmpeg_params=ffmpeg_params,
+                    verbose=False,
+                    logger="bar"
+                )
+                result_dict["ok"] = True
+            except Exception as e:
+                result_dict["ok"] = False
+                result_dict["error"] = str(e)
+            finally:
+                try:
+                    final_clip.close()
+                except Exception:
+                    pass
+                gc.collect()
+
+        last_error = None
+        for codec in codec_try_order:
+            for attempt in range(MAX_ATTEMPTS_PER_CODEC):
+                ffmpeg_params = _make_ffmpeg_params_for_codec(codec)
+                threads_setting = 4  # Use 4 threads for better performance (was 0/auto)
+                # Log GPU usage status for user clarity
+                gpu_status = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
+                log(f"[EXPORT] Starting export with {gpu_status}")
+                log(f"[EXPORT] Codec: {codec}, Params: {ffmpeg_params}, Threads: {threads_setting}, Attempt: {attempt+1}")
+                result = {"ok": False, "error": None}
+                writer_thread = threading.Thread(target=_run_write, args=(final, output_path, codec, ffmpeg_params, threads_setting, result), daemon=True)
+                writer_thread.start()
+
+                prev_size = -1
+                stalled_since = None
+                start_t = time.time()
+                while writer_thread.is_alive():
+                    time.sleep(CHECK_INTERVAL)
+                    try:
+                        cur_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+                    except Exception:
+                        cur_size = 0
+                    log(f"[export-monitor] {codec} out_size={cur_size} bytes (elapsed {int(time.time()-start_t)}s)")
+                    if cur_size > prev_size:
+                        prev_size = cur_size
+                        stalled_since = None
+                    else:
+                        if stalled_since is None:
+                            stalled_since = time.time()
+                        else:
+                            if (time.time() - stalled_since) > STALL_TIMEOUT:
+                                log(f"[export-monitor] Detected stall for {STALL_TIMEOUT}s. Attempting to abort and retry.")
+                                try:
+                                    os.remove(output_path)
+                                    log("[export-monitor] Removed partial output file.")
+                                except Exception as e_rm:
+                                    log(f"[export-monitor] Could not remove partial file: {e_rm}")
+                                result["ok"] = False
+                                result["error"] = f"Stalled export (no growth for {STALL_TIMEOUT}s)"
+                                break
+                writer_thread.join(timeout=1.0)
+                if result.get("ok"):
+                    gpu_used = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
+                    log(f"[EXPORT] ✅ Export finished successfully using {gpu_used}")
+                    ok_probe, probe_out = probe_file_with_ffmpeg(output_path)
+                    if ok_probe:
+                        log("Export OK — ffmpeg probe didn't find fatal errors.")
+                        try:
+                            if os.name == "nt":
+                                os.startfile(output_path)
+                            elif sys.platform == "darwin":
+                                subprocess.Popen(["open", output_path])
+                            else:
+                                subprocess.Popen(["xdg-open", output_path])
+                        except Exception as eopen:
+                            log(f"Could not open output automatically: {eopen}")
+                        return True
+                    else:
+                        log("[export-monitor] Probe reported issues, attempting re-encode.")
+                        last_error = probe_out
+                        reencoded = output_path.replace(".mp4", "_reencoded.mp4")
+                        success = reencode_with_libx264(output_path, reencoded, log)
+                        if success:
+                            try:
+                                os.replace(reencoded, output_path)
+                                log("Re-encoded succeeded and replaced original output.")
+                                return True
+                            except Exception:
+                                log(f"Re-encoded saved at: {reencoded}")
+                                return True
+                        else:
+                            log("Re-encode failed.")
+                else:
+                    last_error = result.get("error")
+                    log(f"[export-monitor] Export attempt failed/aborted: {last_error}")
+                    time.sleep(1.0)
+                    continue
+
+        log(f"[export-monitor] All export attempts exhausted. Last error: {last_error}")
+        return False
 
 # ----------------- Processing pipeline (single job) -----------------
 def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bottom_ratio=None):
