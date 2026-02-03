@@ -5655,11 +5655,11 @@ class App:
     def on_tiktok_preview_refresh(self):
         """Refresh the TikTok format preview with current settings"""
         try:
-            if not self.video_path_var.get() or not os.path.isfile(self.video_path_var.get()):
+            if not self.video_var.get() or not os.path.isfile(self.video_var.get()):
                 return
             
             # Get current video path and time
-            video_path = self.video_path_var.get()
+            video_path = self.video_var.get()
             current_time = float(self.time_var.get())
             
             # Load video clip at current time
