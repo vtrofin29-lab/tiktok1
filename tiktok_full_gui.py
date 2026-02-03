@@ -5913,11 +5913,17 @@ class App:
             # Apply video settings
             self.mirror_video_var.set(preset_data.get("mirror_video", False))
             self.use_4k_var.set(preset_data.get("use_4k", False))
-            self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
             self.top_percent_var.set(preset_data.get("top_percent", CROP_TOP_RATIO*100))
             self.bottom_percent_var.set(preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100))
             self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
             self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            # Auto-enable custom crop if preset has non-default crop values
+            top_val = preset_data.get("top_percent", CROP_TOP_RATIO*100)
+            bottom_val = preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100)
+            if abs(top_val - CROP_TOP_RATIO*100) > 0.1 or abs(bottom_val - CROP_BOTTOM_RATIO*100) > 0.1:
+                self.use_custom_crop_var.set(True)
+            else:
+                self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
             
             # Apply audio settings
             self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
@@ -5994,11 +6000,17 @@ class App:
             # Apply video settings
             self.mirror_video_var.set(preset_data.get("mirror_video", False))
             self.use_4k_var.set(preset_data.get("use_4k", False))
-            self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
             self.top_percent_var.set(preset_data.get("top_percent", CROP_TOP_RATIO*100))
             self.bottom_percent_var.set(preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100))
             self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
             self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            # Auto-enable custom crop if preset has non-default crop values
+            top_val = preset_data.get("top_percent", CROP_TOP_RATIO*100)
+            bottom_val = preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100)
+            if abs(top_val - CROP_TOP_RATIO*100) > 0.1 or abs(bottom_val - CROP_BOTTOM_RATIO*100) > 0.1:
+                self.use_custom_crop_var.set(True)
+            else:
+                self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
             
             # Apply audio settings
             self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
