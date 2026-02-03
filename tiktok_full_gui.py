@@ -1670,15 +1670,21 @@ def _calculate_text_lines(text, max_chars=40, words_per_line=None):
     Returns:
         List of text lines
     """
+    # Handle empty or whitespace-only text
+    if not text or not text.strip():
+        return [""]
+    
     words = text.split()
     
     # If words_per_line is specified, group by word count instead of characters
     if words_per_line and words_per_line > 0:
+        if not words:
+            return [""]
         lines = []
         for i in range(0, len(words), words_per_line):
             line_words = words[i:i + words_per_line]
             lines.append(' '.join(line_words))
-        return lines if lines else [text]
+        return lines
     
     # Otherwise use character-based wrapping (original logic)
     lines = []
@@ -1907,8 +1913,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Build complete filter chain
         # [0:v] = background, [1:v] = foreground
-        # Overlay foreground on background at x=0 to fill width (no side borders)
-        filter_chain = f"[0:v][1:v]overlay=x=0:y=(H-h)/2"
+        # Overlay foreground on background centered (x=(W-w)/2) to fill width and crop equally from both sides
+        filter_chain = f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2"
         
         if caption_filters:
             filter_chain += "," + caption_filters
