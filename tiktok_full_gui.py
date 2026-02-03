@@ -1623,28 +1623,36 @@ def load_crop_settings(filepath=CROP_SETTINGS_FILE):
 
 # ----------------- Export composer with monitoring & fallback -----------------
 def _make_ffmpeg_params_for_codec(codec):
+    """
+    Get FFmpeg encoding parameters for the specified codec.
+    
+    Note: These are OUTPUT encoding parameters only. MoviePy passes these to FFmpeg
+    for the final encoding step. Hardware decoding (-hwaccel) doesn't work here
+    because MoviePy reads/processes frames in Python before encoding.
+    
+    The main export bottleneck is MoviePy's Python frame processing, not encoding.
+    GPU acceleration is already being used optimally via:
+    - pre_render_foreground_ffmpeg() uses -hwaccel cuda for foreground (works!)
+    - NVENC encoding below (works!)
+    """
     if codec in ("h264_nvenc", "hevc_nvenc"):
-        # GPU encoding with NVENC + GPU hardware decoding for faster export
-        params = [
-            "-rc", "vbr_hq",
-            "-cq", "19",
-            "-b:v", "0",
-            "-preset", NVENC_PRESET_SPEED,  # Use configurable preset for speed
-            "-pix_fmt", "yuv420p",
-            "-profile:v", "high",
-            "-movflags", "+faststart"
-        ]
-        # Add GPU hardware decoding if available for full GPU pipeline
-        if USE_HARDWARE_DECODING and USE_GPU_IF_AVAILABLE:
-            # These go at the beginning as input options
-            params = ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"] + params
-        return params
-    else:
+        # GPU encoding with NVENC - optimized for speed and quality
         return [
-            "-preset", "ultrafast",  # Changed from veryfast to ultrafast for speed
-            "-crf", "20",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart"
+            "-rc", "vbr_hq",           # Variable bitrate, high quality
+            "-cq", "19",               # Constant quality level (lower = better)
+            "-b:v", "0",               # Let CQ control quality
+            "-preset", NVENC_PRESET_SPEED,  # p4 for speed (configurable)
+            "-pix_fmt", "yuv420p",     # Standard pixel format
+            "-profile:v", "high",      # H.264 High profile
+            "-movflags", "+faststart"  # Web streaming optimization
+        ]
+    else:
+        # CPU encoding with libx264 - fallback option
+        return [
+            "-preset", "ultrafast",    # Fastest CPU preset
+            "-crf", "20",              # Constant quality
+            "-pix_fmt", "yuv420p",     # Standard pixel format
+            "-movflags", "+faststart"  # Web streaming optimization
         ]
 
 # ----------------- Video Effects (CapCut-style) -----------------
