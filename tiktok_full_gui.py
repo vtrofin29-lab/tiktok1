@@ -2234,7 +2234,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             temp_dir = tempfile.mkdtemp(prefix="tiktok_ffmpeg_export_")
             bg_image_path = os.path.join(temp_dir, "background.png")
             bg_array = bg_static.get_frame(0)
-            from PIL import Image
+            # Image is already imported at top of file
             Image.fromarray(bg_array).save(bg_image_path)
             log(f"[EXPORT] Background saved to: {bg_image_path}")
             
