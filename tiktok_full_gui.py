@@ -757,6 +757,9 @@ CAPTION_STROKE_COLOR = (0, 0, 0, 150)
 # Stroke width (pixels) for caption border
 CAPTION_STROKE_WIDTH = max(1, int(CAPTION_FONT_SIZE * 0.05))
 
+# Video zoom scale (user-controllable)
+VIDEO_ZOOM_SCALE = 1.0  # 1.0 = auto-fit, <1.0 = zoom out, >1.0 = zoom in
+
 # Translation and AI Voice settings
 TRANSLATION_ENABLED = False
 TARGET_LANGUAGE = 'none'  # 'none', 'en', 'es', 'fr', 'ro', etc.
@@ -2099,14 +2102,16 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
 
-    # foreground: zoom to fill ALL borders (no borders anywhere)
-    # Calculate scale to fill the canvas completely while maintaining aspect ratio
+    # foreground: zoom to fill width (left/right borders) with user-controllable zoom
+    # Calculate scale to fill the canvas width while maintaining aspect ratio
     try:
-        # Scale to fill BOTH width and height - use MAX to ensure NO borders visible
+        # Get user's zoom setting
+        zoom_factor = globals().get('VIDEO_ZOOM_SCALE', 1.0)
+        
+        # Scale to fill width (left/right borders)
         scale_w = WIDTH / video_clip.w
-        scale_h = HEIGHT / video_clip.h
-        # Use MAX of both scales to ensure video fills entire canvas (no borders anywhere)
-        fg_scale = max(scale_w, scale_h) * 1.01  # Add 1% extra to ensure no gaps at edges
+        # Apply user's zoom factor
+        fg_scale = scale_w * zoom_factor
     except Exception:
         fg_scale = 1.0
     
@@ -3802,7 +3807,41 @@ class App:
         self.time_scale.pack(side="left", fill="x", expand=True)
         self.time_label = ttk.Label(tl_frame, text="00:00")
         self.time_label.pack(side="left", padx=6)
+        
+        # --- Zoom Control Slider ---
+        zoom_frame = ttk.Frame(preview_frame)
+        try:
+            zoom_frame.configure(style='TFrame')
+            zoom_frame.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        zoom_frame.pack(fill="x", pady=(4,0))
+        ttk.Label(zoom_frame, text="Video Zoom:").pack(side="left")
+        self.zoom_var = tk.DoubleVar(value=1.0)
+        self.zoom_scale = CanvasSlider(zoom_frame, from_=0.5, to=2.0, orient="horizontal", length=300, resolution=0.01, variable=self.zoom_var, command=self.on_zoom_changed)
+        self.zoom_scale.pack(side="left", fill="x", expand=True, padx=4)
+        self.zoom_label = ttk.Label(zoom_frame, text="1.00x")
+        self.zoom_label.pack(side="left", padx=6)
+        
         ttk.Button(preview_frame, text="Refresh mini preview", command=self.on_mini_refresh_clicked).pack(pady=(6,0))
+        
+        # --- TikTok Format Preview (9:16 aspect ratio) ---
+        tiktok_preview_frame = ttk.Frame(preview_frame)
+        try:
+            tiktok_preview_frame.configure(style='TFrame')
+            tiktok_preview_frame.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        tiktok_preview_frame.pack(fill='both', expand=False, pady=(6,0))
+        ttk.Label(tiktok_preview_frame, text="TikTok Preview (9:16):").pack(anchor="w")
+        self.tiktok_preview_border = tk.Frame(tiktok_preview_frame, bg='#222222', bd=2, relief='solid')
+        self.tiktok_preview_border.pack(fill='both', expand=True, padx=0, pady=(4,0))
+        # 180x320 = 9:16 aspect ratio
+        self.tiktok_preview_canvas = tk.Canvas(self.tiktok_preview_border, width=180, height=320, bg='#111111', highlightthickness=0)
+        self.tiktok_preview_canvas.pack(fill='both', expand=True)
+        self.tiktok_preview_image_ref = None
+        
+        ttk.Button(preview_frame, text="Refresh TikTok Preview", command=self.on_tiktok_preview_refresh).pack(pady=(6,0))
 
         self.mini_canvas.bind("<ButtonPress-1>", self._mini_on_mouse_down)
         self.mini_canvas.bind("<B1-Motion>", self._mini_on_mouse_move)
@@ -5596,6 +5635,87 @@ class App:
                 pass
         except Exception:
             pass
+    
+    def on_zoom_changed(self, _=None):
+        """Called when zoom slider is moved"""
+        global VIDEO_ZOOM_SCALE
+        zoom = float(self.zoom_var.get())
+        VIDEO_ZOOM_SCALE = zoom
+        self.zoom_label.config(text=f"{zoom:.2f}x")
+        # Update TikTok preview when zoom changes
+        self.on_tiktok_preview_refresh()
+    
+    def on_tiktok_preview_refresh(self):
+        """Refresh the TikTok format preview with current settings"""
+        try:
+            if not self.video_path_var.get() or not os.path.isfile(self.video_path_var.get()):
+                return
+            
+            # Get current video path and time
+            video_path = self.video_path_var.get()
+            current_time = float(self.time_var.get())
+            
+            # Load video clip at current time
+            from moviepy.editor import VideoFileClip
+            video_clip = VideoFileClip(video_path)
+            
+            # Get frame at current time
+            if current_time > video_clip.duration:
+                current_time = 0.0
+            
+            frame = video_clip.get_frame(current_time)
+            video_clip.close()
+            
+            # Get crop settings
+            crop_top_ratio = float(self.crop_top_var.get()) / 100.0
+            crop_bottom_ratio = float(self.crop_bottom_var.get()) / 100.0
+            
+            # Calculate crop coordinates
+            img_h, img_w = frame.shape[:2]
+            crop_y = int(img_h * crop_top_ratio)
+            crop_h = int(img_h * (1.0 - crop_top_ratio - crop_bottom_ratio))
+            crop_x = 0
+            crop_w = img_w
+            
+            # Crop the frame
+            cropped_frame = frame[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
+            
+            # Apply zoom scaling
+            zoom = float(self.zoom_var.get())
+            scale_w = WIDTH / crop_w
+            fg_scale = scale_w * zoom
+            
+            # Scale the frame
+            scaled_h = int(crop_h * fg_scale)
+            scaled_w = int(crop_w * fg_scale)
+            
+            from PIL import Image
+            import numpy as np
+            
+            pil_img = Image.fromarray(cropped_frame)
+            pil_img = pil_img.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+            
+            # Create 9:16 canvas (1080x1920 scaled down to 180x320)
+            canvas = Image.new('RGB', (WIDTH, HEIGHT), color=(20, 20, 20))
+            
+            # Center the scaled image on canvas
+            paste_x = (WIDTH - scaled_w) // 2
+            paste_y = (HEIGHT - scaled_h) // 2
+            canvas.paste(pil_img, (paste_x, paste_y))
+            
+            # Scale down to preview size (180x320)
+            preview_canvas = canvas.resize((180, 320), Image.Resampling.LANCZOS)
+            
+            # Display in TikTok preview canvas
+            photo = ImageTk.PhotoImage(preview_canvas)
+            self.tiktok_preview_canvas.delete("all")
+            self.tiktok_preview_canvas.create_image(90, 160, image=photo)
+            self.tiktok_preview_image_ref = photo  # Keep reference
+            
+        except Exception as e:
+            print(f"TikTok preview error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def on_font_selected(self, event=None):
         try:
