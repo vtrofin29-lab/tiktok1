@@ -2619,6 +2619,10 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     sys.stdout = sys.stderr = QueueWriter(q)
     temp_fg = None
     
+    # Log received crop parameters for debugging
+    log(f"[DEBUG] Received custom_top_ratio: {custom_top_ratio}")
+    log(f"[DEBUG] Received custom_bottom_ratio: {custom_bottom_ratio}")
+    
     # Set defaults for effects if not provided
     if blur_radius is None:
         blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
@@ -2707,6 +2711,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         crop_w = orig_w
         crop_x = 0
         crop_y = crop_top
+        
+        # Log crop values for debugging
+        log(f"[CROP] Custom crop enabled: {custom_top_ratio is not None or custom_bottom_ratio is not None}")
+        log(f"[CROP] Top ratio: {custom_top_ratio if custom_top_ratio is not None else CROP_TOP_RATIO} ({crop_top}px)")
+        log(f"[CROP] Bottom ratio: {custom_bottom_ratio if custom_bottom_ratio is not None else CROP_BOTTOM_RATIO} ({crop_bottom}px)")
+        log(f"[CROP] Original: {orig_w}x{orig_h}, Cropped: {crop_w}x{crop_h}")
 
         try:
             min_scale_to_fit = min(WIDTH / cropped.w, HEIGHT / cropped.h)
@@ -4908,6 +4918,18 @@ class App:
                     pref_font = self.selected_font
             except Exception:
                 pref_font = None
+            
+            # Log crop settings for debugging
+            use_custom = self.use_custom_crop_var.get()
+            top_val = self.top_percent_var.get()
+            bottom_val = self.bottom_percent_var.get()
+            self.log_to_console(f"\n[DEBUG JOB] Creating job with:")
+            self.log_to_console(f"[DEBUG JOB] Use custom crop checkbox: {use_custom}")
+            self.log_to_console(f"[DEBUG JOB] Top percent: {top_val}")
+            self.log_to_console(f"[DEBUG JOB] Bottom percent: {bottom_val}")
+            self.log_to_console(f"[DEBUG JOB] Will send custom_top_ratio: {(top_val/100.0) if use_custom else None}")
+            self.log_to_console(f"[DEBUG JOB] Will send custom_bottom_ratio: {(bottom_val/100.0) if use_custom else None}")
+            
             job = {
                 "video": video,
                 "voice": voice,
