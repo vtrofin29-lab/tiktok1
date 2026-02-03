@@ -1721,9 +1721,29 @@ def _escape_ffmpeg_text(text):
     return text
 
 
-def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_width, video_height, fontsize=56):
+def _rgba_to_hex(rgba_tuple):
     """
-    Build FFmpeg drawtext filter for a single caption.
+    Convert RGBA tuple to hex color string for FFmpeg.
+    
+    Args:
+        rgba_tuple: (R, G, B, A) tuple with values 0-255
+        
+    Returns:
+        Hex color string like '#RRGGBB' or '0xRRGGBB'
+    """
+    try:
+        r, g, b = int(rgba_tuple[0]), int(rgba_tuple[1]), int(rgba_tuple[2])
+        # FFmpeg accepts #RRGGBB or 0xRRGGBB format
+        return f"0x{r:02X}{g:02X}{b:02X}"
+    except Exception:
+        return "0xFFFFFF"  # Default to white
+
+
+def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_width, video_height, 
+                                   fontsize=56, font_path=None, text_color="0xFFFFFF", 
+                                   stroke_color="0x000000", stroke_width=3):
+    """
+    Build FFmpeg drawtext filter for a single caption with custom styling.
     
     Args:
         caption_text: Text to display
@@ -1732,6 +1752,10 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
         video_width: Video width in pixels
         video_height: Video height in pixels
         fontsize: Font size in pixels
+        font_path: Path to custom font file (optional)
+        text_color: Text color in hex format (e.g., '0xFFFFFF')
+        stroke_color: Stroke/border color in hex format (e.g., '0x000000')
+        stroke_width: Stroke width in pixels
         
     Returns:
         FFmpeg drawtext filter string
@@ -1746,30 +1770,41 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
     # Position: bottom-center with 50px offset from bottom
     y_position = video_height - 100  # 100px from bottom for multi-line text
     
-    # Build drawtext filter
-    # Style matches MoviePy captions: white text with black stroke
+    # Build drawtext filter with custom styling
     filter_parts = [
         f"drawtext=text='{text_with_newlines}'",
         f"fontsize={fontsize}",
-        "fontcolor=white",
-        "borderw=3",  # 3px black stroke
-        "bordercolor=black",
+        f"fontcolor={text_color}",
+        f"borderw={stroke_width}",
+        f"bordercolor={stroke_color}",
         f"x=(w-text_w)/2",  # Center horizontally
         f"y={y_position}",   # Bottom positioning
         f"enable='between(t,{start_time:.3f},{end_time:.3f})'"  # Timing
     ]
     
+    # Add custom font if provided
+    if font_path and os.path.exists(font_path):
+        # Escape font path for FFmpeg (handle spaces and special chars)
+        escaped_font_path = font_path.replace('\\', '/').replace(':', '\\:')
+        filter_parts.insert(1, f"fontfile='{escaped_font_path}'")
+    
     return ':'.join(filter_parts)
 
 
-def _build_all_caption_filters(caption_segments, video_width, video_height):
+def _build_all_caption_filters(caption_segments, video_width, video_height, 
+                               font_path=None, text_color="0xFFFFFF", 
+                               stroke_color="0x000000", stroke_width=3):
     """
-    Build all caption drawtext filters and chain them together.
+    Build all caption drawtext filters and chain them together with custom styling.
     
     Args:
         caption_segments: List of caption dictionaries with 'text', 'start', 'end'
         video_width: Video width in pixels
         video_height: Video height in pixels
+        font_path: Path to custom font file (optional)
+        text_color: Text color in hex format
+        stroke_color: Stroke color in hex format
+        stroke_width: Stroke width in pixels
         
     Returns:
         Complete filter_complex string for all captions
@@ -1785,7 +1820,11 @@ def _build_all_caption_filters(caption_segments, video_width, video_height):
             start_time=segment['start'],
             end_time=segment['end'],
             video_width=video_width,
-            video_height=video_height
+            video_height=video_height,
+            font_path=font_path,
+            text_color=text_color,
+            stroke_color=stroke_color,
+            stroke_width=stroke_width
         )
         filters.append(caption_filter)
     
@@ -1816,8 +1855,35 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         log_fn("[EXPORT] Using fast FFmpeg filter-based export...")
         log_fn(f"[EXPORT] Building filter chain for {len(caption_segments)} caption segments...")
         
-        # Build caption filters
-        caption_filters = _build_all_caption_filters(caption_segments, video_width, video_height)
+        # Get current font and color settings from globals
+        try:
+            font_path = globals().get('LOADED_FONT_PATH', None)
+            text_color_rgba = globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255))
+            stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)
+            
+            # Convert colors to hex for FFmpeg
+            text_color_hex = _rgba_to_hex(text_color_rgba)
+            stroke_color_hex = "0x000000"  # Black stroke (can be made customizable later)
+            
+            if font_path:
+                log_fn(f"[EXPORT] Using custom font: {font_path}")
+            log_fn(f"[EXPORT] Text color: {text_color_hex} (RGBA: {text_color_rgba})")
+            log_fn(f"[EXPORT] Stroke width: {stroke_width}px")
+        except Exception as e:
+            log_fn(f"[EXPORT] Warning: Could not get custom settings, using defaults: {e}")
+            font_path = None
+            text_color_hex = "0xFFFFFF"
+            stroke_color_hex = "0x000000"
+            stroke_width = 3
+        
+        # Build caption filters with custom styling
+        caption_filters = _build_all_caption_filters(
+            caption_segments, video_width, video_height,
+            font_path=font_path,
+            text_color=text_color_hex,
+            stroke_color=stroke_color_hex,
+            stroke_width=stroke_width
+        )
         
         # Build complete filter chain
         # [0:v] = background, [1:v] = foreground
