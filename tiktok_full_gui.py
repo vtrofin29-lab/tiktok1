@@ -5674,8 +5674,8 @@ class App:
             video_clip.close()
             
             # Get crop settings
-            crop_top_ratio = float(self.crop_top_var.get()) / 100.0
-            crop_bottom_ratio = float(self.crop_bottom_var.get()) / 100.0
+            crop_top_ratio = float(self.top_percent_var.get()) / 100.0
+            crop_bottom_ratio = float(self.bottom_percent_var.get()) / 100.0
             
             # Calculate crop coordinates
             img_h, img_w = frame.shape[:2]
