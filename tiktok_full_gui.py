@@ -1929,7 +1929,94 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
     return ','.join(filters)
 
 
-def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn):
+def _build_ffmpeg_effect_filters(effect_settings, log_fn=None):
+    """
+    Build FFmpeg filter string for video effects (to match MoviePy effects).
+    
+    FFmpeg equivalents:
+    - Sharpness: unsharp filter
+    - Saturation: eq filter (saturation parameter)
+    - Contrast: eq filter (contrast parameter)
+    - Brightness: eq filter (brightness parameter)
+    - Vintage: colorbalance + noise filters
+    
+    Args:
+        effect_settings: Dictionary with effect settings
+        log_fn: Optional logging function
+        
+    Returns:
+        FFmpeg filter string or empty string if no effects
+    """
+    if not effect_settings:
+        return ""
+    
+    effect_filters = []
+    active_effects = []
+    
+    # Check for sharpness effect (Resilience)
+    if effect_settings.get('effect_sharpness', False):
+        intensity = effect_settings.get('effect_sharpness_intensity', 1.5)
+        # unsharp filter: luma_msize_x:luma_msize_y:luma_amount
+        # intensity 1.5 -> luma_amount 1.5, intensity 2.0 -> luma_amount 2.0
+        luma_amount = min(5.0, max(0.5, intensity))  # Clamp between 0.5 and 5.0
+        effect_filters.append(f"unsharp=5:5:{luma_amount}")
+        active_effects.append(f"Sharpness ({intensity}x)")
+    
+    # Build eq filter parameters for saturation, contrast, brightness
+    eq_params = []
+    
+    # Check for saturation effect (Vibrance)
+    if effect_settings.get('effect_saturation', False):
+        intensity = effect_settings.get('effect_saturation_intensity', 1.3)
+        # eq saturation: 1.0 = normal, >1.0 = more saturated
+        saturation = min(3.0, max(0.0, intensity))
+        eq_params.append(f"saturation={saturation}")
+        active_effects.append(f"Saturation ({intensity}x)")
+    
+    # Check for contrast effect (HDR)
+    if effect_settings.get('effect_contrast', False):
+        intensity = effect_settings.get('effect_contrast_intensity', 1.2)
+        # eq contrast: 1.0 = normal, >1.0 = more contrast
+        contrast = min(2.0, max(-2.0, intensity))
+        eq_params.append(f"contrast={contrast}")
+        active_effects.append(f"Contrast ({intensity}x)")
+    
+    # Check for brightness effect
+    if effect_settings.get('effect_brightness', False):
+        intensity = effect_settings.get('effect_brightness_intensity', 1.15)
+        # eq brightness: 0.0 = normal, >0 = brighter, <0 = darker
+        # Convert multiplier to additive: 1.15 -> 0.15
+        brightness = min(1.0, max(-1.0, intensity - 1.0))
+        eq_params.append(f"brightness={brightness}")
+        active_effects.append(f"Brightness ({intensity}x)")
+    
+    # Add eq filter if any eq parameters were set
+    if eq_params:
+        effect_filters.append(f"eq={':'.join(eq_params)}")
+    
+    # Check for vintage effect
+    if effect_settings.get('effect_vintage', False):
+        grain_intensity = effect_settings.get('effect_vintage_intensity', 0.3)
+        # Vintage effect: sepia tone via colorbalance + optional noise
+        # colorbalance for warm sepia tones: increase red/yellow in highlights/midtones
+        # Note: intensity 0.3 -> moderate vintage look
+        shadow_red = min(1.0, max(-1.0, grain_intensity * 0.3))
+        midtone_red = min(1.0, max(-1.0, grain_intensity * 0.2))
+        highlight_yellow = min(1.0, max(-1.0, grain_intensity * 0.15))
+        effect_filters.append(f"colorbalance=rs={shadow_red}:gs=-{shadow_red*0.5}:bs=-{shadow_red}:rm={midtone_red}:gm=0:bm=-{midtone_red*0.5}:rh=0:gh={highlight_yellow}:bh=-{highlight_yellow}")
+        active_effects.append(f"Vintage ({grain_intensity}x)")
+    
+    # Log active effects
+    if log_fn and active_effects:
+        log_fn(f"[EXPORT] Applying FFmpeg effects: {', '.join(active_effects)}")
+    
+    # Combine all effect filters
+    if effect_filters:
+        return ','.join(effect_filters)
+    return ""
+
+
+def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None):
     """
     Fast export using pure FFmpeg complex filters.
     2-3x faster than MoviePy's Python frame processing.
@@ -1943,6 +2030,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         video_width: Video width
         video_height: Video height
         log_fn: Logging function
+        effect_settings: Dictionary with video effect settings (sharpness, saturation, contrast, etc.)
         
     Returns:
         True if successful, False otherwise
@@ -2016,6 +2104,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 words_per_line=words_per_caption  # Pass words per caption setting
             )
         
+        # Build video effect filters (to match MoviePy effects)
+        effect_filter_str = _build_ffmpeg_effect_filters(effect_settings, log_fn)
+        
         # Build complete filter chain
         # [0:v] = background, [1:v] = foreground
         # Overlay foreground on background centered (x=(W-w)/2) to fill width and crop equally from both sides
@@ -2028,6 +2119,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             filter_chain = f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2"
             if caption_filters:
                 filter_chain += "," + caption_filters
+        
+        # Add video effects to filter chain (same as MoviePy applies)
+        if effect_filter_str:
+            filter_chain += "," + effect_filter_str
+            log_fn(f"[EXPORT] ✓ Video effects added to FFmpeg filter chain")
         
         # Build FFmpeg command
         cmd = [
@@ -2488,7 +2584,8 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 output_path=output_path,
                 video_width=WIDTH,
                 video_height=HEIGHT,
-                log_fn=log
+                log_fn=log,
+                effect_settings=effect_settings  # Pass effect settings to FFmpeg export
             )
             
             if ffmpeg_export_successful:
