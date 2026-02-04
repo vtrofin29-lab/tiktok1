@@ -1759,6 +1759,79 @@ def _rgba_to_hex(rgba_tuple):
         return "0xFFFFFF"  # Default to white
 
 
+def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial", fontsize=56, 
+                                text_color_rgba=(255, 255, 0, 255), stroke_width=3):
+    """
+    Generate an ASS (Advanced SubStation Alpha) subtitle file for word-by-word captions.
+    
+    Args:
+        caption_segments: List of caption dictionaries with 'text', 'start', 'end'
+        output_path: Path where to save the .ass file
+        font_name: Font name (e.g., "Bangers", "Arial")
+        fontsize: Font size in pixels
+        text_color_rgba: Text color as RGBA tuple
+        stroke_width: Outline/border width
+        
+    Returns:
+        Path to generated ASS file
+    """
+    import re
+    
+    # Convert RGBA to ASS color format (BGR in hex with alpha)
+    # ASS uses &HAABBGGRR format
+    r, g, b, a = text_color_rgba
+    # Convert alpha: 255 = fully opaque = 00, 0 = fully transparent = FF
+    alpha_hex = f"{255 - int(a):02X}"
+    text_color_ass = f"&H{alpha_hex}{b:02X}{g:02X}{r:02X}"
+    outline_color_ass = "&H00000000"  # Black outline, fully opaque
+    
+    # ASS file header
+    ass_content = f"""[Script Info]
+Title: Generated Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+PlayResX: 1080
+PlayResY: 1920
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{font_name},{fontsize},{text_color_ass},&H00FFFFFF,{outline_color_ass},&H00000000,0,0,0,0,100,100,0,0,1,{stroke_width},0,2,10,10,150,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    
+    # Add each caption as a dialogue line
+    for segment in caption_segments:
+        # Convert time to ASS format (H:MM:SS.CS where CS is centiseconds)
+        start_time = segment['start']
+        end_time = segment['end']
+        
+        start_h = int(start_time // 3600)
+        start_m = int((start_time % 3600) // 60)
+        start_s = int(start_time % 60)
+        start_cs = int((start_time % 1) * 100)
+        start_str = f"{start_h}:{start_m:02d}:{start_s:02d}.{start_cs:02d}"
+        
+        end_h = int(end_time // 3600)
+        end_m = int((end_time % 3600) // 60)
+        end_s = int(end_time % 60)
+        end_cs = int((end_time % 1) * 100)
+        end_str = f"{end_h}:{end_m:02d}:{end_s:02d}.{end_cs:02d}"
+        
+        # Escape text for ASS (replace newlines with \N)
+        text = segment['text'].replace('\n', '\\N')
+        
+        ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}\n"
+    
+    # Write ASS file
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(ass_content)
+    
+    return output_path
+
+
 def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_width, video_height, 
                                    fontsize=56, font_path=None, text_color="0xFFFFFF", 
                                    stroke_color="0x000000", stroke_width=3, words_per_line=None):
@@ -1904,23 +1977,57 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             stroke_width = 3
             words_per_caption = None
         
-        # Build caption filters with custom styling and words per caption
-        caption_filters = _build_all_caption_filters(
-            caption_segments, video_width, video_height,
-            font_path=font_path,
-            text_color=text_color_hex,
-            stroke_color=stroke_color_hex,
-            stroke_width=stroke_width,
-            words_per_line=words_per_caption  # Pass words per caption setting
-        )
+        # For many captions (>100), use subtitle file approach to avoid command line length limits
+        # Otherwise use drawtext filters for better compatibility
+        use_subtitle_file = len(caption_segments) > 100
+        ass_subtitle_path = None
+        
+        if use_subtitle_file:
+            log_fn(f"[EXPORT] Using ASS subtitle file for {len(caption_segments)} captions (efficient for many captions)")
+            # Generate ASS subtitle file in temp directory
+            import tempfile
+            temp_dir = tempfile.mkdtemp(prefix="tiktok_subtitles_")
+            ass_subtitle_path = os.path.join(temp_dir, "captions.ass")
+            
+            # Extract font name from font path
+            font_name = "Arial"  # Default
+            if font_path and os.path.exists(font_path):
+                font_name = os.path.splitext(os.path.basename(font_path))[0]
+            
+            _generate_ass_subtitle_file(
+                caption_segments, 
+                ass_subtitle_path,
+                font_name=font_name,
+                fontsize=56,
+                text_color_rgba=text_color_rgba,
+                stroke_width=stroke_width
+            )
+            log_fn(f"[EXPORT] ASS subtitle file generated: {ass_subtitle_path}")
+            caption_filters = None
+        else:
+            log_fn(f"[EXPORT] Using drawtext filters for {len(caption_segments)} captions")
+            # Build caption filters with custom styling and words per caption
+            caption_filters = _build_all_caption_filters(
+                caption_segments, video_width, video_height,
+                font_path=font_path,
+                text_color=text_color_hex,
+                stroke_color=stroke_color_hex,
+                stroke_width=stroke_width,
+                words_per_line=words_per_caption  # Pass words per caption setting
+            )
         
         # Build complete filter chain
         # [0:v] = background, [1:v] = foreground
         # Overlay foreground on background centered (x=(W-w)/2) to fill width and crop equally from both sides
-        filter_chain = f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2"
-        
-        if caption_filters:
-            filter_chain += "," + caption_filters
+        if use_subtitle_file and ass_subtitle_path:
+            # Use ass subtitle filter (burns subtitles into video)
+            # Escape path for Windows
+            escaped_ass_path = ass_subtitle_path.replace('\\', '/').replace(':', '\\:')
+            filter_chain = f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2,ass='{escaped_ass_path}'"
+        else:
+            filter_chain = f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2"
+            if caption_filters:
+                filter_chain += "," + caption_filters
         
         # Build FFmpeg command
         cmd = [
