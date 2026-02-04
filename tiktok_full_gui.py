@@ -2331,6 +2331,17 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     try_ffmpeg_export = True  # Set to False to force MoviePy
     ffmpeg_export_successful = False
     
+    # Determine which caption data to use for FFmpeg
+    captions_for_ffmpeg = caption_data_for_ffmpeg if caption_data_for_ffmpeg else caption_segments
+    
+    # FFmpeg drawtext filters don't scale well with hundreds of captions
+    # If we have too many captions (>100), skip FFmpeg drawtext and use MoviePy overlay instead
+    MAX_FFMPEG_CAPTIONS = 100
+    if len(captions_for_ffmpeg) > MAX_FFMPEG_CAPTIONS:
+        log(f"[EXPORT] ⚠️ Too many captions ({len(captions_for_ffmpeg)}) for FFmpeg drawtext filters")
+        log(f"[EXPORT] Using MoviePy overlay with FFmpeg NVENC encoding instead (still fast)")
+        try_ffmpeg_export = False  # Skip FFmpeg drawtext, use MoviePy overlay + FFmpeg encoding
+    
     if try_ffmpeg_export and caption_segments:
         try:
             import tempfile
@@ -2365,7 +2376,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             ffmpeg_export_successful = _export_with_ffmpeg_filters(
                 bg_path=bg_image_path,
                 fg_path=fg_video_path,
-                caption_segments=caption_data_for_ffmpeg if caption_data_for_ffmpeg else caption_segments,  # Use word-groups if available
+                caption_segments=captions_for_ffmpeg,
                 audio_path=audio_temp_path,
                 output_path=output_path,
                 video_width=WIDTH,
