@@ -2125,14 +2125,17 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             filter_chain += "," + effect_filter_str
             log_fn(f"[EXPORT] ✓ Video effects added to FFmpeg filter chain")
         
+        # Label the filter output for mapping
+        filter_chain += "[vout]"
+        
         # Build FFmpeg command
         cmd = [
             "ffmpeg", "-y",
-            "-loop", "1", "-i", bg_path,  # Background (looped image)
-            "-i", fg_path,                # Foreground video
-            "-i", audio_path,             # Audio
+            "-loop", "1", "-i", bg_path,  # Background (looped image) [0:v]
+            "-i", fg_path,                # Foreground video [1:v]
+            "-i", audio_path,             # Audio [2:a]
             "-filter_complex", filter_chain,
-            "-map", "0:v",                # Use video from filter chain
+            "-map", "[vout]",             # Use video from filter_complex output
             "-map", "2:a",                # Use audio from audio file
             "-shortest",                   # End when shortest input ends
             "-c:a", "aac",                # Audio codec
