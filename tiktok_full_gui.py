@@ -786,6 +786,7 @@ CAPTION_RAISE = 420
 CAPTION_Y_OFFSET = 0  # Vertical offset in pixels (negative = move up, positive = move down)
 TEMPLATE_WORDS = {1: 1, 2: 2, 3: 3}
 CAPTION_TEMPLATE = 2  # 1, 2 sau 3 cuvinte pe rand
+SILENCE_THRESHOLD_MS = 300  # Default silence threshold in milliseconds for TTS audio compression
 
 
 REQUIRE_FONT_BANGERS = False
@@ -1674,7 +1675,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 
                 try:
                     try:
-                        log(f"[COMPOSE]   Caption group {i+1}/{len(groups)}: '{grp_text}'")
+                        log(f"[COMPOSE]   Caption group {i+1}/{len(groups_with_timing)}: '{grp_text}'")
                         log(f"[COMPOSE]   Display time: {g_start:.2f}s - {g_start + g_dur:.2f}s (duration: {g_dur:.2f}s)")
                     except Exception:
                         pass
@@ -1974,7 +1975,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, silence_threshold_ms=SILENCE_THRESHOLD_MS):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -2186,7 +2187,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         # STEP 1: Remove all silences from TTS audio FIRST for continuous speech
                         log("")
                         log("[AI VOICE] 📝 Removing silences from TTS audio for continuous playback...")
-                        silence_threshold_ms = self.silence_threshold_var.get()
                         log(f"[AI VOICE] Using silence threshold: {silence_threshold_ms}ms")
                         compressed_tts_path, silence_map = remove_silence_from_audio(
                             tts_audio_path, 
@@ -2335,7 +2335,8 @@ def queue_worker(jobs, q):
                            custom_top_ratio=job.get("custom_top_ratio"),
                            custom_bottom_ratio=job.get("custom_bottom_ratio"),
                            mirror_video=job.get("mirror_video", False),
-                           words_per_caption=job.get("words_per_caption", 2))
+                           words_per_caption=job.get("words_per_caption", 2),
+                           silence_threshold_ms=job.get("silence_threshold_ms", SILENCE_THRESHOLD_MS))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -3900,7 +3901,8 @@ class App:
                 "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "mirror_video": self.mirror_video_var.get(),
-                "words_per_caption": self.words_per_caption_var.get()
+                "words_per_caption": self.words_per_caption_var.get(),
+                "silence_threshold_ms": self.silence_threshold_var.get()
             }
             self.jobs.append(job)
             display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'})"
@@ -3967,7 +3969,8 @@ class App:
 
     def _run_single_thread(self, video, voice, music, output, top_ratio, bottom_ratio):
         words_per_caption = self.words_per_caption_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption)
+        silence_threshold_ms = self.silence_threshold_var.get()
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, silence_threshold_ms=silence_threshold_ms)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
