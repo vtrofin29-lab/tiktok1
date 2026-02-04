@@ -2545,10 +2545,12 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         log(f"[EXPORT] Using MoviePy overlay with FFmpeg NVENC encoding instead (still fast)")
         try_ffmpeg_export = False  # Skip FFmpeg drawtext, use MoviePy overlay + FFmpeg encoding
     
-    if try_ffmpeg_export and caption_segments:
+    if try_ffmpeg_export:
         try:
             import tempfile
             log("[EXPORT] Attempting fast FFmpeg filter-based export...")
+            if not caption_segments:
+                log("[EXPORT] Note: No captions to render (video will have no text overlay)")
             
             # Save background image to temp file
             temp_dir = tempfile.mkdtemp(prefix="tiktok_ffmpeg_export_")
