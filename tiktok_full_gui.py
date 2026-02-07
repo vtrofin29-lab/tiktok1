@@ -109,6 +109,7 @@ from moviepy.video.fx.all import speedx
 from moviepy.audio.fx.all import audio_fadeout
 
 import whisper
+import torch  # For GPU detection in Whisper
 
 # ----------------- TRANSLATION & AI VOICE MODULES -----------------
 try:
@@ -756,6 +757,9 @@ CAPTION_STROKE_COLOR = (0, 0, 0, 150)
 # Stroke width (pixels) for caption border
 CAPTION_STROKE_WIDTH = max(1, int(CAPTION_FONT_SIZE * 0.05))
 
+# Video zoom scale (user-controllable)
+VIDEO_ZOOM_SCALE = 1.0  # 1.0 = auto-fit, <1.0 = zoom out, >1.0 = zoom in
+
 # Translation and AI Voice settings
 TRANSLATION_ENABLED = False
 TARGET_LANGUAGE = 'none'  # 'none', 'en', 'es', 'fr', 'ro', etc.
@@ -781,12 +785,17 @@ DIM_FACTOR = 0.55
 
 USE_GPU_IF_AVAILABLE = True
 PREFERRED_NVENC_CODEC = "h264_nvenc"
+USE_HARDWARE_DECODING = True  # Enable GPU-accelerated decoding
+NVENC_PRESET_SPEED = "p4"  # p1=fastest, p7=slowest/best quality. p4=balanced for speed
 
 CAPTION_RAISE = 420
 CAPTION_Y_OFFSET = 0  # Vertical offset in pixels (negative = move up, positive = move down)
 TEMPLATE_WORDS = {1: 1, 2: 2, 3: 3}
 CAPTION_TEMPLATE = 2  # 1, 2 sau 3 cuvinte pe rand
 
+# Maximum captions for FFmpeg drawtext filters before switching to ASS subtitle file
+# (avoids command line length limits and improves performance with many captions)
+MAX_DRAWTEXT_CAPTIONS = 100
 
 REQUIRE_FONT_BANGERS = False
 
@@ -942,9 +951,59 @@ def find_font_file_recursive(preferred_name=None):
 
 LOADED_FONT = None
 LOADED_FONT_PATH = None
+LOADED_FONT_FAMILY = None  # Store the actual font family name for ASS subtitles
+
+def get_font_family_name(font_path):
+    """
+    Extract the actual font family name from a font file.
+    
+    Args:
+        font_path: Path to the font file (.ttf, .otf)
+        
+    Returns:
+        Font family name or None if extraction fails
+    """
+    try:
+        from fontTools.ttLib import TTFont
+        font = TTFont(font_path)
+        
+        # Look for the font family name in the name table
+        # Name ID 1 = Font Family name, Name ID 4 = Full font name
+        for name_record in font['name'].names:
+            # Platform 3 = Windows, Encoding 1 = Unicode BMP
+            # Platform 1 = Macintosh
+            if name_record.nameID == 1:  # Font Family name
+                try:
+                    name = name_record.toUnicode()
+                    if name:
+                        return name
+                except Exception:
+                    pass
+        
+        # Fallback: try nameID 4 (Full name)
+        for name_record in font['name'].names:
+            if name_record.nameID == 4:
+                try:
+                    name = name_record.toUnicode()
+                    if name:
+                        return name.split()[0]  # Take first word as family
+                except Exception:
+                    pass
+        
+        font.close()
+    except ImportError:
+        # fontTools not available, fall back to filename
+        pass
+    except Exception:
+        pass
+    
+    # Fallback: use filename without extension
+    if font_path:
+        return os.path.splitext(os.path.basename(font_path))[0]
+    return None
 
 def load_preferred_font_cached(preferred, size, log=None):
-    global LOADED_FONT, LOADED_FONT_PATH
+    global LOADED_FONT, LOADED_FONT_PATH, LOADED_FONT_FAMILY
     # If a font is already loaded and the preferred request matches the cached path/family, reuse it.
     try:
         if LOADED_FONT is not None:
@@ -992,7 +1051,8 @@ def load_preferred_font_cached(preferred, size, log=None):
             try:
                 LOADED_FONT = ImageFont.truetype(preferred, size)
                 LOADED_FONT_PATH = os.path.abspath(preferred)
-                if log: log(f"[FONT] ✓ Loaded font from file: {LOADED_FONT_PATH}")
+                LOADED_FONT_FAMILY = get_font_family_name(preferred)
+                if log: log(f"[FONT] ✓ Loaded font from file: {LOADED_FONT_PATH} (family: {LOADED_FONT_FAMILY})")
                 return LOADED_FONT
             except Exception:
                 pass
@@ -1001,13 +1061,15 @@ def load_preferred_font_cached(preferred, size, log=None):
             try:
                 LOADED_FONT = ImageFont.truetype(found, size)
                 LOADED_FONT_PATH = found
-                if log: log(f"[FONT] ✓ Loaded font (searched): {found}")
+                LOADED_FONT_FAMILY = get_font_family_name(found)
+                if log: log(f"[FONT] ✓ Loaded font (searched): {found} (family: {LOADED_FONT_FAMILY})")
                 return LOADED_FONT
             except Exception:
                 pass
         try:
             LOADED_FONT = ImageFont.truetype(preferred, size)
             LOADED_FONT_PATH = f"family:{preferred}"
+            LOADED_FONT_FAMILY = preferred  # Family name was passed directly
             if log: log(f"[FONT] ✓ Loaded font by family name: {preferred}")
             return LOADED_FONT
         except Exception:
@@ -1017,13 +1079,15 @@ def load_preferred_font_cached(preferred, size, log=None):
         try:
             LOADED_FONT = ImageFont.truetype(found, size)
             LOADED_FONT_PATH = found
-            if log: log(f"[FONT] ✓ Loaded candidate font: {found}")
+            LOADED_FONT_FAMILY = get_font_family_name(found)
+            if log: log(f"[FONT] ✓ Loaded candidate font: {found} (family: {LOADED_FONT_FAMILY})")
             return LOADED_FONT
         except Exception:
             pass
     try:
         LOADED_FONT = ImageFont.truetype("DejaVuSans.ttf", size)
         LOADED_FONT_PATH = "DejaVuSans.ttf (fallback)"
+        LOADED_FONT_FAMILY = "DejaVu Sans"
         if log: log("[FONT] WARNING: Preferred font not found — using DejaVuSans.ttf fallback.")
         return LOADED_FONT
     except Exception:
@@ -1031,6 +1095,7 @@ def load_preferred_font_cached(preferred, size, log=None):
     if log: log("[FONT] WARNING: No TrueType fonts available. Using default bitmap font.")
     LOADED_FONT = ImageFont.load_default()
     LOADED_FONT_PATH = "default"
+    LOADED_FONT_FAMILY = None
     return LOADED_FONT
 
 def normalize_text(s: str) -> str:
@@ -1067,19 +1132,35 @@ def ffmpeg_supports_nvenc(codec_name="h264_nvenc"):
 
 def get_export_settings():
     audio_bitrate = "192k"
-    threads = 0
-    libx264_params = ["-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+    threads = 4  # Use 4 threads for better CPU utilization (was 0/auto)
+    libx264_params = ["-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]  # Changed from slow to ultrafast
     libx264_codec = "libx264"
-    nvenc_params = ["-rc", "vbr_hq", "-cq", "19", "-b:v", "0", "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
+    nvenc_params = ["-rc", "vbr_hq", "-cq", "19", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
 
 def reencode_with_libx264(input_path, output_path, log=None):
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", input_path,
-           "-c:v", "libx264", "-preset", "slow", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "high",
-           "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path]
-    if log: log(f"[ffmpeg] Re-encoding to: {output_path}")
+    # Use hardware acceleration if available
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    
+    # Add hardware decoding
+    if USE_HARDWARE_DECODING and USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
+        cmd.extend(["-hwaccel", "cuda"])
+    
+    cmd.extend(["-i", input_path])
+    
+    # Use NVENC if available, otherwise use faster CPU preset
+    if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
+        cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "vbr_hq", "-cq", "20", "-b:v", "0", 
+                   "-preset", NVENC_PRESET_SPEED, "-pix_fmt", "yuv420p", "-profile:v", "high"])
+    else:
+        cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", 
+                   "-pix_fmt", "yuv420p", "-profile:v", "high"])
+    
+    cmd.extend(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path])
+    
+    if log: log(f"[ffmpeg] Re-encoding to: {output_path} (GPU={'NVENC' if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC) else 'No'})")
     try:
         subprocess.check_call(cmd)
         if log: log("[ffmpeg] Re-encode completed.")
@@ -1103,15 +1184,27 @@ def probe_file_with_ffmpeg(path):
 
 def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, crop_h, scale_w, scale_h, fps, use_nvenc, log):
     vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={scale_w}:{scale_h}:flags=lanczos"
+    
+    # Build command with hardware acceleration if available
+    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+    
+    # Add hardware decoding for speed (without output format to maintain filter compatibility)
+    if USE_HARDWARE_DECODING and use_nvenc:
+        cmd.extend(["-hwaccel", "cuda"])
+    
+    cmd.extend(["-i", input_path, "-an", "-vf", vf, "-r", str(int(fps))])
+    
     if use_nvenc and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         codec = PREFERRED_NVENC_CODEC
-        vparams = ["-c:v", codec, "-rc", "vbr_hq", "-cq", "19", "-b:v", "0"]
+        # Use faster preset for pre-render (p2 instead of p4)
+        vparams = ["-c:v", codec, "-rc", "vbr_hq", "-cq", "22", "-b:v", "0", "-preset", "p2"]
     else:
         codec = "libx264"
-        vparams = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
-    cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", input_path,
-           "-an", "-vf", vf, "-r", str(int(fps))] + vparams + ["-pix_fmt", "yuv420p", out_path]
-    if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc})")
+        vparams = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22"]  # Changed from veryfast to ultrafast
+    
+    cmd.extend(vparams + ["-pix_fmt", "yuv420p", out_path])
+    
+    if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc}, hwaccel={USE_HARDWARE_DECODING and use_nvenc})")
     try:
         subprocess.check_call(cmd)
         if log: log(f"[ffmpeg] Pre-render completed: {out_path}")
@@ -1174,14 +1267,41 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
 
 def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
     last_exc = None
+    
+    # Detect GPU availability for Whisper with improved detection
+    device = "cpu"  # Default to CPU
+    cuda_available = False
+    
+    try:
+        cuda_available = torch.cuda.is_available()
+        if cuda_available:
+            device_count = torch.cuda.device_count()
+            if device_count > 0:
+                device = "cuda"
+                if log:
+                    gpu_name = torch.cuda.get_device_name(0)
+                    log(f"[whisper] GPU detected: {gpu_name}")
+                    log(f"[whisper] Will use CUDA acceleration for transcription")
+            else:
+                if log:
+                    log(f"[whisper] CUDA available but no GPU devices found - will use CPU")
+        else:
+            if log:
+                log(f"[whisper] CUDA not available in PyTorch - will use CPU (slower)")
+                log(f"[whisper] For GPU support, install PyTorch with CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu118")
+    except Exception as e:
+        if log:
+            log(f"[whisper] GPU detection failed ({str(e)}) - will use CPU")
+    
     for attempt in range(1, tries + 1):
         try:
-            if log: log(f"[whisper] Loading model '{model_name}' (attempt {attempt}/{tries})...")
-            model = whisper.load_model(model_name)
-            if log: log(f"[whisper] Model '{model_name}' loaded successfully.")
-            return model
+            if log: log(f"[whisper] Loading model '{model_name}' on {device.upper()} (attempt {attempt}/{tries})...")
+            model = whisper.load_model(model_name, device=device)
+            if log: log(f"[whisper] Model '{model_name}' loaded successfully on {device.upper()}.")
+            return model, device  # Return both model and device used
         except RuntimeError as e:
             msg = str(e).lower()
+            error_str = str(e)
             last_exc = e
             if "sha256" in msg or "checksum" in msg or "downloaded but the sha256" in msg:
                 if log: log(f"[whisper] Checksum error for '{model_name}': {e}")
@@ -1194,6 +1314,34 @@ def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
                     if log: log("[whisper] Could not find model file(s) to remove — retrying download anyway.")
                     time.sleep(1.0 + attempt * 0.5)
                     continue
+            elif "cuda" in msg and device == "cuda":
+                # CUDA error - check if it's architecture mismatch
+                if "no kernel image" in error_str or ("kernel" in error_str and "sm" in error_str):
+                    # Architecture mismatch - PyTorch built without support for this GPU
+                    if log:
+                        log("[whisper] ========================================")
+                        log("[whisper] ERROR: PyTorch Architecture Mismatch!")
+                        log("[whisper] ========================================")
+                        log("[whisper] PyTorch was built without support for your GPU architecture")
+                        log("[whisper] ")
+                        log("[whisper] SOLUTION: Reinstall PyTorch with proper GPU support:")
+                        log("[whisper]   pip uninstall torch torchvision torchaudio")
+                        log("[whisper]   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+                        log("[whisper] ")
+                        log("[whisper] Or as temporary workaround, using CPU (slower)...")
+                        log("[whisper] ========================================")
+                    device = "cpu"
+                    if attempt < tries:
+                        time.sleep(0.5)
+                        continue
+                else:
+                    # Other CUDA error - try falling back to CPU
+                    if log: log(f"[whisper] CUDA error loading model: {e}")
+                    if log: log(f"[whisper] Falling back to CPU...")
+                    device = "cpu"
+                    if attempt < tries:
+                        time.sleep(0.5)
+                        continue
             else:
                 if log: log(f"[whisper] RuntimeError loading model '{model_name}': {e}")
                 raise
@@ -1226,24 +1374,39 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     log_fn = _default_log if log is None else log
     
     # Use Whisper for transcription
+    # Using 'large' (not large-v3) for accurate word-level timestamps needed for caption sync
+    # Medium/small models are faster but timestamps not accurate enough, causing caption-voice mismatch
     try:
-        model = _load_whisper_model_with_retries("large-v3", tries=3, log=log_fn)
+        model, device = _load_whisper_model_with_retries("large", tries=3, log=log_fn)
     except Exception as e_large:
-        log_fn(f"[whisper] Failed to load 'large-v3' model after retries: {e_large}")
-        log_fn("[whisper] Falling back to 'medium' model (faster, less accurate).")
+        log_fn(f"[whisper] Failed to load 'large' model after retries: {e_large}")
+        log_fn("[whisper] Falling back to 'medium' model (faster but less accurate timestamps).")
         try:
-            model = _load_whisper_model_with_retries("medium", tries=2, log=log_fn)
+            model, device = _load_whisper_model_with_retries("medium", tries=2, log=log_fn)
         except Exception as e_medium:
             log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
             raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
-    log_fn("[whisper] Transcribing audio with word-level timestamps (this may take a while)...")
+    
+    # Show appropriate message based on actual device being used
+    if device == "cuda":
+        log_fn("[whisper] Transcribing audio with word-level timestamps (5-8 minutes on GPU)...")
+    else:
+        log_fn("[whisper] Transcribing audio with word-level timestamps (15-20 minutes on CPU)...")
+    
     # Enable word_timestamps for precise caption synchronization
-    result = model.transcribe(voice_path, word_timestamps=True)
+    # Use FP16 on GPU for faster inference (2x speedup with minimal quality loss)
+    # Only enable FP16 if actually running on GPU
+    use_fp16 = (device == "cuda")
+    if use_fp16:
+        log_fn("[whisper] Using FP16 precision on GPU for faster transcription (2x speedup)")
+    
+    result = model.transcribe(voice_path, word_timestamps=True, fp16=use_fp16)
     log_fn("[whisper] Transcription finished.")
     segments = result["segments"]
     
     # Apply translation if requested
-    if translate_to and translate_to != 'none' and TRANSLATION_ENABLED:
+    # Translation is enabled when translate_to is specified and not 'none'
+    if translate_to and translate_to != 'none':
         log_fn(f"[TRANSCRIBE] Translating to {translate_to}...")
         segments = translate_segments(segments, target_language=translate_to, log=log_fn)
     
@@ -1522,25 +1685,774 @@ def load_crop_settings(filepath=CROP_SETTINGS_FILE):
 
 # ----------------- Export composer with monitoring & fallback -----------------
 def _make_ffmpeg_params_for_codec(codec):
+    """
+    Get FFmpeg encoding parameters for the specified codec.
+    
+    Note: These are OUTPUT encoding parameters only. MoviePy passes these to FFmpeg
+    for the final encoding step. Hardware decoding (-hwaccel) doesn't work here
+    because MoviePy reads/processes frames in Python before encoding.
+    
+    The main export bottleneck is MoviePy's Python frame processing, not encoding.
+    GPU acceleration is already being used optimally via:
+    - pre_render_foreground_ffmpeg() uses -hwaccel cuda for foreground (works!)
+    - NVENC encoding below (works!)
+    """
     if codec in ("h264_nvenc", "hevc_nvenc"):
+        # GPU encoding with NVENC - optimized for speed and quality
         return [
-            "-rc", "vbr_hq",
-            "-cq", "19",
-            "-b:v", "0",
-            "-preset", "p7",
-            "-pix_fmt", "yuv420p",
-            "-profile:v", "high",
-            "-movflags", "+faststart"
+            "-rc", "vbr_hq",           # Variable bitrate, high quality
+            "-cq", "19",               # Constant quality level (lower = better)
+            "-b:v", "0",               # Let CQ control quality
+            "-preset", NVENC_PRESET_SPEED,  # p4 for speed (configurable)
+            "-pix_fmt", "yuv420p",     # Standard pixel format
+            "-profile:v", "high",      # H.264 High profile
+            "-movflags", "+faststart"  # Web streaming optimization
         ]
     else:
+        # CPU encoding with libx264 - fallback option
         return [
-            "-preset", "veryfast",
-            "-crf", "20",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart"
+            "-preset", "ultrafast",    # Fastest CPU preset
+            "-crf", "20",              # Constant quality
+            "-pix_fmt", "yuv420p",     # Standard pixel format
+            "-movflags", "+faststart"  # Web streaming optimization
         ]
 
-def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
+# ----------------- FFmpeg Fast Export Functions -----------------
+
+def _calculate_text_lines(text, max_chars=40, words_per_line=None):
+    """
+    Calculate line breaks for text to fit within max_chars per line or words per line.
+    Breaks at word boundaries when possible.
+    
+    Args:
+        text: String to wrap
+        max_chars: Maximum characters per line (used if words_per_line is None)
+        words_per_line: Maximum words per line (overrides max_chars if provided)
+        
+    Returns:
+        List of text lines
+    """
+    # Handle empty or whitespace-only text
+    if not text or not text.strip():
+        return [""]
+    
+    words = text.split()
+    
+    # If words_per_line is specified, group by word count instead of characters
+    if words_per_line and words_per_line > 0:
+        if not words:
+            return [""]
+        lines = []
+        for i in range(0, len(words), words_per_line):
+            line_words = words[i:i + words_per_line]
+            lines.append(' '.join(line_words))
+        return lines
+    
+    # Otherwise use character-based wrapping (original logic)
+    lines = []
+    current_line = []
+    current_length = 0
+    
+    for word in words:
+        word_len = len(word)
+        # +1 for space between words
+        needed = word_len if not current_line else current_length + 1 + word_len
+        
+        if needed <= max_chars:
+            current_line.append(word)
+            current_length = needed
+        else:
+            # Start new line
+            if current_line:
+                lines.append(' '.join(current_line))
+            # Handle very long words
+            if word_len > max_chars:
+                lines.append(word[:max_chars])
+                current_line = [word[max_chars:]] if len(word) > max_chars else []
+                current_length = len(word[max_chars:]) if len(word) > max_chars else 0
+            else:
+                current_line = [word]
+                current_length = word_len
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    return lines if lines else [text]
+
+
+def _escape_ffmpeg_text(text):
+    """
+    Escape special characters for FFmpeg drawtext filter.
+    
+    Args:
+        text: String to escape
+        
+    Returns:
+        Escaped string safe for FFmpeg
+    """
+    # FFmpeg drawtext special characters that need escaping
+    text = text.replace('\\', '\\\\')  # Backslash first!
+    text = text.replace("'", "\\'")    # Single quote
+    text = text.replace(':', '\\:')    # Colon
+    text = text.replace('%', '\\%')    # Percent
+    text = text.replace('[', '\\[')    # Square brackets
+    text = text.replace(']', '\\]')
+    return text
+
+
+def _rgba_to_hex(rgba_tuple):
+    """
+    Convert RGBA tuple to hex color string for FFmpeg.
+    
+    Args:
+        rgba_tuple: (R, G, B, A) tuple with values 0-255
+        
+    Returns:
+        Hex color string like '#RRGGBB' or '0xRRGGBB'
+    """
+    try:
+        r, g, b = int(rgba_tuple[0]), int(rgba_tuple[1]), int(rgba_tuple[2])
+        # FFmpeg accepts #RRGGBB or 0xRRGGBB format
+        return f"0x{r:02X}{g:02X}{b:02X}"
+    except Exception:
+        return "0xFFFFFF"  # Default to white
+
+
+def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial", fontsize=56, 
+                                text_color_rgba=(255, 255, 0, 255), stroke_width=3,
+                                video_width=1080, video_height=1920):
+    """
+    Generate an ASS (Advanced SubStation Alpha) subtitle file for word-by-word captions.
+    
+    Args:
+        caption_segments: List of caption dictionaries with 'text', 'start', 'end'
+        output_path: Path where to save the .ass file
+        font_name: Font name (e.g., "Bangers", "Arial")
+        fontsize: Font size in pixels
+        text_color_rgba: Text color as RGBA tuple
+        stroke_width: Outline/border width
+        video_width: Video width for PlayResX
+        video_height: Video height for PlayResY
+        
+    Returns:
+        Path to generated ASS file
+    """
+    import re
+    
+    # Convert RGBA to ASS color format (BGR in hex with alpha)
+    # ASS uses &HAABBGGRR format
+    r, g, b, a = text_color_rgba
+    # Convert alpha: 255 = fully opaque = 00, 0 = fully transparent = FF
+    alpha_hex = f"{255 - int(a):02X}"
+    text_color_ass = f"&H{alpha_hex}{b:02X}{g:02X}{r:02X}"
+    outline_color_ass = "&H00000000"  # Black outline, fully opaque
+    
+    # ASS file header
+    ass_content = f"""[Script Info]
+Title: Generated Subtitles
+ScriptType: v4.00+
+WrapStyle: 0
+PlayResX: {video_width}
+PlayResY: {video_height}
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{font_name},{fontsize},{text_color_ass},&H00FFFFFF,{outline_color_ass},&H00000000,0,0,0,0,100,100,0,0,1,{stroke_width},0,2,10,10,150,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    
+    # Add each caption as a dialogue line
+    for segment in caption_segments:
+        # Convert time to ASS format (H:MM:SS.CS where CS is centiseconds)
+        start_time = segment['start']
+        end_time = segment['end']
+        
+        start_h = int(start_time // 3600)
+        start_m = int((start_time % 3600) // 60)
+        start_s = int(start_time % 60)
+        start_cs = int((start_time % 1) * 100)
+        start_str = f"{start_h}:{start_m:02d}:{start_s:02d}.{start_cs:02d}"
+        
+        end_h = int(end_time // 3600)
+        end_m = int((end_time % 3600) // 60)
+        end_s = int(end_time % 60)
+        end_cs = int((end_time % 1) * 100)
+        end_str = f"{end_h}:{end_m:02d}:{end_s:02d}.{end_cs:02d}"
+        
+        # Escape text for ASS (replace newlines with \N)
+        text = segment['text'].replace('\n', '\\N')
+        
+        ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}\n"
+    
+    # Write ASS file
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(ass_content)
+    
+    return output_path
+
+
+def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_width, video_height, 
+                                   fontsize=56, font_path=None, text_color="0xFFFFFF", 
+                                   stroke_color="0x000000", stroke_width=3, words_per_line=None):
+    """
+    Build FFmpeg drawtext filter for a single caption with custom styling.
+    
+    Args:
+        caption_text: Text to display
+        start_time: Start time in seconds
+        end_time: End time in seconds
+        video_width: Video width in pixels
+        video_height: Video height in pixels
+        fontsize: Font size in pixels
+        font_path: Path to custom font file (optional)
+        text_color: Text color in hex format (e.g., '0xFFFFFF')
+        stroke_color: Stroke/border color in hex format (e.g., '0x000000')
+        stroke_width: Stroke width in pixels
+        words_per_line: Maximum words per line (optional, overrides character-based wrapping)
+        
+    Returns:
+        FFmpeg drawtext filter string
+    """
+    # Calculate text wrapping with word-based grouping if specified
+    lines = _calculate_text_lines(caption_text, max_chars=40, words_per_line=words_per_line)
+    
+    # Escape text for FFmpeg
+    escaped_lines = [_escape_ffmpeg_text(line) for line in lines]
+    text_with_newlines = '\\n'.join(escaped_lines)
+    
+    # Position: bottom-center with safer offset from bottom
+    # Use h-150 instead of video_height-100 to ensure captions stay within bounds
+    y_position = "h-150"  # 150px from bottom for multi-line text (dynamic, works with any height)
+    
+    # Build drawtext filter with custom styling
+    filter_parts = [
+        f"drawtext=text='{text_with_newlines}'",
+        f"fontsize={fontsize}",
+        f"fontcolor={text_color}",
+        f"borderw={stroke_width}",
+        f"bordercolor={stroke_color}",
+        f"x=(w-text_w)/2",  # Center horizontally
+        f"y={y_position}",   # Bottom positioning (safe margin)
+        f"enable='between(t,{start_time:.3f},{end_time:.3f})'"  # Timing
+    ]
+    
+    # Add custom font if provided
+    if font_path and os.path.exists(font_path):
+        # Escape font path for FFmpeg (handle spaces and special chars)
+        escaped_font_path = font_path.replace('\\', '/').replace(':', '\\:')
+        filter_parts.insert(1, f"fontfile='{escaped_font_path}'")
+    
+    return ':'.join(filter_parts)
+
+
+def _build_all_caption_filters(caption_segments, video_width, video_height, 
+                               font_path=None, text_color="0xFFFFFF", 
+                               stroke_color="0x000000", stroke_width=3, words_per_line=None, fontsize=56):
+    """
+    Build all caption drawtext filters and chain them together with custom styling.
+    
+    Args:
+        caption_segments: List of caption dictionaries with 'text', 'start', 'end'
+        video_width: Video width in pixels
+        video_height: Video height in pixels
+        font_path: Path to custom font file (optional)
+        text_color: Text color in hex format
+        stroke_color: Stroke color in hex format
+        stroke_width: Stroke width in pixels
+        words_per_line: Maximum words per line (optional)
+        fontsize: Font size in pixels
+        
+    Returns:
+        Complete filter_complex string for all captions
+    """
+    if not caption_segments:
+        return None
+    
+    filters = []
+    
+    for i, segment in enumerate(caption_segments):
+        caption_filter = _build_caption_drawtext_filter(
+            caption_text=segment['text'],
+            start_time=segment['start'],
+            end_time=segment['end'],
+            video_width=video_width,
+            video_height=video_height,
+            fontsize=fontsize,
+            font_path=font_path,
+            text_color=text_color,
+            stroke_color=stroke_color,
+            stroke_width=stroke_width,
+            words_per_line=words_per_line  # Pass through words_per_line
+        )
+        filters.append(caption_filter)
+    
+    # Chain all filters together
+    return ','.join(filters)
+
+
+def _build_ffmpeg_effect_filters(effect_settings, log_fn=None):
+    """
+    Build FFmpeg filter string for video effects (to match MoviePy effects).
+    
+    FFmpeg equivalents:
+    - Sharpness: unsharp filter
+    - Saturation: eq filter (saturation parameter)
+    - Contrast: eq filter (contrast parameter)
+    - Brightness: eq filter (brightness parameter)
+    - Vintage: colorbalance + noise filters
+    
+    Args:
+        effect_settings: Dictionary with effect settings
+        log_fn: Optional logging function
+        
+    Returns:
+        FFmpeg filter string or empty string if no effects
+    """
+    if not effect_settings:
+        return ""
+    
+    effect_filters = []
+    active_effects = []
+    
+    # Check for sharpness effect (Resilience)
+    if effect_settings.get('effect_sharpness', False):
+        intensity = effect_settings.get('effect_sharpness_intensity', 1.5)
+        # unsharp filter: luma_msize_x:luma_msize_y:luma_amount
+        # intensity 1.5 -> luma_amount 1.5, intensity 2.0 -> luma_amount 2.0
+        luma_amount = min(5.0, max(0.5, intensity))  # Clamp between 0.5 and 5.0
+        effect_filters.append(f"unsharp=5:5:{luma_amount}")
+        active_effects.append(f"Sharpness ({intensity}x)")
+    
+    # Build eq filter parameters for saturation, contrast, brightness
+    eq_params = []
+    
+    # Check for saturation effect (Vibrance)
+    if effect_settings.get('effect_saturation', False):
+        intensity = effect_settings.get('effect_saturation_intensity', 1.3)
+        # eq saturation: 1.0 = normal, >1.0 = more saturated
+        saturation = min(3.0, max(0.0, intensity))
+        eq_params.append(f"saturation={saturation}")
+        active_effects.append(f"Saturation ({intensity}x)")
+    
+    # Check for contrast effect (HDR)
+    if effect_settings.get('effect_contrast', False):
+        intensity = effect_settings.get('effect_contrast_intensity', 1.2)
+        # eq contrast: 1.0 = normal, >1.0 = more contrast
+        contrast = min(2.0, max(-2.0, intensity))
+        eq_params.append(f"contrast={contrast}")
+        active_effects.append(f"Contrast ({intensity}x)")
+    
+    # Check for brightness effect
+    if effect_settings.get('effect_brightness', False):
+        intensity = effect_settings.get('effect_brightness_intensity', 1.15)
+        # eq brightness: 0.0 = normal, >0 = brighter, <0 = darker
+        # Convert multiplier to additive: 1.15 -> 0.15
+        brightness = min(1.0, max(-1.0, intensity - 1.0))
+        eq_params.append(f"brightness={brightness}")
+        active_effects.append(f"Brightness ({intensity}x)")
+    
+    # Add eq filter if any eq parameters were set
+    if eq_params:
+        effect_filters.append(f"eq={':'.join(eq_params)}")
+    
+    # Check for vintage effect
+    if effect_settings.get('effect_vintage', False):
+        grain_intensity = effect_settings.get('effect_vintage_intensity', 0.3)
+        # Vintage effect: sepia tone via colorbalance + optional noise
+        # colorbalance for warm sepia tones: increase red/yellow in highlights/midtones
+        # Note: intensity 0.3 -> moderate vintage look
+        shadow_red = min(1.0, max(-1.0, grain_intensity * 0.3))
+        midtone_red = min(1.0, max(-1.0, grain_intensity * 0.2))
+        highlight_yellow = min(1.0, max(-1.0, grain_intensity * 0.15))
+        effect_filters.append(f"colorbalance=rs={shadow_red}:gs=-{shadow_red*0.5}:bs=-{shadow_red}:rm={midtone_red}:gm=0:bm=-{midtone_red*0.5}:rh=0:gh={highlight_yellow}:bh=-{highlight_yellow}")
+        active_effects.append(f"Vintage ({grain_intensity}x)")
+    
+    # Log active effects
+    if log_fn and active_effects:
+        log_fn(f"[EXPORT] Applying FFmpeg effects: {', '.join(active_effects)}")
+    
+    # Combine all effect filters
+    if effect_filters:
+        return ','.join(effect_filters)
+    return ""
+
+
+def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None):
+    """
+    Fast export using pure FFmpeg complex filters.
+    2-3x faster than MoviePy's Python frame processing.
+    
+    Args:
+        bg_path: Path to background image/video
+        fg_path: Path to foreground video
+        caption_segments: List of caption dictionaries
+        audio_path: Path to audio file
+        output_path: Path for output video
+        video_width: Video width
+        video_height: Video height
+        log_fn: Logging function
+        effect_settings: Dictionary with video effect settings (sharpness, saturation, contrast, etc.)
+        mirror_video: Whether to apply horizontal flip to the foreground video
+        target_duration: Target duration for the final video (for speed adjustment)
+        preferred_font: Custom font path or name to use for captions
+        words_per_caption: Number of words per caption group
+        text_color_rgba: RGBA tuple for text color
+        stroke_color_rgba: RGBA tuple for stroke/border color
+        stroke_width: Width of text stroke in pixels
+        font_size: Font size in pixels
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        log_fn("[EXPORT] ═══════════════════════════════════════════════════")
+        log_fn("[EXPORT] Using fast FFmpeg filter-based export...")
+        log_fn(f"[EXPORT] Building filter chain for {len(caption_segments)} caption segments...")
+        if mirror_video:
+            log_fn("[EXPORT] Mirror/flip: enabled")
+        if target_duration:
+            log_fn(f"[EXPORT] Target duration: {target_duration:.2f}s")
+        
+        # Use passed parameters, fall back to globals, then defaults
+        try:
+            # Font path - find actual font file path for FFmpeg
+            font_path = None
+            
+            # First try the passed preferred_font if it exists as a file
+            if preferred_font and os.path.exists(preferred_font):
+                font_path = preferred_font
+                log_fn(f"[EXPORT] Font: Using passed font file: {font_path}")
+            else:
+                # Fall back to loaded font path from globals
+                loaded_path = globals().get('LOADED_FONT_PATH', None)
+                if loaded_path:
+                    loaded_path_str = str(loaded_path)
+                    # Check if it's an actual file path
+                    if os.path.exists(loaded_path_str):
+                        font_path = loaded_path
+                        log_fn(f"[EXPORT] Font: Using cached font file: {font_path}")
+                    elif loaded_path_str.startswith("family:"):
+                        # Extract font name and search for the actual file
+                        font_name = loaded_path_str.replace("family:", "")
+                        log_fn(f"[EXPORT] Font: Searching for font by family name: {font_name}")
+                        found = find_font_file_recursive(font_name)
+                        if found:
+                            font_path = found
+                            log_fn(f"[EXPORT] Font: Found font file: {font_path}")
+                        else:
+                            log_fn(f"[EXPORT] Font: Could not find font file for '{font_name}', will use default")
+                    else:
+                        # Try to find font by name
+                        found = find_font_file_recursive(loaded_path_str)
+                        if found:
+                            font_path = found
+                            log_fn(f"[EXPORT] Font: Found font file by search: {font_path}")
+            
+            # If still no font, try the preferred_font name as a search
+            if not font_path and preferred_font:
+                found = find_font_file_recursive(preferred_font)
+                if found:
+                    font_path = found
+                    log_fn(f"[EXPORT] Font: Found font by preferred name search: {font_path}")
+            
+            # Text color - use passed value or default
+            if text_color_rgba is None:
+                text_color_rgba = globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255))
+            
+            # Stroke color - use passed value or default to black
+            if stroke_color_rgba is None:
+                stroke_color_rgba = globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 255))
+            
+            # Stroke width - use passed value or default
+            if stroke_width is None:
+                stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)
+            
+            # Font size - use passed value or default
+            if font_size is None:
+                font_size = globals().get('CAPTION_FONT_SIZE', 56)
+            
+            # Convert colors to hex for FFmpeg
+            text_color_hex = _rgba_to_hex(text_color_rgba)
+            stroke_color_hex = _rgba_to_hex(stroke_color_rgba)
+            
+            if font_path:
+                log_fn(f"[EXPORT] Using custom font: {font_path}")
+            else:
+                log_fn(f"[EXPORT] Using default FFmpeg font (no custom font found)")
+            log_fn(f"[EXPORT] Text color: {text_color_hex} (RGBA: {text_color_rgba})")
+            log_fn(f"[EXPORT] Stroke color: {stroke_color_hex}")
+            log_fn(f"[EXPORT] Stroke width: {stroke_width}px")
+            log_fn(f"[EXPORT] Font size: {font_size}px")
+            if words_per_caption:
+                log_fn(f"[EXPORT] Words per caption: {words_per_caption}")
+        except Exception as e:
+            log_fn(f"[EXPORT] Warning: Could not get custom settings, using defaults: {e}")
+            font_path = None
+            text_color_hex = "0xFFFFFF"
+            stroke_color_hex = "0x000000"
+            stroke_width = 3
+            font_size = 56
+            words_per_caption = 2
+        
+        # For many captions (>MAX_DRAWTEXT_CAPTIONS), use subtitle file approach to avoid command line length limits
+        # Otherwise use drawtext filters for better compatibility
+        use_subtitle_file = len(caption_segments) > MAX_DRAWTEXT_CAPTIONS
+        ass_subtitle_path = None
+        
+        if use_subtitle_file:
+            log_fn(f"[EXPORT] Using ASS subtitle file for {len(caption_segments)} captions (efficient for many captions)")
+            # Generate ASS subtitle file in temp directory
+            import tempfile
+            temp_dir = tempfile.mkdtemp(prefix="tiktok_subtitles_")
+            ass_subtitle_path = os.path.join(temp_dir, "captions.ass")
+            
+            # Get font family name for ASS subtitle
+            # ASS files need the actual font family name, not the filename
+            font_name = "Arial"  # Default
+            
+            # ALWAYS extract font family from the actual font file being used
+            # This ensures we use the correct font even if LOADED_FONT_FAMILY is stale
+            if font_path and os.path.exists(font_path):
+                # Extract font family from font file
+                extracted_family = get_font_family_name(font_path)
+                if extracted_family:
+                    font_name = extracted_family
+                    log_fn(f"[EXPORT] Extracted font family from {os.path.basename(font_path)}: {font_name}")
+                else:
+                    # Fallback to filename without extension
+                    font_name = os.path.splitext(os.path.basename(font_path))[0]
+                    log_fn(f"[EXPORT] Using font filename as family: {font_name}")
+            else:
+                # Fallback: try to get from global LOADED_FONT_FAMILY
+                loaded_family = globals().get('LOADED_FONT_FAMILY', None)
+                if loaded_family:
+                    font_name = loaded_family
+                    log_fn(f"[EXPORT] Using cached font family for ASS: {font_name}")
+            
+            _generate_ass_subtitle_file(
+                caption_segments, 
+                ass_subtitle_path,
+                font_name=font_name,
+                fontsize=font_size,
+                text_color_rgba=text_color_rgba,
+                stroke_width=stroke_width,
+                video_width=video_width,
+                video_height=video_height
+            )
+            log_fn(f"[EXPORT] ASS subtitle file generated: {ass_subtitle_path}")
+            caption_filters = None
+        else:
+            log_fn(f"[EXPORT] Using drawtext filters for {len(caption_segments)} captions")
+            # Build caption filters with custom styling and words per caption
+            caption_filters = _build_all_caption_filters(
+                caption_segments, video_width, video_height,
+                font_path=font_path,
+                text_color=text_color_hex,
+                stroke_color=stroke_color_hex,
+                stroke_width=stroke_width,
+                words_per_line=words_per_caption,
+                fontsize=font_size
+            )
+        
+        # Build video effect filters (to match MoviePy effects)
+        effect_filter_str = _build_ffmpeg_effect_filters(effect_settings, log_fn)
+        
+        # Build complete filter chain
+        # [0:v] = background, [1:v] = foreground
+        # Overlay foreground on background centered (x=(W-w)/2) to fill width and crop equally from both sides
+        
+        # Build foreground filter chain (apply mirror if needed)
+        # Note: When mirroring, we use a labeled intermediate output [fg_flipped]
+        # When not mirroring, we directly combine [0:v] and [1:v] in the overlay filter
+        # Both approaches work correctly - the mirrored case needs the semicolon to chain filters
+        if mirror_video:
+            # First apply hflip to foreground [1:v], output as [fg_flipped]
+            # Then overlay [fg_flipped] on background [0:v]
+            fg_filter = "[1:v]hflip[fg_flipped];[0:v][fg_flipped]"
+            log_fn("[EXPORT] ✓ Mirror/flip filter added")
+        else:
+            # No pre-processing needed, directly overlay foreground [1:v] on background [0:v]
+            fg_filter = "[0:v][1:v]"
+        
+        if use_subtitle_file and ass_subtitle_path:
+            # Use ass subtitle filter (burns subtitles into video)
+            # Escape path for Windows
+            escaped_ass_path = ass_subtitle_path.replace('\\', '/').replace(':', '\\:')
+            
+            # If we have a custom font, specify the fonts directory so FFmpeg can find it
+            # The fontsdir option tells FFmpeg where to look for fonts used in the ASS file
+            if font_path and os.path.exists(font_path):
+                font_dir = os.path.dirname(font_path)
+                escaped_font_dir = font_dir.replace('\\', '/').replace(':', '\\:')
+                ass_filter = f"ass='{escaped_ass_path}':fontsdir='{escaped_font_dir}'"
+                log_fn(f"[EXPORT] ASS filter using font directory: {font_dir}")
+            else:
+                ass_filter = f"ass='{escaped_ass_path}'"
+            
+            filter_chain = f"{fg_filter}overlay=x=(W-w)/2:y=(H-h)/2,{ass_filter}"
+        else:
+            filter_chain = f"{fg_filter}overlay=x=(W-w)/2:y=(H-h)/2"
+            if caption_filters:
+                filter_chain += "," + caption_filters
+        
+        # Add video effects to filter chain (same as MoviePy applies)
+        if effect_filter_str:
+            filter_chain += "," + effect_filter_str
+            log_fn(f"[EXPORT] ✓ Video effects added to FFmpeg filter chain")
+        
+        # Label the filter output for mapping
+        filter_chain += "[vout]"
+        
+        # Log input information for debugging
+        log_fn(f"[EXPORT] Background: {bg_path}")
+        log_fn(f"[EXPORT] Foreground: {fg_path}")
+        log_fn(f"[EXPORT] Audio: {audio_path}")
+        log_fn(f"[EXPORT] Output: {output_path} ({video_width}x{video_height})")
+        log_fn(f"[EXPORT] Filter chain: {filter_chain[:200]}...")
+        
+        # Build FFmpeg command
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", bg_path,  # Background (looped image) [0:v]
+            "-i", fg_path,                # Foreground video [1:v]
+            "-i", audio_path,             # Audio [2:a]
+            "-filter_complex", filter_chain,
+            "-map", "[vout]",             # Use video from filter_complex output
+            "-map", "2:a",                # Use audio from audio file
+            "-shortest",                   # End when shortest input ends
+            "-c:a", "aac",                # Audio codec
+            "-b:a", "192k",               # Audio bitrate
+        ]
+        
+        # Add video encoding parameters
+        if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
+            log_fn(f"[EXPORT] Using GPU acceleration (NVENC: {PREFERRED_NVENC_CODEC})...")
+            cmd.extend([
+                "-c:v", PREFERRED_NVENC_CODEC,
+                "-rc", "vbr_hq",
+                "-cq", "19",
+                "-b:v", "0",
+                "-preset", NVENC_PRESET_SPEED,
+                "-pix_fmt", "yuv420p",
+                "-profile:v", "high"
+            ])
+        else:
+            log_fn("[EXPORT] Using CPU encoding (libx264)...")
+            cmd.extend([
+                "-c:v", "libx264",
+                "-preset", "ultrafast",
+                "-crf", "20",
+                "-pix_fmt", "yuv420p"
+            ])
+        
+        cmd.extend([
+            "-movflags", "+faststart",
+            output_path
+        ])
+        
+        log_fn("[EXPORT] Executing FFmpeg command...")
+        log_fn(f"[EXPORT] Full command: {' '.join(cmd)}")
+        
+        # Run FFmpeg
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600  # 10 minute timeout
+        )
+        
+        if result.returncode == 0:
+            log_fn("[EXPORT] ✅ Fast FFmpeg export completed successfully!")
+            return True
+        else:
+            log_fn(f"[EXPORT] ❌ FFmpeg failed with return code {result.returncode}")
+            log_fn(f"[EXPORT] FFmpeg stderr output:")
+            log_fn(f"{result.stderr[-1500:]}")  # Show last 1500 chars of error
+            return False
+            
+    except Exception as e:
+        log_fn(f"[EXPORT] ❌ FFmpeg export exception: {e}")
+        import traceback
+        log_fn(f"[EXPORT] Traceback: {traceback.format_exc()}")
+        return False
+
+
+# ----------------- Video Effects (CapCut-style) -----------------
+def apply_video_effects(frame, effect_settings):
+    """
+    Apply CapCut-style effects to a video frame.
+    
+    Args:
+        frame: numpy array or PIL Image representing the frame
+        effect_settings: dict containing effect parameters
+        
+    Returns:
+        Modified frame as numpy array or PIL Image (same type as input)
+    """
+    import numpy as np
+    
+    # Convert to PIL if needed
+    is_numpy = isinstance(frame, np.ndarray)
+    if is_numpy:
+        img = Image.fromarray(frame.astype('uint8'), 'RGB')
+    else:
+        img = frame
+    
+    # Apply Sharpness/Resilience effect
+    if effect_settings.get('effect_sharpness', False):
+        intensity = effect_settings.get('effect_sharpness_intensity', 1.5)
+        sharpness = ImageEnhance.Sharpness(img)
+        img = sharpness.enhance(intensity)
+    
+    # Apply Saturation/Vibrance effect
+    if effect_settings.get('effect_saturation', False):
+        intensity = effect_settings.get('effect_saturation_intensity', 1.3)
+        color = ImageEnhance.Color(img)
+        img = color.enhance(intensity)
+    
+    # Apply Contrast/HDR effect
+    if effect_settings.get('effect_contrast', False):
+        intensity = effect_settings.get('effect_contrast_intensity', 1.2)
+        contrast = ImageEnhance.Contrast(img)
+        img = contrast.enhance(intensity)
+    
+    # Apply Brightness effect
+    if effect_settings.get('effect_brightness', False):
+        intensity = effect_settings.get('effect_brightness_intensity', 1.15)
+        brightness = ImageEnhance.Brightness(img)
+        img = brightness.enhance(intensity)
+    
+    # Apply Vintage/Film Grain effect
+    if effect_settings.get('effect_vintage', False):
+        grain_intensity = effect_settings.get('effect_vintage_intensity', 0.3)
+        # Add film grain noise
+        width, height = img.size
+        noise = np.random.normal(0, grain_intensity * 25, (height, width, 3))
+        img_array = np.array(img).astype('float')
+        img_array = np.clip(img_array + noise, 0, 255)
+        img = Image.fromarray(img_array.astype('uint8'), 'RGB')
+        
+        # Apply slight sepia tone for vintage look
+        sepia_r = np.array([[0.393 + 0.607 * (1 - grain_intensity), 0.769 - 0.769 * (1 - grain_intensity), 0.189 - 0.189 * (1 - grain_intensity)]])
+        sepia_g = np.array([[0.349 - 0.349 * (1 - grain_intensity), 0.686 + 0.314 * (1 - grain_intensity), 0.168 - 0.168 * (1 - grain_intensity)]])
+        sepia_b = np.array([[0.272 - 0.272 * (1 - grain_intensity), 0.534 - 0.534 * (1 - grain_intensity), 0.131 + 0.869 * (1 - grain_intensity)]])
+        
+        img_array = np.array(img)
+        r = np.dot(img_array, sepia_r.T)
+        g = np.dot(img_array, sepia_g.T)
+        b = np.dot(img_array, sepia_b.T)
+        sepia_img = np.dstack([r, g, b])
+        img = Image.fromarray(np.clip(sepia_img, 0, 255).astype('uint8'), 'RGB')
+    
+    # Convert back to numpy if needed
+    if is_numpy:
+        return np.array(img)
+    return img
+
+def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None):
     """
     Compose final video with blurred background and caption overlays.
     
@@ -1550,6 +2462,11 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     - Added logging for caption composition errors
     - Verified caption layer creation and positioning
     - Ensured captions are properly composited onto final video
+    
+    Args:
+        pre_rendered_fg_path: Optional path to pre-rendered foreground video for fast FFmpeg export
+        mirror_video: Whether to apply horizontal flip to the video
+        target_duration: Target duration for the final video (for speed adjustment in FFmpeg)
     """
     try:
         log("Composing final video (with monitored export).")
@@ -1558,6 +2475,12 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     
     try:
         log(f"[compose] Starting composition with {len(caption_segments)} caption segments")
+        if pre_rendered_fg_path:
+            log(f"[compose] Pre-rendered foreground available: {pre_rendered_fg_path}")
+        if mirror_video:
+            log(f"[compose] Mirror video: enabled")
+        if target_duration:
+            log(f"[compose] Target duration: {target_duration:.2f}s")
     except Exception:
         pass
     
@@ -1582,22 +2505,55 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
 
-    # foreground: slight zoom to avoid letterbox/freeze effect
+    # foreground: zoom to fill width (left/right borders) with user-controllable zoom
+    # Calculate scale to fill the canvas width while maintaining aspect ratio
     try:
-        min_scale_to_fit = min(WIDTH / video_clip.w, HEIGHT / video_clip.h)
+        # Get user's zoom setting
+        zoom_factor = globals().get('VIDEO_ZOOM_SCALE', 1.0)
+        
+        # Scale to fill width (left/right borders)
+        scale_w = WIDTH / video_clip.w
+        # Apply user's zoom factor
+        fg_scale = scale_w * zoom_factor
     except Exception:
-        min_scale_to_fit = 1.0
-    fg_scale = max(1.0, min_scale_to_fit) * 1.03
-    fg_scale = min(fg_scale, 1.06)
-    fg = video_clip.resize(fg_scale).set_position(("center", "center")).set_duration(video_clip.duration)
+        fg_scale = 1.0
+    
+    # Remove original audio from video clip to prevent duplicate audio
+    # Only the mixed_audio (TTS + music) should be used
+    fg = video_clip.without_audio().resize(fg_scale).set_position(("center", "center")).set_duration(video_clip.duration)
+    
+    # Apply video effects (CapCut-style) if enabled
+    if effect_settings and any([
+        effect_settings.get('effect_sharpness', False),
+        effect_settings.get('effect_saturation', False),
+        effect_settings.get('effect_contrast', False),
+        effect_settings.get('effect_brightness', False),
+        effect_settings.get('effect_vintage', False)
+    ]):
+        try:
+            log(f"[EFFECTS] Applying CapCut-style effects to video...")
+            active_effects = []
+            if effect_settings.get('effect_sharpness'): active_effects.append('Resilience')
+            if effect_settings.get('effect_saturation'): active_effects.append('Vibrance')
+            if effect_settings.get('effect_contrast'): active_effects.append('HDR')
+            if effect_settings.get('effect_brightness'): active_effects.append('Brightness')
+            if effect_settings.get('effect_vintage'): active_effects.append('Vintage')
+            log(f"[EFFECTS] Active effects: {', '.join(active_effects)}")
+            
+            # Apply effects to each frame
+            fg = fg.fl_image(lambda frame: apply_video_effects(frame, effect_settings))
+            log(f"[EFFECTS] ✓ Effects applied successfully")
+        except Exception as e:
+            log(f"[EFFECTS] Warning: Could not apply effects: {e}")
     
     try:
-        log(f"[compose] Foreground scaled: {fg_scale:.3f}x")
+        log(f"[compose] Foreground scaled: {fg_scale:.3f}x (fills canvas completely)")
     except Exception:
         pass
 
     # Build caption clips (FIXED: single clean loop, no duplication)
     caption_clips = []
+    caption_data_for_ffmpeg = []  # Collect word-group caption data for FFmpeg export
     MIN_GROUP_DURATION = 0.25
     
     # Use the words_per_caption parameter (from UI control)
@@ -1674,7 +2630,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 
                 try:
                     try:
-                        log(f"[COMPOSE]   Caption group {i+1}/{len(groups)}: '{grp_text}'")
+                        log(f"[COMPOSE]   Caption group {i+1}/{len(groups_with_timing)}: '{grp_text}'")
                         log(f"[COMPOSE]   Display time: {g_start:.2f}s - {g_start + g_dur:.2f}s (duration: {g_dur:.2f}s)")
                     except Exception:
                         pass
@@ -1729,6 +2685,13 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     
                     caption_clips.append(img_clip)
                     
+                    # Also collect data for FFmpeg export (word-by-word captions)
+                    caption_data_for_ffmpeg.append({
+                        'text': grp_text,
+                        'start': g_start,
+                        'end': g_start + g_dur
+                    })
+                    
                     try:
                         y_offset_value = globals().get('CAPTION_Y_OFFSET', 0)
                         log(f"[COMPOSE]   ✓ Caption clip created successfully")
@@ -1767,133 +2730,241 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
     
-    # Composite all layers (FIXED: ensure captions are included)
-    try:
-        final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
+    # Try fast FFmpeg export first (2-3x faster than MoviePy)
+    try_ffmpeg_export = True  # Set to False to force MoviePy
+    ffmpeg_export_successful = False
+    
+    # Determine which caption data to use for FFmpeg
+    captions_for_ffmpeg = caption_data_for_ffmpeg if caption_data_for_ffmpeg else caption_segments
+    
+    # Note: FFmpeg export handles many captions (>MAX_DRAWTEXT_CAPTIONS) via ASS subtitle files
+    # which is efficient and avoids command line length limits. No need to disable FFmpeg.
+    if len(captions_for_ffmpeg) > MAX_DRAWTEXT_CAPTIONS:
+        log(f"[EXPORT] Many captions detected ({len(captions_for_ffmpeg)}) - will use ASS subtitle file for efficient FFmpeg rendering")
+    
+    if try_ffmpeg_export:
         try:
-            log(f"[COMPOSE] ✓ Final composition created successfully")
-            log(f"[COMPOSE] Layers: background + foreground + {len(caption_clips)} caption overlays")
-        except Exception:
-            pass
-    except Exception as e:
-        try:
-            log(f"[COMPOSE ERROR] Failed to create CompositeVideoClip: {e}")
-            import traceback
-            log(f"[COMPOSE ERROR] Traceback: {traceback.format_exc()}")
-        except Exception:
-            pass
-        raise
-
-    # export monitoring and fallback
-    codec_try_order = []
-    if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
-        codec_try_order.append(PREFERRED_NVENC_CODEC)
-    codec_try_order.append("libx264")
-
-    STALL_TIMEOUT = 90
-    CHECK_INTERVAL = 8
-    MAX_ATTEMPTS_PER_CODEC = 1
-
-    def _run_write(final_clip, out_path, codec_name, ffmpeg_params, threads_setting, result_dict):
-        try:
-            final_clip.write_videofile(
-                out_path,
-                fps=FPS,
-                codec=codec_name,
-                audio_codec="aac",
-                audio_bitrate="192k",
-                threads=threads_setting,
-                ffmpeg_params=ffmpeg_params,
-                verbose=False,
-                logger="bar"
+            import tempfile
+            log("[EXPORT] Attempting fast FFmpeg filter-based export...")
+            if not caption_segments:
+                log("[EXPORT] Note: No captions to render (video will have no text overlay)")
+            
+            # Save background image to temp file
+            temp_dir = tempfile.mkdtemp(prefix="tiktok_ffmpeg_export_")
+            bg_image_path = os.path.join(temp_dir, "background.png")
+            bg_array = bg_static.get_frame(0)
+            # Image is already imported at top of file
+            Image.fromarray(bg_array).save(bg_image_path)
+            log(f"[EXPORT] Background saved to: {bg_image_path}")
+            
+            # Save audio to temp file
+            audio_temp_path = os.path.join(temp_dir, "audio.mp3")
+            audio_clip.write_audiofile(audio_temp_path, fps=44100, codec='mp3', verbose=False, logger=None)
+            log(f"[EXPORT] Audio saved to: {audio_temp_path}")
+            
+            # Get foreground video path - use pre-rendered path if available
+            fg_video_path = None
+            if pre_rendered_fg_path and os.path.exists(pre_rendered_fg_path):
+                fg_video_path = pre_rendered_fg_path
+                log(f"[EXPORT] Using pre-rendered foreground: {fg_video_path}")
+            elif hasattr(fg, 'filename') and fg.filename and os.path.exists(fg.filename):
+                fg_video_path = fg.filename
+                log(f"[EXPORT] Using foreground from clip: {fg_video_path}")
+            else:
+                # Need to save foreground video first (slow path - shows MoviePy progress)
+                fg_video_path = os.path.join(temp_dir, "foreground.mp4")
+                log(f"[EXPORT] ⚠️ No pre-rendered foreground - saving via MoviePy: {fg_video_path}")
+                log(f"[EXPORT] (This may show a progress bar - consider using pre-render)")
+                fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
+            
+            # Try FFmpeg export with word-by-word caption data
+            ffmpeg_export_successful = _export_with_ffmpeg_filters(
+                bg_path=bg_image_path,
+                fg_path=fg_video_path,
+                caption_segments=captions_for_ffmpeg,
+                audio_path=audio_temp_path,
+                output_path=output_path,
+                video_width=WIDTH,
+                video_height=HEIGHT,
+                log_fn=log,
+                effect_settings=effect_settings,
+                mirror_video=mirror_video,
+                target_duration=target_duration,
+                preferred_font=preferred_font,
+                words_per_caption=words_per_caption,
+                text_color_rgba=globals().get('CAPTION_TEXT_COLOR'),
+                stroke_color_rgba=globals().get('CAPTION_STROKE_COLOR'),
+                stroke_width=globals().get('CAPTION_STROKE_WIDTH'),
+                font_size=globals().get('CAPTION_FONT_SIZE')
             )
-            result_dict["ok"] = True
+            
+            if ffmpeg_export_successful:
+                log("[EXPORT] ✅ Fast FFmpeg export completed successfully!")
+                log("[EXPORT] Skipping MoviePy export (not needed)")
+                # Clean up temp files
+                try:
+                    import shutil
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+                return True
+            else:
+                log("[EXPORT] ⚠️ FFmpeg export failed, falling back to MoviePy...")
+                
         except Exception as e:
-            result_dict["ok"] = False
-            result_dict["error"] = str(e)
-        finally:
+            log(f"[EXPORT] ⚠️ FFmpeg export exception: {e}")
+            log("[EXPORT] Falling back to MoviePy export...")
+            import traceback
+            log(f"[EXPORT] Traceback: {traceback.format_exc()}")
+    
+    # Fallback to MoviePy export (original code)
+    if not ffmpeg_export_successful:
+        try:
+            log("[EXPORT] Using MoviePy export (fallback or FFmpeg disabled)...")
+            # Verify audio clip before compositing
+            if audio_clip is None:
+                try:
+                    log(f"[COMPOSE WARNING] ⚠️ audio_clip is None! Final video will have no audio!")
+                except Exception:
+                    pass
+            else:
+                try:
+                    log(f"[COMPOSE] Audio clip duration: {audio_clip.duration:.2f}s")
+                except Exception:
+                    pass
+            
+            final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
             try:
-                final_clip.close()
+                log(f"[COMPOSE] ✓ Final composition created successfully")
+                log(f"[COMPOSE] Layers: background + foreground + {len(caption_clips)} caption overlays")
             except Exception:
                 pass
-            gc.collect()
+        except Exception as e:
+            try:
+                log(f"[COMPOSE ERROR] Failed to create CompositeVideoClip: {e}")
+                import traceback
+                log(f"[COMPOSE ERROR] Traceback: {traceback.format_exc()}")
+            except Exception:
+                pass
+            raise
 
-    last_error = None
-    for codec in codec_try_order:
-        for attempt in range(MAX_ATTEMPTS_PER_CODEC):
-            ffmpeg_params = _make_ffmpeg_params_for_codec(codec)
-            threads_setting = 0
-            log(f"Export attempt: codec={codec}, params={ffmpeg_params}, attempt={attempt+1}")
-            result = {"ok": False, "error": None}
-            writer_thread = threading.Thread(target=_run_write, args=(final, output_path, codec, ffmpeg_params, threads_setting, result), daemon=True)
-            writer_thread.start()
+        # export monitoring and fallback
+        codec_try_order = []
+        if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
+            codec_try_order.append(PREFERRED_NVENC_CODEC)
+            log(f"[EXPORT] GPU acceleration enabled for export (NVENC: {PREFERRED_NVENC_CODEC})")
+        else:
+            log("[EXPORT] Using CPU encoding for export (libx264)")
+        codec_try_order.append("libx264")
 
-            prev_size = -1
-            stalled_since = None
-            start_t = time.time()
-            while writer_thread.is_alive():
-                time.sleep(CHECK_INTERVAL)
+        STALL_TIMEOUT = 90
+        CHECK_INTERVAL = 8
+        MAX_ATTEMPTS_PER_CODEC = 1
+
+        def _run_write(final_clip, out_path, codec_name, ffmpeg_params, threads_setting, result_dict):
+            try:
+                final_clip.write_videofile(
+                    out_path,
+                    fps=FPS,
+                    codec=codec_name,
+                    audio_codec="aac",
+                    audio_bitrate="192k",
+                    threads=threads_setting,
+                    ffmpeg_params=ffmpeg_params,
+                    verbose=False,
+                    logger="bar"
+                )
+                result_dict["ok"] = True
+            except Exception as e:
+                result_dict["ok"] = False
+                result_dict["error"] = str(e)
+            finally:
                 try:
-                    cur_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+                    final_clip.close()
                 except Exception:
-                    cur_size = 0
-                log(f"[export-monitor] {codec} out_size={cur_size} bytes (elapsed {int(time.time()-start_t)}s)")
-                if cur_size > prev_size:
-                    prev_size = cur_size
-                    stalled_since = None
-                else:
-                    if stalled_since is None:
-                        stalled_since = time.time()
-                    else:
-                        if (time.time() - stalled_since) > STALL_TIMEOUT:
-                            log(f"[export-monitor] Detected stall for {STALL_TIMEOUT}s. Attempting to abort and retry.")
-                            try:
-                                os.remove(output_path)
-                                log("[export-monitor] Removed partial output file.")
-                            except Exception as e_rm:
-                                log(f"[export-monitor] Could not remove partial file: {e_rm}")
-                            result["ok"] = False
-                            result["error"] = f"Stalled export (no growth for {STALL_TIMEOUT}s)"
-                            break
-            writer_thread.join(timeout=1.0)
-            if result.get("ok"):
-                log("[export-monitor] Export finished successfully.")
-                ok_probe, probe_out = probe_file_with_ffmpeg(output_path)
-                if ok_probe:
-                    log("Export OK — ffmpeg probe didn't find fatal errors.")
-                    try:
-                        if os.name == "nt":
-                            os.startfile(output_path)
-                        elif sys.platform == "darwin":
-                            subprocess.Popen(["open", output_path])
-                        else:
-                            subprocess.Popen(["xdg-open", output_path])
-                    except Exception as eopen:
-                        log(f"Could not open output automatically: {eopen}")
-                    return True
-                else:
-                    log("[export-monitor] Probe reported issues, attempting re-encode.")
-                    last_error = probe_out
-                    reencoded = output_path.replace(".mp4", "_reencoded.mp4")
-                    success = reencode_with_libx264(output_path, reencoded, log)
-                    if success:
-                        try:
-                            os.replace(reencoded, output_path)
-                            log("Re-encoded succeeded and replaced original output.")
-                            return True
-                        except Exception:
-                            log(f"Re-encoded saved at: {reencoded}")
-                            return True
-                    else:
-                        log("Re-encode failed.")
-            else:
-                last_error = result.get("error")
-                log(f"[export-monitor] Export attempt failed/aborted: {last_error}")
-                time.sleep(1.0)
-                continue
+                    pass
+                gc.collect()
 
-    log(f"[export-monitor] All export attempts exhausted. Last error: {last_error}")
-    return False
+        last_error = None
+        for codec in codec_try_order:
+            for attempt in range(MAX_ATTEMPTS_PER_CODEC):
+                ffmpeg_params = _make_ffmpeg_params_for_codec(codec)
+                threads_setting = 4  # Use 4 threads for better performance (was 0/auto)
+                # Log GPU usage status for user clarity
+                gpu_status = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
+                log(f"[EXPORT] Starting export with {gpu_status}")
+                log(f"[EXPORT] Codec: {codec}, Params: {ffmpeg_params}, Threads: {threads_setting}, Attempt: {attempt+1}")
+                result = {"ok": False, "error": None}
+                writer_thread = threading.Thread(target=_run_write, args=(final, output_path, codec, ffmpeg_params, threads_setting, result), daemon=True)
+                writer_thread.start()
+
+                prev_size = -1
+                stalled_since = None
+                start_t = time.time()
+                while writer_thread.is_alive():
+                    time.sleep(CHECK_INTERVAL)
+                    try:
+                        cur_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
+                    except Exception:
+                        cur_size = 0
+                    log(f"[export-monitor] {codec} out_size={cur_size} bytes (elapsed {int(time.time()-start_t)}s)")
+                    if cur_size > prev_size:
+                        prev_size = cur_size
+                        stalled_since = None
+                    else:
+                        if stalled_since is None:
+                            stalled_since = time.time()
+                        else:
+                            if (time.time() - stalled_since) > STALL_TIMEOUT:
+                                log(f"[export-monitor] Detected stall for {STALL_TIMEOUT}s. Attempting to abort and retry.")
+                                try:
+                                    os.remove(output_path)
+                                    log("[export-monitor] Removed partial output file.")
+                                except Exception as e_rm:
+                                    log(f"[export-monitor] Could not remove partial file: {e_rm}")
+                                result["ok"] = False
+                                result["error"] = f"Stalled export (no growth for {STALL_TIMEOUT}s)"
+                                break
+                writer_thread.join(timeout=1.0)
+                if result.get("ok"):
+                    gpu_used = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
+                    log(f"[EXPORT] ✅ Export finished successfully using {gpu_used}")
+                    ok_probe, probe_out = probe_file_with_ffmpeg(output_path)
+                    if ok_probe:
+                        log("Export OK — ffmpeg probe didn't find fatal errors.")
+                        try:
+                            if os.name == "nt":
+                                os.startfile(output_path)
+                            elif sys.platform == "darwin":
+                                subprocess.Popen(["open", output_path])
+                            else:
+                                subprocess.Popen(["xdg-open", output_path])
+                        except Exception as eopen:
+                            log(f"Could not open output automatically: {eopen}")
+                        return True
+                    else:
+                        log("[export-monitor] Probe reported issues, attempting re-encode.")
+                        last_error = probe_out
+                        reencoded = output_path.replace(".mp4", "_reencoded.mp4")
+                        success = reencode_with_libx264(output_path, reencoded, log)
+                        if success:
+                            try:
+                                os.replace(reencoded, output_path)
+                                log("Re-encoded succeeded and replaced original output.")
+                                return True
+                            except Exception:
+                                log(f"Re-encoded saved at: {reencoded}")
+                                return True
+                        else:
+                            log("Re-encode failed.")
+                else:
+                    last_error = result.get("error")
+                    log(f"[export-monitor] Export attempt failed/aborted: {last_error}")
+                    time.sleep(1.0)
+                    continue
+
+        log(f"[export-monitor] All export attempts exhausted. Last error: {last_error}")
+        return False
 
 # ----------------- Processing pipeline (single job) -----------------
 def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bottom_ratio=None):
@@ -1909,7 +2980,7 @@ def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bott
     log(f"Crop done. Cropped size: {cropped_video.size}, duration: {cropped_video.duration:.2f}s")
     return cropped_video
 
-def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2):
+def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None):
     """Helper to temporarily override global CAPTION_FONT_PREFERRED for the duration of compose."""
     old = globals().get('CAPTION_FONT_PREFERRED')
     try:
@@ -1920,7 +2991,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, preferred_font=preferred_font, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration)
     finally:
         try:
             if preferred_font and old is not None:
@@ -1974,12 +3045,50 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = QueueWriter(q)
     temp_fg = None
+    
+    # Log received crop parameters for debugging
+    log(f"[DEBUG] Received custom_top_ratio: {custom_top_ratio}")
+    log(f"[DEBUG] Received custom_bottom_ratio: {custom_bottom_ratio}")
+    
+    # Set defaults for effects if not provided
+    if blur_radius is None:
+        blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
+    if bg_scale_extra is None:
+        bg_scale_extra = globals().get('BG_SCALE_EXTRA', 1.08)
+    if dim_factor is None:
+        dim_factor = globals().get('DIM_FACTOR', 0.55)
+    
+    # Determine if AI voice should be used - prefer parameter over global
+    if use_ai_voice is None:
+        use_ai_voice = globals().get('USE_AI_VOICE_REPLACEMENT', False)
+    
+    # Determine language settings - prefer parameters over globals
+    if target_language is None:
+        target_language = globals().get('TARGET_LANGUAGE', 'none')
+    if translation_enabled is None:
+        translation_enabled = globals().get('TRANSLATION_ENABLED', False)
+    if tts_language is None:
+        tts_language = globals().get('TTS_LANGUAGE', 'en')
+    
+    # Set 4K mode if requested
+    # NOTE: Using global state for IS_4K_MODE. This is safe because:
+    # 1. Jobs are processed sequentially (one at a time) via queue_worker
+    # 2. Single jobs via on_run_single run in separate threads but don't overlap
+    # 3. The old value is saved and restored in the finally block
+    old_is_4k = globals().get('IS_4K_MODE', False)
+    if use_4k:
+        globals()['IS_4K_MODE'] = True
+        log("[RESOLUTION] Job set to 4K mode (2160x3840)")
+    else:
+        globals()['IS_4K_MODE'] = False
+        log("[RESOLUTION] Job set to HD mode (1080x1920)")
+    
     try:
         load_preferred_font_cached(preferred_font or CAPTION_FONT_PREFERRED, CAPTION_FONT_SIZE, log=log)
         if REQUIRE_FONT_BANGERS and (LOADED_FONT_PATH is None or ("bangers" not in str(LOADED_FONT_PATH).lower())):
@@ -2003,7 +3112,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 video_clip_for_audio = VideoFileClip(video_path)
                 if video_clip_for_audio.audio is None:
                     log("[VOICE ERROR] Video has no audio track!")
-                    if not USE_AI_VOICE_REPLACEMENT:
+                    if not use_ai_voice:
                         log("[VOICE ERROR] Cannot proceed without voice audio or AI voice enabled.")
                         return
                     log("[VOICE] Will generate AI voice from text/captions only.")
@@ -2015,7 +3124,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     video_clip_for_audio.close()
             except Exception as e:
                 log(f"[VOICE ERROR] Failed to extract audio from video: {e}")
-                if not USE_AI_VOICE_REPLACEMENT:
+                if not use_ai_voice:
                     return
                 log("[VOICE] Will proceed with AI voice generation only.")
                 voice_path = None
@@ -2035,27 +3144,35 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         crop_w = orig_w
         crop_x = 0
         crop_y = crop_top
+        
+        # Log crop values for debugging
+        log(f"[CROP] Custom crop enabled: {custom_top_ratio is not None or custom_bottom_ratio is not None}")
+        log(f"[CROP] Top ratio: {custom_top_ratio if custom_top_ratio is not None else CROP_TOP_RATIO} ({crop_top}px)")
+        log(f"[CROP] Bottom ratio: {custom_bottom_ratio if custom_bottom_ratio is not None else CROP_BOTTOM_RATIO} ({crop_bottom}px)")
+        log(f"[CROP] Original: {orig_w}x{orig_h}, Cropped: {crop_w}x{crop_h}")
 
         try:
             min_scale_to_fit = min(WIDTH / cropped.w, HEIGHT / cropped.h)
         except Exception:
             min_scale_to_fit = 1.0
         
-        # Calculate scale with dynamic limits based on resolution mode
-        # In 4K mode, we need higher scale limits to maintain same zoom effect
+        # Get user's zoom setting
+        user_zoom = globals().get('VIDEO_ZOOM_SCALE', 1.0)
+        
+        # Calculate scale to fit video in canvas
+        # min_scale_to_fit ensures the video fills the canvas with no black bars
+        # The 1.03 base factor adds slight overflow to ensure no edges show
         is_4k = globals().get('IS_4K_MODE', False)
         base_scale_factor = 1.03
-        max_scale_limit = 1.06
         
-        if is_4k:
-            # For 4K, double the scale factors to maintain same visual zoom
-            # This ensures the video is zoomed in properly to cover edges
-            fg_scale = max(1.0, min_scale_to_fit) * (base_scale_factor * 2.0)
-            fg_scale = min(fg_scale, max_scale_limit * 2.0)  # Allow up to 2.12x for 4K
-        else:
-            # HD mode - use original logic
-            fg_scale = max(1.0, min_scale_to_fit) * base_scale_factor
-            fg_scale = min(fg_scale, max_scale_limit)
+        # Calculate the scale needed to fit the video in the canvas
+        fit_scale = max(1.0, min_scale_to_fit) * base_scale_factor
+        
+        # Apply user's zoom factor directly - no capping
+        # User zoom of 1.08x means 8% larger than the auto-fit size
+        fg_scale = fit_scale * user_zoom
+        
+        log(f"[SCALE] min_scale_to_fit={min_scale_to_fit:.3f}, fit_scale={fit_scale:.3f}, user_zoom={user_zoom:.2f}, final={fg_scale:.3f}")
         
         scale_w = max(1, int(round(crop_w * fg_scale)))
         scale_h = max(1, int(round(crop_h * fg_scale)))
@@ -2089,6 +3206,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         use_nvenc = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
         
         log(f"CROP: Top {crop_top_pct:.1f}%, Bottom {crop_bottom_pct:.1f}% → {crop_w}x{crop_h}")
+        log(f"ZOOM: User setting {user_zoom:.2f}x")
         log(f"SCALE: {fg_scale:.2f}x → {scale_w}x{scale_h}")
         log(f"CAPTION OFFSET: {y_offset}px ({offset_desc})")
         log(f"MIRROR: {'Enabled' if mirror_video else 'Disabled'}")
@@ -2106,6 +3224,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         else:
             log("Pre-render failed or missing — falling back to MoviePy in-memory crop/resize.")
             fg_clip = cropped.resize(fg_scale).set_position(("center", "center")).set_duration(cropped.duration)
+        
+        # Remove original audio from video clip to prevent duplicate audio
+        # Only the mixed_audio (voice/TTS + music) should be used
+        log("Removing original audio from video clip...")
+        fg_clip = fg_clip.without_audio()
+        log("✓ Original video audio removed (will use voice/TTS + music only)")
         
         # Apply mirror if enabled
         if mirror_video:
@@ -2127,12 +3251,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             # Transcribe captions ONLY if AI voice replacement is NOT enabled
             # If AI voice is enabled, we'll transcribe from the TTS audio later
-            if not USE_AI_VOICE_REPLACEMENT:
+            if not use_ai_voice:
                 log("[CAPTION] Transcribing captions from original voice...")
                 caption_segments = transcribe_captions(
                     voice_path, 
                     log, 
-                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                    translate_to=target_language if translation_enabled else None
                 )
             else:
                 log("[CAPTION] Deferring caption generation until after TTS voice is created...")
@@ -2140,7 +3264,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 caption_segments = transcribe_captions(
                     voice_path, 
                     log, 
-                    translate_to=TARGET_LANGUAGE if TRANSLATION_ENABLED else None
+                    translate_to=target_language if translation_enabled else None
                 )
         else:
             # No voice file - use video duration as target
@@ -2154,27 +3278,30 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             # If AI voice is enabled, we still need to generate it even without a voice file
             # We'll need to create dummy caption segments from user input or skip captions
-            if USE_AI_VOICE_REPLACEMENT:
+            if use_ai_voice:
                 log("[NO VOICE + AI TTS] Will generate AI voice without captions")
                 # For now, we'll skip caption generation when there's no voice to transcribe
                 # The TTS will be generated below if caption_segments exists or can be created
             else:
                 log("[NO VOICE] No captions will be generated (no voice to transcribe)")
         
+        # Track if TTS was successfully applied
+        tts_successfully_applied = False
+        
         # Optional: Replace voice with AI-generated TTS or generate from scratch
-        if USE_AI_VOICE_REPLACEMENT:
+        if use_ai_voice:
             if caption_segments:
                 log("")
                 log("━"*60)
                 log("[AI VOICE] 🎵 GENERATING AI VOICE REPLACEMENT")
                 log(f"[AI VOICE] Segments to synthesize: {len(caption_segments)}")
-                log(f"[AI VOICE] Target language: {TTS_LANGUAGE}")
+                log(f"[AI VOICE] Target language: {tts_language}")
                 log("━"*60)
                 log("")
                 
                 tts_audio_path = replace_voice_with_tts(
                     caption_segments, 
-                    language=TTS_LANGUAGE,
+                    language=tts_language,
                     log=log
                 )
                 if tts_audio_path:
@@ -2186,7 +3313,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         # STEP 1: Remove all silences from TTS audio FIRST for continuous speech
                         log("")
                         log("[AI VOICE] 📝 Removing silences from TTS audio for continuous playback...")
-                        silence_threshold_ms = self.silence_threshold_var.get()
                         log(f"[AI VOICE] Using silence threshold: {silence_threshold_ms}ms")
                         compressed_tts_path, silence_map = remove_silence_from_audio(
                             tts_audio_path, 
@@ -2250,17 +3376,56 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                         log("[AI VOICE] Voice plays continuously (silences removed)")
                         log("[AI VOICE] Captions synchronized with word timestamps")
                         log("[AI VOICE] Video speed adjusted to match AI voice (voice kept at natural speed)")
+                        log(f"[AI VOICE] Final audio duration: {mixed_audio.duration:.2f}s")
+                        log(f"[AI VOICE] Final video duration: {synced_video.duration:.2f}s")
                         log("━"*60)
                         log("")
+                        
+                        # Mark that TTS was successfully applied
+                        tts_successfully_applied = True
+                        log("[AI VOICE] 🎯 TTS FLAG SET: TTS audio will be used in final video")
+                        
                     except Exception as e:
                         log(f"[AI VOICE ERROR] ❌ Failed to use TTS audio: {e}")
                         import traceback
                         log(traceback.format_exc())
+                        log("[AI VOICE ERROR] Falling back to original voice/music audio")
+                        tts_successfully_applied = False
+                else:
+                    log("[AI VOICE] ⚠️ TTS audio generation returned None - using original audio")
+                    tts_successfully_applied = False
             else:
                 log("[AI VOICE] No captions available - AI voice replacement skipped")
                 log("[AI VOICE] Tip: Provide voice file with audio for automatic transcription and AI voice generation")
+                tts_successfully_applied = False
 
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, words_per_caption=words_per_caption)
+        # Final verification of what audio is being used
+        log("")
+        log("━"*60)
+        log("[FINAL COMPOSITION] Preparing to create final video...")
+        if tts_successfully_applied:
+            log("[FINAL COMPOSITION] 🎤 USING AI-GENERATED TTS VOICE")
+            log(f"[FINAL COMPOSITION] ✓ TTS voice successfully integrated")
+        else:
+            log("[FINAL COMPOSITION] 🎵 Using original voice/music audio")
+            log(f"[FINAL COMPOSITION] (AI voice was not enabled or failed)")
+        log(f"[FINAL COMPOSITION] Video duration: {synced_video.duration:.2f}s")
+        log(f"[FINAL COMPOSITION] Audio duration: {mixed_audio.duration:.2f}s")
+        log(f"[FINAL COMPOSITION] Caption segments: {len(caption_segments)}")
+        if temp_fg and os.path.exists(temp_fg):
+            log(f"[FINAL COMPOSITION] Pre-rendered foreground: {temp_fg}")
+        log("━"*60)
+        log("")
+        
+        # Pass mirror_video and target_duration for FFmpeg export optimization
+        # Calculate target duration from audio or video, with fallback
+        target_duration = None
+        if mixed_audio and hasattr(mixed_audio, 'duration') and mixed_audio.duration:
+            target_duration = mixed_audio.duration
+        elif synced_video and hasattr(synced_video, 'duration') and synced_video.duration:
+            target_duration = synced_video.duration
+        
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
@@ -2323,6 +3488,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         sys.stderr = old_stderr
     except Exception:
         pass
+    
+    # Restore IS_4K_MODE
+    try:
+        globals()['IS_4K_MODE'] = old_is_4k
+    except Exception:
+        pass
 
 
 def queue_worker(jobs, q):
@@ -2331,11 +3502,34 @@ def queue_worker(jobs, q):
     log(f"[QUEUE] Starting queue with {len(jobs)} job(s).")
     for i, job in enumerate(jobs, start=1):
         log(f"\n===== START JOB {i}/{len(jobs)} =====")
+        # Extract effect settings from job
+        effect_settings = {
+            'effect_sharpness': job.get("effect_sharpness", False),
+            'effect_sharpness_intensity': job.get("effect_sharpness_intensity", 1.5),
+            'effect_saturation': job.get("effect_saturation", False),
+            'effect_saturation_intensity': job.get("effect_saturation_intensity", 1.3),
+            'effect_contrast': job.get("effect_contrast", False),
+            'effect_contrast_intensity': job.get("effect_contrast_intensity", 1.2),
+            'effect_brightness': job.get("effect_brightness", False),
+            'effect_brightness_intensity': job.get("effect_brightness_intensity", 1.15),
+            'effect_vintage': job.get("effect_vintage", False),
+            'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
+        }
         process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"),
                            custom_top_ratio=job.get("custom_top_ratio"),
                            custom_bottom_ratio=job.get("custom_bottom_ratio"),
                            mirror_video=job.get("mirror_video", False),
-                           words_per_caption=job.get("words_per_caption", 2))
+                           words_per_caption=job.get("words_per_caption", 2),
+                           use_4k=job.get("use_4k", False),
+                           blur_radius=job.get("blur_radius"),
+                           bg_scale_extra=job.get("bg_scale_extra"),
+                           dim_factor=job.get("dim_factor"),
+                           effect_settings=effect_settings,
+                           use_ai_voice=job.get("use_ai_voice", False),
+                           target_language=job.get("target_language", 'none'),
+                           translation_enabled=job.get("translation_enabled", False),
+                           tts_language=job.get("tts_language", 'en'),
+                           silence_threshold_ms=job.get("silence_threshold_ms", 300))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -2435,14 +3629,61 @@ class App:
         except Exception:
             pass
 
-        left_frame = ttk.Frame(pw, padding=8)
+        # Create a container frame for the left side with scrollbar
+        left_container = ttk.Frame(pw)
+        try:
+            left_container.configure(style='TFrame')
+            left_container.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        
+        # Create Canvas and Scrollbar for scrollable left panel
+        left_canvas = tk.Canvas(left_container, bg='#0b0b0b', highlightthickness=0)
+        left_scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=left_canvas.yview)
+        
+        # Create the actual frame that will contain all controls
+        left_frame = ttk.Frame(left_canvas, padding=8)
         try:
             left_frame.configure(style='TFrame')
             left_frame.config(bg='#0b0b0b')
         except Exception:
             pass
         left_frame.columnconfigure(1, weight=1)
-        pw.add(left_frame, weight=1)
+        
+        # Pack scrollbar and canvas
+        left_scrollbar.pack(side="right", fill="y")
+        left_canvas.pack(side="left", fill="both", expand=True)
+        
+        # Create window in canvas for the frame
+        canvas_frame = left_canvas.create_window((0, 0), window=left_frame, anchor="nw")
+        
+        # Configure canvas scrolling
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        
+        # Update scroll region when frame changes size
+        def configure_scroll_region(event=None):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+            # Also update the canvas window width to match canvas width
+            canvas_width = left_canvas.winfo_width()
+            left_canvas.itemconfig(canvas_frame, width=canvas_width)
+        
+        left_frame.bind("<Configure>", configure_scroll_region)
+        left_canvas.bind("<Configure>", configure_scroll_region)
+        
+        # Enable mousewheel scrolling
+        def on_mousewheel(event):
+            left_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        
+        def bind_mousewheel(event):
+            left_canvas.bind_all("<MouseWheel>", on_mousewheel)
+        
+        def unbind_mousewheel(event):
+            left_canvas.unbind_all("<MouseWheel>")
+        
+        left_canvas.bind('<Enter>', bind_mousewheel)
+        left_canvas.bind('<Leave>', unbind_mousewheel)
+        
+        pw.add(left_container, weight=1)
 
         right_outer = ttk.PanedWindow(pw, orient="vertical")
         pw.add(right_outer, weight=2)
@@ -2685,6 +3926,103 @@ class App:
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1
 
+        # --- Video Effects (CapCut-style) ---
+        ttk.Label(left_frame, text="Video Effects", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        # Sharpness/Resilience effect
+        self.effect_sharpness_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Resilience (Sharpness)", variable=self.effect_sharpness_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="💎").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_sharpness_intensity_var = tk.DoubleVar(value=1.5)
+        sharpness_scale = tk.Scale(left_frame, from_=0.5, to=3.0, resolution=0.1, orient='horizontal', 
+                                   length=120, showvalue=0, variable=self.effect_sharpness_intensity_var,
+                                   command=lambda v: self._mini_update_worker_async())
+        sharpness_scale.grid(row=row, column=1, padx=(6,0))
+        self.sharpness_label = ttk.Label(left_frame, text=f"{self.effect_sharpness_intensity_var.get():.1f}x")
+        self.sharpness_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_sharpness_intensity_var.trace('w', lambda *args: self.sharpness_label.config(text=f"{self.effect_sharpness_intensity_var.get():.1f}x"))
+        row += 1
+
+        # Saturation boost
+        self.effect_saturation_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Vibrance (Saturation)", variable=self.effect_saturation_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="🌈").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_saturation_intensity_var = tk.DoubleVar(value=1.3)
+        saturation_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.1, orient='horizontal', 
+                                    length=120, showvalue=0, variable=self.effect_saturation_intensity_var,
+                                    command=lambda v: self._mini_update_worker_async())
+        saturation_scale.grid(row=row, column=1, padx=(6,0))
+        self.saturation_label = ttk.Label(left_frame, text=f"{self.effect_saturation_intensity_var.get():.1f}x")
+        self.saturation_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_saturation_intensity_var.trace('w', lambda *args: self.saturation_label.config(text=f"{self.effect_saturation_intensity_var.get():.1f}x"))
+        row += 1
+
+        # Contrast enhancement
+        self.effect_contrast_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="HDR (Contrast)", variable=self.effect_contrast_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="⚡").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_contrast_intensity_var = tk.DoubleVar(value=1.2)
+        contrast_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.1, orient='horizontal', 
+                                 length=120, showvalue=0, variable=self.effect_contrast_intensity_var,
+                                 command=lambda v: self._mini_update_worker_async())
+        contrast_scale.grid(row=row, column=1, padx=(6,0))
+        self.contrast_label = ttk.Label(left_frame, text=f"{self.effect_contrast_intensity_var.get():.1f}x")
+        self.contrast_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_contrast_intensity_var.trace('w', lambda *args: self.contrast_label.config(text=f"{self.effect_contrast_intensity_var.get():.1f}x"))
+        row += 1
+
+        # Brightness adjustment
+        self.effect_brightness_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Brightness Boost", variable=self.effect_brightness_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="☀️").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Intensity:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_brightness_intensity_var = tk.DoubleVar(value=1.15)
+        brightness_scale = tk.Scale(left_frame, from_=0.5, to=2.0, resolution=0.05, orient='horizontal', 
+                                    length=120, showvalue=0, variable=self.effect_brightness_intensity_var,
+                                    command=lambda v: self._mini_update_worker_async())
+        brightness_scale.grid(row=row, column=1, padx=(6,0))
+        self.brightness_label = ttk.Label(left_frame, text=f"{self.effect_brightness_intensity_var.get():.2f}x")
+        self.brightness_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_brightness_intensity_var.trace('w', lambda *args: self.brightness_label.config(text=f"{self.effect_brightness_intensity_var.get():.2f}x"))
+        row += 1
+
+        # Film grain / Vintage
+        self.effect_vintage_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Vintage (Film Grain)", variable=self.effect_vintage_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="📽️").grid(row=row, column=2, sticky="w")
+        row += 1
+        
+        ttk.Label(left_frame, text="Grain:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.effect_vintage_intensity_var = tk.DoubleVar(value=0.3)
+        vintage_scale = tk.Scale(left_frame, from_=0.1, to=1.0, resolution=0.05, orient='horizontal', 
+                                length=120, showvalue=0, variable=self.effect_vintage_intensity_var,
+                                command=lambda v: self._mini_update_worker_async())
+        vintage_scale.grid(row=row, column=1, padx=(6,0))
+        self.vintage_label = ttk.Label(left_frame, text=f"{self.effect_vintage_intensity_var.get():.2f}")
+        self.vintage_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.effect_vintage_intensity_var.trace('w', lambda *args: self.vintage_label.config(text=f"{self.effect_vintage_intensity_var.get():.2f}"))
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+
         ttk.Label(left_frame, text="Top:").grid(row=row, column=0, sticky="e")
         self.top_percent_var = tk.DoubleVar(value=CROP_TOP_RATIO*100)
         self.top_label = ttk.Label(left_frame, text=f"{self.top_percent_var.get():.1f}%")
@@ -2711,6 +4049,24 @@ class App:
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1
 
+        # Settings Preset Section
+        ttk.Label(left_frame, text="Settings Presets:").grid(row=row, column=0, sticky="w")
+        row += 1
+        preset_btns = ttk.Frame(left_frame)
+        try:
+            preset_btns.configure(style='TFrame')
+            preset_btns.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        preset_btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6,0))
+        ttk.Button(preset_btns, text="💾 Save Preset", command=self.save_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="📂 Load Preset", command=self.load_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="🔄 Reset to Defaults", command=self.reset_to_defaults).pack(side="left", padx=4)
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+
         ttk.Label(left_frame, text="Job queue:").grid(row=row, column=0, sticky="w")
         row += 1
         self.job_listbox = tk.Listbox(left_frame, height=10, selectmode=tk.EXTENDED, bg='#111111', fg='#FFFFFF')
@@ -2719,6 +4075,8 @@ class App:
             self.job_listbox.config(selectbackground='#2b2b2b', selectforeground='#FFFFFF', highlightthickness=1, highlightbackground='#222222', bd=2, relief='groove')
         except Exception:
             pass
+        # Add double-click binding to load job settings
+        self.job_listbox.bind('<Double-Button-1>', self.on_job_double_click)
         left_frame.rowconfigure(row, weight=1)
         row += 1
 
@@ -2905,7 +4263,41 @@ class App:
         self.time_scale.pack(side="left", fill="x", expand=True)
         self.time_label = ttk.Label(tl_frame, text="00:00")
         self.time_label.pack(side="left", padx=6)
+        
+        # --- Zoom Control Slider ---
+        zoom_frame = ttk.Frame(preview_frame)
+        try:
+            zoom_frame.configure(style='TFrame')
+            zoom_frame.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        zoom_frame.pack(fill="x", pady=(4,0))
+        ttk.Label(zoom_frame, text="Video Zoom:").pack(side="left")
+        self.zoom_var = tk.DoubleVar(value=1.0)
+        self.zoom_scale = CanvasSlider(zoom_frame, from_=0.5, to=2.0, orient="horizontal", length=300, resolution=0.01, variable=self.zoom_var, command=self.on_zoom_changed)
+        self.zoom_scale.pack(side="left", fill="x", expand=True, padx=4)
+        self.zoom_label = ttk.Label(zoom_frame, text="1.00x")
+        self.zoom_label.pack(side="left", padx=6)
+        
         ttk.Button(preview_frame, text="Refresh mini preview", command=self.on_mini_refresh_clicked).pack(pady=(6,0))
+        
+        # --- TikTok Format Preview (9:16 aspect ratio) ---
+        tiktok_preview_frame = ttk.Frame(preview_frame)
+        try:
+            tiktok_preview_frame.configure(style='TFrame')
+            tiktok_preview_frame.config(bg='#0b0b0b')
+        except Exception:
+            pass
+        tiktok_preview_frame.pack(fill='both', expand=False, pady=(6,0))
+        ttk.Label(tiktok_preview_frame, text="TikTok Preview (9:16):").pack(anchor="w")
+        self.tiktok_preview_border = tk.Frame(tiktok_preview_frame, bg='#222222', bd=2, relief='solid')
+        self.tiktok_preview_border.pack(fill='both', expand=True, padx=0, pady=(4,0))
+        # 180x320 = 9:16 aspect ratio
+        self.tiktok_preview_canvas = tk.Canvas(self.tiktok_preview_border, width=180, height=320, bg='#111111', highlightthickness=0)
+        self.tiktok_preview_canvas.pack(fill='both', expand=True)
+        self.tiktok_preview_image_ref = None
+        
+        ttk.Button(preview_frame, text="Refresh TikTok Preview", command=self.on_tiktok_preview_refresh).pack(pady=(6,0))
 
         self.mini_canvas.bind("<ButtonPress-1>", self._mini_on_mouse_down)
         self.mini_canvas.bind("<B1-Motion>", self._mini_on_mouse_move)
@@ -3026,6 +4418,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3042,6 +4436,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3053,6 +4449,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3062,6 +4460,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3766,6 +5166,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3782,6 +5184,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -3793,6 +5197,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3802,6 +5208,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -3873,6 +5281,64 @@ class App:
         path = filedialog.asksaveasfilename(title="Output file", defaultextension=".mp4", filetypes=[("MP4 file", "*.mp4")])
         if path: self.output_var.set(path)
 
+    def _format_job_info(self, job):
+        """Format job information for display, showing all relevant settings."""
+        info_parts = []
+        
+        # Resolution and basic settings
+        if job.get("use_4k"):
+            info_parts.append("4K")
+        if job.get("mirror_video"):
+            info_parts.append("Mirror")
+        if job.get("words_per_caption", 2) != 2:
+            info_parts.append(f"{job.get('words_per_caption')} words/cap")
+        
+        # AI and translation settings
+        if job.get("use_ai_voice"):
+            info_parts.append("AI-TTS")
+        if job.get("translation_enabled"):
+            lang = job.get("target_language", "?")
+            info_parts.append(f"Translate:{lang}")
+        
+        # Silence threshold (only show if AI voice is enabled and not default)
+        if job.get("use_ai_voice") and job.get("silence_threshold_ms", 300) != 300:
+            info_parts.append(f"silence:{job.get('silence_threshold_ms')}ms")
+        
+        # Font color (show if not default white)
+        text_color = job.get("caption_text_color", (255, 255, 255, 255))
+        if text_color != (255, 255, 255, 255):
+            info_parts.append(f"color:RGB({text_color[0]},{text_color[1]},{text_color[2]})")
+        
+        # Stroke/border settings (show if not default)
+        stroke_color = job.get("caption_stroke_color", (0, 0, 0, 150))
+        stroke_width = job.get("caption_stroke_width", 3)
+        if stroke_color != (0, 0, 0, 150) or stroke_width != 3:
+            info_parts.append(f"border:w={stroke_width},RGB({stroke_color[0]},{stroke_color[1]},{stroke_color[2]})")
+        
+        # Add effects info if different from defaults
+        blur = job.get("blur_radius", 25)
+        bg_scale = job.get("bg_scale_extra", 1.08)
+        dim = job.get("dim_factor", 0.55)
+        if blur != 25 or bg_scale != 1.08 or dim != 0.55:
+            info_parts.append(f"effects:blur={blur}/scale={bg_scale:.2f}/dim={dim:.2f}")
+        
+        # Video effects (CapCut-style)
+        effects_active = []
+        if job.get("effect_sharpness"):
+            effects_active.append("Resilience")
+        if job.get("effect_saturation"):
+            effects_active.append("Vibrance")
+        if job.get("effect_contrast"):
+            effects_active.append("HDR")
+        if job.get("effect_brightness"):
+            effects_active.append("Brightness")
+        if job.get("effect_vintage"):
+            effects_active.append("Vintage")
+        if effects_active:
+            info_parts.append(f"fx:{','.join(effects_active)}")
+        
+        return " [" + ", ".join(info_parts) + "]" if info_parts else ""
+
     def add_job(self):
         try:
             video = self.video_var.get().strip()
@@ -3891,6 +5357,18 @@ class App:
                     pref_font = self.selected_font
             except Exception:
                 pref_font = None
+            
+            # Log crop settings for debugging
+            use_custom = self.use_custom_crop_var.get()
+            top_val = self.top_percent_var.get()
+            bottom_val = self.bottom_percent_var.get()
+            self.log_to_console(f"\n[DEBUG JOB] Creating job with:")
+            self.log_to_console(f"[DEBUG JOB] Use custom crop checkbox: {use_custom}")
+            self.log_to_console(f"[DEBUG JOB] Top percent: {top_val}")
+            self.log_to_console(f"[DEBUG JOB] Bottom percent: {bottom_val}")
+            self.log_to_console(f"[DEBUG JOB] Will send custom_top_ratio: {(top_val/100.0) if use_custom else None}")
+            self.log_to_console(f"[DEBUG JOB] Will send custom_bottom_ratio: {(bottom_val/100.0) if use_custom else None}")
+            
             job = {
                 "video": video,
                 "voice": voice,
@@ -3900,10 +5378,37 @@ class App:
                 "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                 "mirror_video": self.mirror_video_var.get(),
-                "words_per_caption": self.words_per_caption_var.get()
+                "words_per_caption": self.words_per_caption_var.get(),
+                "use_4k": self.use_4k_var.get(),
+                "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
+                "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
+                "dim_factor": globals().get('DIM_FACTOR', 0.55),
+                # AI and caption settings
+                "use_ai_voice": self.use_ai_voice_var.get(),
+                "translation_enabled": self.translation_enabled_var.get(),
+                "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
+                "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
+                "silence_threshold_ms": self.silence_threshold_var.get(),
+                # Font and border settings
+                "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
+                "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
+                "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3),
+                # Video effects (CapCut-style)
+                "effect_sharpness": self.effect_sharpness_var.get(),
+                "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
+                "effect_saturation": self.effect_saturation_var.get(),
+                "effect_saturation_intensity": self.effect_saturation_intensity_var.get(),
+                "effect_contrast": self.effect_contrast_var.get(),
+                "effect_contrast_intensity": self.effect_contrast_intensity_var.get(),
+                "effect_brightness": self.effect_brightness_var.get(),
+                "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
+                "effect_vintage": self.effect_vintage_var.get(),
+                "effect_vintage_intensity": self.effect_vintage_intensity_var.get()
             }
             self.jobs.append(job)
-            display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'})"
+            # Show complete job info in the display using helper
+            info = self._format_job_info(job)
+            display = f"{Path(video).name} | {Path(voice).name} | {Path(music).name} -> {Path(output).name} (font={pref_font or 'default'}){info}"
             self.job_listbox.insert('end', display)
         except Exception as e:
             messagebox.showerror("Error adding job", str(e))
@@ -3914,7 +5419,11 @@ class App:
             tag = ""
             if j.get("custom_top_ratio") is not None:
                 tag = f" (crop {int(j['custom_top_ratio']*100)}%/{int(j['custom_bottom_ratio']*100)}%)"
-            display = f"{i}. {os.path.basename(j['video'])} | {os.path.basename(j['voice'])} | {os.path.basename(j['music'])}{tag}"
+            
+            # Use helper to format job info consistently
+            info = self._format_job_info(j)
+            
+            display = f"{i}. {os.path.basename(j['video'])} | {os.path.basename(j['voice'])} | {os.path.basename(j['music'])}{tag}{info}"
             self.job_listbox.insert(tk.END, display)
 
     def remove_job(self):
@@ -3928,6 +5437,132 @@ class App:
             except Exception:
                 pass
         self._refresh_job_listbox()
+
+    def on_job_double_click(self, event):
+        """Load job settings when double-clicking a job in the list."""
+        try:
+            # Get selected job index
+            sel = self.job_listbox.curselection()
+            if not sel:
+                return
+            
+            job_idx = sel[0]
+            if job_idx >= len(self.jobs):
+                return
+            
+            job = self.jobs[job_idx]
+            
+            # Load file paths
+            self.video_var.set(job.get("video", ""))
+            self.voice_var.set(job.get("voice", ""))
+            self.music_var.set(job.get("music", ""))
+            self.output_var.set(job.get("output", ""))
+            
+            # Load basic settings
+            self.mirror_video_var.set(job.get("mirror_video", False))
+            self.words_per_caption_var.set(job.get("words_per_caption", 2))
+            self.use_4k_var.set(job.get("use_4k", False))
+            
+            # Load crop settings
+            if job.get("custom_top_ratio") is not None:
+                self.use_custom_crop_var.set(True)
+                self.top_percent_var.set(job.get("custom_top_ratio", 0.0) * 100.0)
+                self.bottom_percent_var.set(job.get("custom_bottom_ratio", 0.0) * 100.0)
+            else:
+                self.use_custom_crop_var.set(False)
+            
+            # Load effects settings
+            globals()['STATIC_BG_BLUR_RADIUS'] = job.get("blur_radius", 25)
+            globals()['BG_SCALE_EXTRA'] = job.get("bg_scale_extra", 1.08)
+            globals()['DIM_FACTOR'] = job.get("dim_factor", 0.55)
+            
+            # Load AI and translation settings
+            self.use_ai_voice_var.set(job.get("use_ai_voice", False))
+            self.translation_enabled_var.set(job.get("translation_enabled", False))
+            if hasattr(self, 'target_language_var'):
+                self.target_language_var.set(job.get("target_language", "none"))
+            self.silence_threshold_var.set(job.get("silence_threshold_ms", 300))
+            
+            # Load video effects (CapCut-style)
+            if hasattr(self, 'effect_sharpness_var'):
+                self.effect_sharpness_var.set(job.get("effect_sharpness", False))
+                self.effect_sharpness_intensity_var.set(job.get("effect_sharpness_intensity", 1.5))
+            if hasattr(self, 'effect_saturation_var'):
+                self.effect_saturation_var.set(job.get("effect_saturation", False))
+                self.effect_saturation_intensity_var.set(job.get("effect_saturation_intensity", 1.3))
+            if hasattr(self, 'effect_contrast_var'):
+                self.effect_contrast_var.set(job.get("effect_contrast", False))
+                self.effect_contrast_intensity_var.set(job.get("effect_contrast_intensity", 1.2))
+            if hasattr(self, 'effect_brightness_var'):
+                self.effect_brightness_var.set(job.get("effect_brightness", False))
+                self.effect_brightness_intensity_var.set(job.get("effect_brightness_intensity", 1.15))
+            if hasattr(self, 'effect_vintage_var'):
+                self.effect_vintage_var.set(job.get("effect_vintage", False))
+                self.effect_vintage_intensity_var.set(job.get("effect_vintage_intensity", 0.3))
+            
+            # Load font and border settings
+            text_color = job.get("caption_text_color", (255, 255, 255, 255))
+            stroke_color = job.get("caption_stroke_color", (0, 0, 0, 150))
+            stroke_width = job.get("caption_stroke_width", 3)
+            
+            globals()['CAPTION_TEXT_COLOR'] = text_color
+            globals()['CAPTION_STROKE_COLOR'] = stroke_color
+            globals()['CAPTION_STROKE_WIDTH'] = stroke_width
+            
+            # Update UI elements for colors if they exist
+            try:
+                if hasattr(self, 'text_color_canvas') and self.text_color_canvas:
+                    col = f'#{text_color[0]:02x}{text_color[1]:02x}{text_color[2]:02x}'
+                    self.text_color_canvas.delete('all')
+                    self.text_color_canvas.create_oval(2,2,26,26, fill=col, outline='white')
+            except Exception:
+                pass
+            
+            try:
+                if hasattr(self, 'stroke_color_canvas') and self.stroke_color_canvas:
+                    col = f'#{stroke_color[0]:02x}{stroke_color[1]:02x}{stroke_color[2]:02x}'
+                    self.stroke_color_canvas.delete('all')
+                    self.stroke_color_canvas.create_oval(2,2,26,26, fill=col, outline='white')
+            except Exception:
+                pass
+            
+            try:
+                if hasattr(self, 'stroke_width_var'):
+                    self.stroke_width_var.set(stroke_width)
+                if hasattr(self, 'stroke_width_label') and self.stroke_width_label:
+                    self.stroke_width_label.config(text=str(int(stroke_width)))
+            except Exception:
+                pass
+            
+            # Load font if specified
+            font_path = job.get("font")
+            if font_path:
+                try:
+                    self.selected_font_path = font_path
+                    self.selected_font = os.path.basename(font_path) if font_path else None
+                except Exception:
+                    pass
+            
+            # Update video preview if video file exists
+            video_path = job.get("video", "")
+            if video_path and os.path.exists(video_path):
+                try:
+                    # Trigger mini preview update
+                    self._mini_update_worker_async()
+                except Exception as e:
+                    print(f"Could not update preview: {e}")
+            
+            # Log the load action
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"\n[LOAD] Loaded settings from job #{job_idx + 1}\n")
+                self.log_widget.see('end')
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+                
+        except Exception as e:
+            messagebox.showerror("Error loading job", str(e))
 
     def on_run_single(self):
         try:
@@ -3950,10 +5585,48 @@ class App:
             job = {"video": video, "voice": voice, "music": music, "output": output, "font": pref_font,
                    "custom_top_ratio": (self.top_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
                    "custom_bottom_ratio": (self.bottom_percent_var.get()/100.0) if self.use_custom_crop_var.get() else None,
-                   "mirror_video": self.mirror_video_var.get()}
+                   "mirror_video": self.mirror_video_var.get(),
+                   "words_per_caption": self.words_per_caption_var.get(),
+                   "use_4k": self.use_4k_var.get(),
+                   "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
+                   "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
+                   "dim_factor": globals().get('DIM_FACTOR', 0.55),
+                   # AI and caption settings
+                   "use_ai_voice": self.use_ai_voice_var.get(),
+                   "translation_enabled": self.translation_enabled_var.get(),
+                   "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
+                   "silence_threshold_ms": self.silence_threshold_var.get(),
+                   # Font and border settings
+                   "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
+                   "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
+                   "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3),
+                   # Video effects (CapCut-style)
+                   "effect_sharpness": self.effect_sharpness_var.get(),
+                   "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
+                   "effect_saturation": self.effect_saturation_var.get(),
+                   "effect_saturation_intensity": self.effect_saturation_intensity_var.get(),
+                   "effect_contrast": self.effect_contrast_var.get(),
+                   "effect_contrast_intensity": self.effect_contrast_intensity_var.get(),
+                   "effect_brightness": self.effect_brightness_var.get(),
+                   "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
+                   "effect_vintage": self.effect_vintage_var.get(),
+                   "effect_vintage_intensity": self.effect_vintage_intensity_var.get()}
             q = self.q
+            # Extract effect settings
+            effect_settings = {
+                'effect_sharpness': job.get("effect_sharpness", False),
+                'effect_sharpness_intensity': job.get("effect_sharpness_intensity", 1.5),
+                'effect_saturation': job.get("effect_saturation", False),
+                'effect_saturation_intensity': job.get("effect_saturation_intensity", 1.3),
+                'effect_contrast': job.get("effect_contrast", False),
+                'effect_contrast_intensity': job.get("effect_contrast_intensity", 1.2),
+                'effect_brightness': job.get("effect_brightness", False),
+                'effect_brightness_intensity': job.get("effect_brightness_intensity", 1.15),
+                'effect_vintage': job.get("effect_vintage", False),
+                'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
+            }
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False)}, daemon=True)
+            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en')}, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')
@@ -3967,7 +5640,12 @@ class App:
 
     def _run_single_thread(self, video, voice, music, output, top_ratio, bottom_ratio):
         words_per_caption = self.words_per_caption_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption)
+        use_ai_voice = self.use_ai_voice_var.get()
+        target_language = self.target_language_var.get()
+        translation_enabled = self.translation_enabled_var.get()
+        tts_language = self.tts_language_var.get()
+        silence_threshold_ms = self.silence_threshold_var.get()
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
@@ -4027,6 +5705,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4043,6 +5723,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4054,6 +5736,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4063,9 +5747,26 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
+
+    def _get_current_effect_settings(self):
+        """Get current effect settings from UI for preview."""
+        return {
+            'effect_sharpness': self.effect_sharpness_var.get(),
+            'effect_sharpness_intensity': self.effect_sharpness_intensity_var.get(),
+            'effect_saturation': self.effect_saturation_var.get(),
+            'effect_saturation_intensity': self.effect_saturation_intensity_var.get(),
+            'effect_contrast': self.effect_contrast_var.get(),
+            'effect_contrast_intensity': self.effect_contrast_intensity_var.get(),
+            'effect_brightness': self.effect_brightness_var.get(),
+            'effect_brightness_intensity': self.effect_brightness_intensity_var.get(),
+            'effect_vintage': self.effect_vintage_var.get(),
+            'effect_vintage_intensity': self.effect_vintage_intensity_var.get()
+        }
 
     def _mini_update_worker_async(self):
         video = self.video_var.get().strip()
@@ -4091,6 +5792,16 @@ class App:
     def _mini_extract_and_update(self, video_path, time_val):
         try:
             img, scale = extract_and_scale_frame(video_path, time_sec=time_val, desired_width=360)
+            
+            # Apply video effects to preview
+            effect_settings = self._get_current_effect_settings()
+            if any([effect_settings.get('effect_sharpness', False),
+                    effect_settings.get('effect_saturation', False),
+                    effect_settings.get('effect_contrast', False),
+                    effect_settings.get('effect_brightness', False),
+                    effect_settings.get('effect_vintage', False)]):
+                img = apply_video_effects(img, effect_settings)
+            
             self.mini_base_img = img
             self.mini_scale = scale
             top_pct = float(self.top_percent_var.get())/100.0
@@ -4195,6 +5906,16 @@ class App:
                     new_w = desired_width
                     new_h = int(round(h * scale))
                     img = img.resize((new_w, new_h), Image.LANCZOS)
+                    
+                    # Apply video effects to preview
+                    effect_settings = self._get_current_effect_settings()
+                    if any([effect_settings.get('effect_sharpness', False),
+                            effect_settings.get('effect_saturation', False),
+                            effect_settings.get('effect_contrast', False),
+                            effect_settings.get('effect_brightness', False),
+                            effect_settings.get('effect_vintage', False)]):
+                        img = apply_video_effects(img, effect_settings)
+                    
                     top_pct = float(self.top_percent_var.get())/100.0
                     bottom_pct = float(self.bottom_percent_var.get())/100.0
                     composed = overlay_crop_on_image(img, top_pct, bottom_pct)
@@ -4295,6 +6016,8 @@ class App:
                 rgba = self._rgba_from_hex(col[1])
                 globals()['CAPTION_TEXT_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4311,6 +6034,8 @@ class App:
                     rgba = (rgba[0], rgba[1], rgba[2], 150)
                 globals()['CAPTION_STROKE_COLOR'] = rgba
                 self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
         except Exception as e:
             try:
                 self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
@@ -4322,6 +6047,8 @@ class App:
             rgba = self._rgba_from_hex(hx)
             globals()['CAPTION_TEXT_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4331,6 +6058,8 @@ class App:
             rgba = (rgba[0], rgba[1], rgba[2], 150)
             globals()['CAPTION_STROKE_COLOR'] = rgba
             self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
         except Exception:
             pass
 
@@ -4375,6 +6104,87 @@ class App:
                 pass
         except Exception:
             pass
+    
+    def on_zoom_changed(self, _=None):
+        """Called when zoom slider is moved"""
+        global VIDEO_ZOOM_SCALE
+        zoom = float(self.zoom_var.get())
+        VIDEO_ZOOM_SCALE = zoom
+        self.zoom_label.config(text=f"{zoom:.2f}x")
+        # Update TikTok preview when zoom changes
+        self.on_tiktok_preview_refresh()
+    
+    def on_tiktok_preview_refresh(self):
+        """Refresh the TikTok format preview with current settings"""
+        try:
+            if not self.video_var.get() or not os.path.isfile(self.video_var.get()):
+                return
+            
+            # Get current video path and time
+            video_path = self.video_var.get()
+            current_time = float(self.time_var.get())
+            
+            # Load video clip at current time
+            from moviepy.editor import VideoFileClip
+            video_clip = VideoFileClip(video_path)
+            
+            # Get frame at current time
+            if current_time > video_clip.duration:
+                current_time = 0.0
+            
+            frame = video_clip.get_frame(current_time)
+            video_clip.close()
+            
+            # Get crop settings
+            crop_top_ratio = float(self.top_percent_var.get()) / 100.0
+            crop_bottom_ratio = float(self.bottom_percent_var.get()) / 100.0
+            
+            # Calculate crop coordinates
+            img_h, img_w = frame.shape[:2]
+            crop_y = int(img_h * crop_top_ratio)
+            crop_h = int(img_h * (1.0 - crop_top_ratio - crop_bottom_ratio))
+            crop_x = 0
+            crop_w = img_w
+            
+            # Crop the frame
+            cropped_frame = frame[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
+            
+            # Apply zoom scaling
+            zoom = float(self.zoom_var.get())
+            scale_w = WIDTH / crop_w
+            fg_scale = scale_w * zoom
+            
+            # Scale the frame
+            scaled_h = int(crop_h * fg_scale)
+            scaled_w = int(crop_w * fg_scale)
+            
+            from PIL import Image
+            import numpy as np
+            
+            pil_img = Image.fromarray(cropped_frame)
+            pil_img = pil_img.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
+            
+            # Create 9:16 canvas (1080x1920 scaled down to 180x320)
+            canvas = Image.new('RGB', (WIDTH, HEIGHT), color=(20, 20, 20))
+            
+            # Center the scaled image on canvas
+            paste_x = (WIDTH - scaled_w) // 2
+            paste_y = (HEIGHT - scaled_h) // 2
+            canvas.paste(pil_img, (paste_x, paste_y))
+            
+            # Scale down to preview size (180x320)
+            preview_canvas = canvas.resize((180, 320), Image.Resampling.LANCZOS)
+            
+            # Display in TikTok preview canvas
+            photo = ImageTk.PhotoImage(preview_canvas)
+            self.tiktok_preview_canvas.delete("all")
+            self.tiktok_preview_canvas.create_image(90, 160, image=photo)
+            self.tiktok_preview_image_ref = photo  # Keep reference
+            
+        except Exception as e:
+            print(f"TikTok preview error: {e}")
+            import traceback
+            traceback.print_exc()
 
     def on_font_selected(self, event=None):
         try:
@@ -4472,6 +6282,322 @@ class App:
         except Exception as e:
             messagebox.showerror("Load failed", f"Could not load crop settings: {e}")
 
+    def save_preset(self):
+        """Save all current settings to a preset file."""
+        try:
+            preset_data = {
+                # File paths (optional - user might not want to save these)
+                "video_path": self.video_var.get(),
+                "voice_path": self.voice_var.get(),
+                "music_path": self.music_var.get(),
+                "output_path": self.output_var.get(),
+                
+                # Video settings
+                "mirror_video": self.mirror_video_var.get(),
+                "use_4k": self.use_4k_var.get(),
+                "use_custom_crop": self.use_custom_crop_var.get(),
+                "top_percent": self.top_percent_var.get(),
+                "bottom_percent": self.bottom_percent_var.get(),
+                
+                # Audio settings
+                "voice_gain": self.voice_gain_var.get(),
+                "music_gain": self.music_gain_var.get(),
+                
+                # Translation/TTS settings
+                "translation_enabled": self.translation_enabled_var.get(),
+                "target_language": self.target_language_var.get(),
+                "use_ai_voice": self.use_ai_voice_var.get(),
+                "tts_language": self.tts_language_var.get(),
+                "tts_voice": self.tts_voice_var.get(),
+                "silence_threshold": self.silence_threshold_var.get(),
+                
+                # Caption settings
+                "words_per_caption": self.words_per_caption_var.get(),
+                "caption_text_color": list(globals()['CAPTION_TEXT_COLOR']),
+                "caption_stroke_color": list(globals()['CAPTION_STROKE_COLOR']),
+                "caption_stroke_width": self.stroke_width_var.get(),
+                "caption_y_offset": self.caption_y_offset_var.get(),
+                
+                # Video effects
+                "effect_sharpness": self.effect_sharpness_var.get(),
+                "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
+                "effect_saturation": self.effect_saturation_var.get(),
+                "effect_saturation_intensity": self.effect_saturation_intensity_var.get(),
+                "effect_contrast": self.effect_contrast_var.get(),
+                "effect_contrast_intensity": self.effect_contrast_intensity_var.get(),
+                "effect_brightness": self.effect_brightness_var.get(),
+                "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
+                "effect_vintage": self.effect_vintage_var.get(),
+                "effect_vintage_intensity": self.effect_vintage_intensity_var.get(),
+                
+                # Background effects
+                "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
+                "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
+                "dim_factor": globals().get('DIM_FACTOR', 0.55),
+            }
+            
+            # Save to file
+            preset_file = Path.home() / ".tiktok_preset.json"
+            with open(preset_file, 'w', encoding='utf-8') as f:
+                json.dump(preset_data, f, indent=2)
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n💾 Settings preset saved to: {preset_file}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+            
+            messagebox.showinfo("Preset Saved", f"All settings saved successfully!\n\nLocation: {preset_file}")
+        except Exception as e:
+            messagebox.showerror("Save Failed", f"Could not save preset: {e}")
+
+    def load_preset(self):
+        """Load settings from preset file and apply them to the UI."""
+        preset_file = Path.home() / ".tiktok_preset.json"
+        
+        if not preset_file.exists():
+            messagebox.showwarning("No Preset", f"No preset file found at:\n{preset_file}\n\nSave a preset first!")
+            return
+        
+        try:
+            with open(preset_file, 'r', encoding='utf-8') as f:
+                preset_data = json.load(f)
+            
+            # Apply file paths (optional)
+            if preset_data.get("video_path"):
+                self.video_var.set(preset_data["video_path"])
+            if preset_data.get("voice_path"):
+                self.voice_var.set(preset_data["voice_path"])
+            if preset_data.get("music_path"):
+                self.music_var.set(preset_data["music_path"])
+            if preset_data.get("output_path"):
+                self.output_var.set(preset_data["output_path"])
+            
+            # Apply video settings
+            self.mirror_video_var.set(preset_data.get("mirror_video", False))
+            self.use_4k_var.set(preset_data.get("use_4k", False))
+            self.top_percent_var.set(preset_data.get("top_percent", CROP_TOP_RATIO*100))
+            self.bottom_percent_var.set(preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100))
+            self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+            self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            # Auto-enable custom crop if preset has non-default crop values
+            top_val = preset_data.get("top_percent", CROP_TOP_RATIO*100)
+            bottom_val = preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100)
+            if abs(top_val - CROP_TOP_RATIO*100) > 0.1 or abs(bottom_val - CROP_BOTTOM_RATIO*100) > 0.1:
+                self.use_custom_crop_var.set(True)
+            else:
+                self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
+            
+            # Apply audio settings
+            self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
+            self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            
+            # Apply translation/TTS settings
+            self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
+            self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
+            self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
+            self.silence_threshold_var.set(preset_data.get("silence_threshold", 300))
+            
+            # Apply caption settings
+            self.words_per_caption_var.set(preset_data.get("words_per_caption", 2))
+            if "caption_text_color" in preset_data:
+                globals()['CAPTION_TEXT_COLOR'] = tuple(preset_data["caption_text_color"])
+            if "caption_stroke_color" in preset_data:
+                globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
+            self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
+            self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            
+            # Apply video effects
+            self.effect_sharpness_var.set(preset_data.get("effect_sharpness", False))
+            self.effect_sharpness_intensity_var.set(preset_data.get("effect_sharpness_intensity", 1.5))
+            self.effect_saturation_var.set(preset_data.get("effect_saturation", False))
+            self.effect_saturation_intensity_var.set(preset_data.get("effect_saturation_intensity", 1.3))
+            self.effect_contrast_var.set(preset_data.get("effect_contrast", False))
+            self.effect_contrast_intensity_var.set(preset_data.get("effect_contrast_intensity", 1.2))
+            self.effect_brightness_var.set(preset_data.get("effect_brightness", False))
+            self.effect_brightness_intensity_var.set(preset_data.get("effect_brightness_intensity", 1.15))
+            self.effect_vintage_var.set(preset_data.get("effect_vintage", False))
+            self.effect_vintage_intensity_var.set(preset_data.get("effect_vintage_intensity", 0.3))
+            
+            # Apply background effects
+            globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
+            globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
+            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.55)
+            
+            # Update UI elements that show values
+            self._update_color_canvases()
+            self.update_mini_preview_immediate()
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n📂 Settings preset loaded from: {preset_file}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+            
+            messagebox.showinfo("Preset Loaded", "All settings loaded and applied successfully!")
+        except Exception as e:
+            messagebox.showerror("Load Failed", f"Could not load preset: {e}")
+
+    def load_preset_silent(self):
+        """Load settings from preset file silently (no popup messages) - used for auto-load on startup."""
+        preset_file = Path.home() / ".tiktok_preset.json"
+        
+        if not preset_file.exists():
+            return
+        
+        try:
+            with open(preset_file, 'r', encoding='utf-8') as f:
+                preset_data = json.load(f)
+            
+            # Apply file paths (optional)
+            if preset_data.get("video_path"):
+                self.video_var.set(preset_data["video_path"])
+            if preset_data.get("voice_path"):
+                self.voice_var.set(preset_data["voice_path"])
+            if preset_data.get("music_path"):
+                self.music_var.set(preset_data["music_path"])
+            if preset_data.get("output_path"):
+                self.output_var.set(preset_data["output_path"])
+            
+            # Apply video settings
+            self.mirror_video_var.set(preset_data.get("mirror_video", False))
+            self.use_4k_var.set(preset_data.get("use_4k", False))
+            self.top_percent_var.set(preset_data.get("top_percent", CROP_TOP_RATIO*100))
+            self.bottom_percent_var.set(preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100))
+            self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+            self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            # Auto-enable custom crop if preset has non-default crop values
+            top_val = preset_data.get("top_percent", CROP_TOP_RATIO*100)
+            bottom_val = preset_data.get("bottom_percent", CROP_BOTTOM_RATIO*100)
+            if abs(top_val - CROP_TOP_RATIO*100) > 0.1 or abs(bottom_val - CROP_BOTTOM_RATIO*100) > 0.1:
+                self.use_custom_crop_var.set(True)
+            else:
+                self.use_custom_crop_var.set(preset_data.get("use_custom_crop", False))
+            
+            # Apply audio settings
+            self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
+            self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            
+            # Apply translation/TTS settings
+            self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
+            self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
+            self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
+            self.silence_threshold_var.set(preset_data.get("silence_threshold", 300))
+            
+            # Apply caption settings
+            self.words_per_caption_var.set(preset_data.get("words_per_caption", 2))
+            if "caption_text_color" in preset_data:
+                globals()['CAPTION_TEXT_COLOR'] = tuple(preset_data["caption_text_color"])
+            if "caption_stroke_color" in preset_data:
+                globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
+            self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
+            self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            
+            # Apply video effects
+            self.effect_sharpness_var.set(preset_data.get("effect_sharpness", False))
+            self.effect_sharpness_intensity_var.set(preset_data.get("effect_sharpness_intensity", 1.5))
+            self.effect_saturation_var.set(preset_data.get("effect_saturation", False))
+            self.effect_saturation_intensity_var.set(preset_data.get("effect_saturation_intensity", 1.3))
+            self.effect_contrast_var.set(preset_data.get("effect_contrast", False))
+            self.effect_contrast_intensity_var.set(preset_data.get("effect_contrast_intensity", 1.2))
+            self.effect_brightness_var.set(preset_data.get("effect_brightness", False))
+            self.effect_brightness_intensity_var.set(preset_data.get("effect_brightness_intensity", 1.15))
+            self.effect_vintage_var.set(preset_data.get("effect_vintage", False))
+            self.effect_vintage_intensity_var.set(preset_data.get("effect_vintage_intensity", 0.3))
+            
+            # Apply background effects
+            globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
+            globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
+            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.55)
+            
+            # Update UI elements that show values
+            self._update_color_canvases()
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n📂 Auto-loaded preset from: {preset_file}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+        except Exception as e:
+            # Silently fail on auto-load
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, f"\n⚠️ Could not auto-load preset: {e}\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+
+    def reset_to_defaults(self):
+        """Reset all settings to their default values."""
+        result = messagebox.askyesno("Reset to Defaults", 
+                                      "This will reset ALL settings to their default values.\n\nAre you sure?")
+        if not result:
+            return
+        
+        try:
+            # Reset file paths
+            self.video_var.set("")
+            self.voice_var.set("")
+            self.music_var.set("")
+            self.output_var.set("final_tiktok.mp4")
+            
+            # Reset video settings
+            self.mirror_video_var.set(False)
+            self.use_4k_var.set(False)
+            self.use_custom_crop_var.set(False)
+            self.top_percent_var.set(CROP_TOP_RATIO*100)
+            self.bottom_percent_var.set(CROP_BOTTOM_RATIO*100)
+            self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+            self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+            
+            # Reset audio settings
+            self.voice_gain_var.set(VOICE_GAIN)
+            self.music_gain_var.set(MUSIC_GAIN)
+            
+            # Reset translation/TTS settings
+            self.translation_enabled_var.set(TRANSLATION_ENABLED)
+            self.target_language_var.set(TARGET_LANGUAGE)
+            self.use_ai_voice_var.set(USE_AI_VOICE_REPLACEMENT)
+            self.tts_language_var.set(TTS_LANGUAGE)
+            self.tts_voice_var.set('Auto (Default)')
+            self.silence_threshold_var.set(300)
+            
+            # Reset caption settings
+            self.words_per_caption_var.set(2)
+            globals()['CAPTION_TEXT_COLOR'] = (255, 255, 255, 255)
+            globals()['CAPTION_STROKE_COLOR'] = (0, 0, 0, 150)
+            self.stroke_width_var.set(max(1, int(CAPTION_FONT_SIZE * 0.05)))
+            self.caption_y_offset_var.set(0)
+            
+            # Reset video effects
+            self.effect_sharpness_var.set(False)
+            self.effect_sharpness_intensity_var.set(1.5)
+            self.effect_saturation_var.set(False)
+            self.effect_saturation_intensity_var.set(1.3)
+            self.effect_contrast_var.set(False)
+            self.effect_contrast_intensity_var.set(1.2)
+            self.effect_brightness_var.set(False)
+            self.effect_brightness_intensity_var.set(1.15)
+            self.effect_vintage_var.set(False)
+            self.effect_vintage_intensity_var.set(0.3)
+            
+            # Reset background effects
+            globals()['STATIC_BG_BLUR_RADIUS'] = 25
+            globals()['BG_SCALE_EXTRA'] = 1.08
+            globals()['DIM_FACTOR'] = 0.55
+            
+            # Update UI
+            self._update_color_canvases()
+            self.update_mini_preview_immediate()
+            
+            self.log_widget.config(state="normal")
+            self.log_widget.insert(tk.END, "\n🔄 All settings reset to defaults\n")
+            self.log_widget.config(state="disabled")
+            self.log_widget.see(tk.END)
+            
+            messagebox.showinfo("Reset Complete", "All settings have been reset to their default values.")
+        except Exception as e:
+            messagebox.showerror("Reset Failed", f"Could not reset settings: {e}")
+
     def poll_queue(self):
         try:
             while True:
@@ -4511,6 +6637,16 @@ class App:
 def main():
     root = tk.Tk()
     app = App(root)
+    
+    # Auto-load preset if it exists
+    preset_file = Path.home() / ".tiktok_preset.json"
+    if preset_file.exists():
+        try:
+            # Use root.after to load preset after UI is fully initialized
+            root.after(100, app.load_preset_silent)
+        except Exception:
+            pass  # Silently ignore errors during auto-load
+    
     root.mainloop()
 
 if __name__ == "__main__":
