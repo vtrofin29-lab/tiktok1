@@ -951,9 +951,59 @@ def find_font_file_recursive(preferred_name=None):
 
 LOADED_FONT = None
 LOADED_FONT_PATH = None
+LOADED_FONT_FAMILY = None  # Store the actual font family name for ASS subtitles
+
+def get_font_family_name(font_path):
+    """
+    Extract the actual font family name from a font file.
+    
+    Args:
+        font_path: Path to the font file (.ttf, .otf)
+        
+    Returns:
+        Font family name or None if extraction fails
+    """
+    try:
+        from fontTools.ttLib import TTFont
+        font = TTFont(font_path)
+        
+        # Look for the font family name in the name table
+        # Name ID 1 = Font Family name, Name ID 4 = Full font name
+        for name_record in font['name'].names:
+            # Platform 3 = Windows, Encoding 1 = Unicode BMP
+            # Platform 1 = Macintosh
+            if name_record.nameID == 1:  # Font Family name
+                try:
+                    name = name_record.toUnicode()
+                    if name:
+                        return name
+                except Exception:
+                    pass
+        
+        # Fallback: try nameID 4 (Full name)
+        for name_record in font['name'].names:
+            if name_record.nameID == 4:
+                try:
+                    name = name_record.toUnicode()
+                    if name:
+                        return name.split()[0]  # Take first word as family
+                except Exception:
+                    pass
+        
+        font.close()
+    except ImportError:
+        # fontTools not available, fall back to filename
+        pass
+    except Exception:
+        pass
+    
+    # Fallback: use filename without extension
+    if font_path:
+        return os.path.splitext(os.path.basename(font_path))[0]
+    return None
 
 def load_preferred_font_cached(preferred, size, log=None):
-    global LOADED_FONT, LOADED_FONT_PATH
+    global LOADED_FONT, LOADED_FONT_PATH, LOADED_FONT_FAMILY
     # If a font is already loaded and the preferred request matches the cached path/family, reuse it.
     try:
         if LOADED_FONT is not None:
@@ -1001,7 +1051,8 @@ def load_preferred_font_cached(preferred, size, log=None):
             try:
                 LOADED_FONT = ImageFont.truetype(preferred, size)
                 LOADED_FONT_PATH = os.path.abspath(preferred)
-                if log: log(f"[FONT] ✓ Loaded font from file: {LOADED_FONT_PATH}")
+                LOADED_FONT_FAMILY = get_font_family_name(preferred)
+                if log: log(f"[FONT] ✓ Loaded font from file: {LOADED_FONT_PATH} (family: {LOADED_FONT_FAMILY})")
                 return LOADED_FONT
             except Exception:
                 pass
@@ -1010,13 +1061,15 @@ def load_preferred_font_cached(preferred, size, log=None):
             try:
                 LOADED_FONT = ImageFont.truetype(found, size)
                 LOADED_FONT_PATH = found
-                if log: log(f"[FONT] ✓ Loaded font (searched): {found}")
+                LOADED_FONT_FAMILY = get_font_family_name(found)
+                if log: log(f"[FONT] ✓ Loaded font (searched): {found} (family: {LOADED_FONT_FAMILY})")
                 return LOADED_FONT
             except Exception:
                 pass
         try:
             LOADED_FONT = ImageFont.truetype(preferred, size)
             LOADED_FONT_PATH = f"family:{preferred}"
+            LOADED_FONT_FAMILY = preferred  # Family name was passed directly
             if log: log(f"[FONT] ✓ Loaded font by family name: {preferred}")
             return LOADED_FONT
         except Exception:
@@ -1026,13 +1079,15 @@ def load_preferred_font_cached(preferred, size, log=None):
         try:
             LOADED_FONT = ImageFont.truetype(found, size)
             LOADED_FONT_PATH = found
-            if log: log(f"[FONT] ✓ Loaded candidate font: {found}")
+            LOADED_FONT_FAMILY = get_font_family_name(found)
+            if log: log(f"[FONT] ✓ Loaded candidate font: {found} (family: {LOADED_FONT_FAMILY})")
             return LOADED_FONT
         except Exception:
             pass
     try:
         LOADED_FONT = ImageFont.truetype("DejaVuSans.ttf", size)
         LOADED_FONT_PATH = "DejaVuSans.ttf (fallback)"
+        LOADED_FONT_FAMILY = "DejaVu Sans"
         if log: log("[FONT] WARNING: Preferred font not found — using DejaVuSans.ttf fallback.")
         return LOADED_FONT
     except Exception:
@@ -1040,6 +1095,7 @@ def load_preferred_font_cached(preferred, size, log=None):
     if log: log("[FONT] WARNING: No TrueType fonts available. Using default bitmap font.")
     LOADED_FONT = ImageFont.load_default()
     LOADED_FONT_PATH = "default"
+    LOADED_FONT_FAMILY = None
     return LOADED_FONT
 
 def normalize_text(s: str) -> str:
@@ -1763,7 +1819,8 @@ def _rgba_to_hex(rgba_tuple):
 
 
 def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial", fontsize=56, 
-                                text_color_rgba=(255, 255, 0, 255), stroke_width=3):
+                                text_color_rgba=(255, 255, 0, 255), stroke_width=3,
+                                video_width=1080, video_height=1920):
     """
     Generate an ASS (Advanced SubStation Alpha) subtitle file for word-by-word captions.
     
@@ -1774,6 +1831,8 @@ def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial"
         fontsize: Font size in pixels
         text_color_rgba: Text color as RGBA tuple
         stroke_width: Outline/border width
+        video_width: Video width for PlayResX
+        video_height: Video height for PlayResY
         
     Returns:
         Path to generated ASS file
@@ -1793,8 +1852,8 @@ def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial"
 Title: Generated Subtitles
 ScriptType: v4.00+
 WrapStyle: 0
-PlayResX: 1080
-PlayResY: 1920
+PlayResX: {video_width}
+PlayResY: {video_height}
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
@@ -2150,10 +2209,25 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             temp_dir = tempfile.mkdtemp(prefix="tiktok_subtitles_")
             ass_subtitle_path = os.path.join(temp_dir, "captions.ass")
             
-            # Extract font name from font path
+            # Get font family name for ASS subtitle
+            # ASS files need the actual font family name, not the filename
             font_name = "Arial"  # Default
-            if font_path and os.path.exists(font_path):
-                font_name = os.path.splitext(os.path.basename(font_path))[0]
+            
+            # First try to get from global LOADED_FONT_FAMILY
+            loaded_family = globals().get('LOADED_FONT_FAMILY', None)
+            if loaded_family:
+                font_name = loaded_family
+                log_fn(f"[EXPORT] Using cached font family for ASS: {font_name}")
+            elif font_path and os.path.exists(font_path):
+                # Extract font family from font file
+                extracted_family = get_font_family_name(font_path)
+                if extracted_family:
+                    font_name = extracted_family
+                    log_fn(f"[EXPORT] Extracted font family from file: {font_name}")
+                else:
+                    # Fallback to filename without extension
+                    font_name = os.path.splitext(os.path.basename(font_path))[0]
+                    log_fn(f"[EXPORT] Using font filename as family: {font_name}")
             
             _generate_ass_subtitle_file(
                 caption_segments, 
@@ -2161,7 +2235,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 font_name=font_name,
                 fontsize=font_size,
                 text_color_rgba=text_color_rgba,
-                stroke_width=stroke_width
+                stroke_width=stroke_width,
+                video_width=video_width,
+                video_height=video_height
             )
             log_fn(f"[EXPORT] ASS subtitle file generated: {ass_subtitle_path}")
             caption_filters = None
