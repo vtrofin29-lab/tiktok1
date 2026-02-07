@@ -1891,7 +1891,7 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
 
 def _build_all_caption_filters(caption_segments, video_width, video_height, 
                                font_path=None, text_color="0xFFFFFF", 
-                               stroke_color="0x000000", stroke_width=3, words_per_line=None):
+                               stroke_color="0x000000", stroke_width=3, words_per_line=None, fontsize=56):
     """
     Build all caption drawtext filters and chain them together with custom styling.
     
@@ -1904,6 +1904,7 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
         stroke_color: Stroke color in hex format
         stroke_width: Stroke width in pixels
         words_per_line: Maximum words per line (optional)
+        fontsize: Font size in pixels
         
     Returns:
         Complete filter_complex string for all captions
@@ -1920,6 +1921,7 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
             end_time=segment['end'],
             video_width=video_width,
             video_height=video_height,
+            fontsize=fontsize,
             font_path=font_path,
             text_color=text_color,
             stroke_color=stroke_color,
@@ -2019,7 +2021,7 @@ def _build_ffmpeg_effect_filters(effect_settings, log_fn=None):
     return ""
 
 
-def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None):
+def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None):
     """
     Fast export using pure FFmpeg complex filters.
     2-3x faster than MoviePy's Python frame processing.
@@ -2036,6 +2038,12 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         effect_settings: Dictionary with video effect settings (sharpness, saturation, contrast, etc.)
         mirror_video: Whether to apply horizontal flip to the foreground video
         target_duration: Target duration for the final video (for speed adjustment)
+        preferred_font: Custom font path or name to use for captions
+        words_per_caption: Number of words per caption group
+        text_color_rgba: RGBA tuple for text color
+        stroke_color_rgba: RGBA tuple for stroke/border color
+        stroke_width: Width of text stroke in pixels
+        font_size: Font size in pixels
         
     Returns:
         True if successful, False otherwise
@@ -2049,21 +2057,44 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if target_duration:
             log_fn(f"[EXPORT] Target duration: {target_duration:.2f}s")
         
-        # Get current font and color settings from globals
+        # Use passed parameters, fall back to globals, then defaults
         try:
-            font_path = globals().get('LOADED_FONT_PATH', None)
-            text_color_rgba = globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255))
-            stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)
-            words_per_caption = globals().get('WORDS_PER_CAPTION', None)  # Get words per caption setting
+            # Font path - use passed preferred_font if it exists as a file, otherwise fall back to globals
+            font_path = None
+            if preferred_font and os.path.exists(preferred_font):
+                font_path = preferred_font
+            else:
+                # Fall back to loaded font path from globals
+                loaded_path = globals().get('LOADED_FONT_PATH', None)
+                if loaded_path and os.path.exists(str(loaded_path)):
+                    font_path = loaded_path
+            
+            # Text color - use passed value or default
+            if text_color_rgba is None:
+                text_color_rgba = globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255))
+            
+            # Stroke color - use passed value or default to black
+            if stroke_color_rgba is None:
+                stroke_color_rgba = globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 255))
+            
+            # Stroke width - use passed value or default
+            if stroke_width is None:
+                stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)
+            
+            # Font size - use passed value or default
+            if font_size is None:
+                font_size = globals().get('CAPTION_FONT_SIZE', 56)
             
             # Convert colors to hex for FFmpeg
             text_color_hex = _rgba_to_hex(text_color_rgba)
-            stroke_color_hex = "0x000000"  # Black stroke (can be made customizable later)
+            stroke_color_hex = _rgba_to_hex(stroke_color_rgba)
             
             if font_path:
                 log_fn(f"[EXPORT] Using custom font: {font_path}")
             log_fn(f"[EXPORT] Text color: {text_color_hex} (RGBA: {text_color_rgba})")
+            log_fn(f"[EXPORT] Stroke color: {stroke_color_hex}")
             log_fn(f"[EXPORT] Stroke width: {stroke_width}px")
+            log_fn(f"[EXPORT] Font size: {font_size}px")
             if words_per_caption:
                 log_fn(f"[EXPORT] Words per caption: {words_per_caption}")
         except Exception as e:
@@ -2072,7 +2103,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             text_color_hex = "0xFFFFFF"
             stroke_color_hex = "0x000000"
             stroke_width = 3
-            words_per_caption = None
+            font_size = 56
+            words_per_caption = 2
         
         # For many captions (>MAX_DRAWTEXT_CAPTIONS), use subtitle file approach to avoid command line length limits
         # Otherwise use drawtext filters for better compatibility
@@ -2095,7 +2127,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 caption_segments, 
                 ass_subtitle_path,
                 font_name=font_name,
-                fontsize=56,
+                fontsize=font_size,
                 text_color_rgba=text_color_rgba,
                 stroke_width=stroke_width
             )
@@ -2110,7 +2142,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 text_color=text_color_hex,
                 stroke_color=stroke_color_hex,
                 stroke_width=stroke_width,
-                words_per_line=words_per_caption  # Pass words per caption setting
+                words_per_line=words_per_caption,
+                fontsize=font_size
             )
         
         # Build video effect filters (to match MoviePy effects)
@@ -2627,7 +2660,13 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 log_fn=log,
                 effect_settings=effect_settings,
                 mirror_video=mirror_video,
-                target_duration=target_duration
+                target_duration=target_duration,
+                preferred_font=preferred_font,
+                words_per_caption=words_per_caption,
+                text_color_rgba=globals().get('CAPTION_TEXT_COLOR'),
+                stroke_color_rgba=globals().get('CAPTION_STROKE_COLOR'),
+                stroke_width=globals().get('CAPTION_STROKE_WIDTH'),
+                font_size=globals().get('CAPTION_FONT_SIZE')
             )
             
             if ffmpeg_export_successful:
