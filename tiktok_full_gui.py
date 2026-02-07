@@ -2202,7 +2202,18 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Use ass subtitle filter (burns subtitles into video)
             # Escape path for Windows
             escaped_ass_path = ass_subtitle_path.replace('\\', '/').replace(':', '\\:')
-            filter_chain = f"{fg_filter}overlay=x=(W-w)/2:y=(H-h)/2,ass='{escaped_ass_path}'"
+            
+            # If we have a custom font, specify the fonts directory so FFmpeg can find it
+            # The fontsdir option tells FFmpeg where to look for fonts used in the ASS file
+            if font_path and os.path.exists(font_path):
+                font_dir = os.path.dirname(font_path)
+                escaped_font_dir = font_dir.replace('\\', '/').replace(':', '\\:')
+                ass_filter = f"ass='{escaped_ass_path}':fontsdir='{escaped_font_dir}'"
+                log_fn(f"[EXPORT] ASS filter using font directory: {font_dir}")
+            else:
+                ass_filter = f"ass='{escaped_ass_path}'"
+            
+            filter_chain = f"{fg_filter}overlay=x=(W-w)/2:y=(H-h)/2,{ass_filter}"
         else:
             filter_chain = f"{fg_filter}overlay=x=(W-w)/2:y=(H-h)/2"
             if caption_filters:
@@ -3066,27 +3077,23 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         except Exception:
             min_scale_to_fit = 1.0
         
-        # Calculate scale with dynamic limits based on resolution mode
-        # In 4K mode, we need higher scale limits to maintain same zoom effect
-        is_4k = globals().get('IS_4K_MODE', False)
-        base_scale_factor = 1.03
-        max_scale_limit = 1.06
-        
         # Get user's zoom setting
         user_zoom = globals().get('VIDEO_ZOOM_SCALE', 1.0)
         
-        if is_4k:
-            # For 4K, double the scale factors to maintain same visual zoom
-            # This ensures the video is zoomed in properly to cover edges
-            fg_scale = max(1.0, min_scale_to_fit) * (base_scale_factor * 2.0)
-            fg_scale = min(fg_scale, max_scale_limit * 2.0)  # Allow up to 2.12x for 4K
-        else:
-            # HD mode - use original logic
-            fg_scale = max(1.0, min_scale_to_fit) * base_scale_factor
-            fg_scale = min(fg_scale, max_scale_limit)
+        # Calculate scale to fit video in canvas
+        # min_scale_to_fit ensures the video fills the canvas with no black bars
+        # The 1.03 base factor adds slight overflow to ensure no edges show
+        is_4k = globals().get('IS_4K_MODE', False)
+        base_scale_factor = 1.03
         
-        # Apply user's zoom factor (0.5x to 2.0x from slider)
-        fg_scale = fg_scale * user_zoom
+        # Calculate the scale needed to fit the video in the canvas
+        fit_scale = max(1.0, min_scale_to_fit) * base_scale_factor
+        
+        # Apply user's zoom factor directly - no capping
+        # User zoom of 1.08x means 8% larger than the auto-fit size
+        fg_scale = fit_scale * user_zoom
+        
+        log(f"[SCALE] min_scale_to_fit={min_scale_to_fit:.3f}, fit_scale={fit_scale:.3f}, user_zoom={user_zoom:.2f}, final={fg_scale:.3f}")
         
         scale_w = max(1, int(round(crop_w * fg_scale)))
         scale_h = max(1, int(round(crop_h * fg_scale)))
