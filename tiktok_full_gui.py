@@ -793,6 +793,9 @@ CAPTION_Y_OFFSET = 0  # Vertical offset in pixels (negative = move up, positive 
 TEMPLATE_WORDS = {1: 1, 2: 2, 3: 3}
 CAPTION_TEMPLATE = 2  # 1, 2 sau 3 cuvinte pe rand
 
+# Maximum captions for FFmpeg drawtext filters before switching to ASS subtitle file
+# (avoids command line length limits and improves performance with many captions)
+MAX_DRAWTEXT_CAPTIONS = 100
 
 REQUIRE_FONT_BANGERS = False
 
@@ -2071,9 +2074,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             stroke_width = 3
             words_per_caption = None
         
-        # For many captions (>100), use subtitle file approach to avoid command line length limits
+        # For many captions (>MAX_DRAWTEXT_CAPTIONS), use subtitle file approach to avoid command line length limits
         # Otherwise use drawtext filters for better compatibility
-        use_subtitle_file = len(caption_segments) > 100
+        use_subtitle_file = len(caption_segments) > MAX_DRAWTEXT_CAPTIONS
         ass_subtitle_path = None
         
         if use_subtitle_file:
@@ -2572,13 +2575,10 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     # Determine which caption data to use for FFmpeg
     captions_for_ffmpeg = caption_data_for_ffmpeg if caption_data_for_ffmpeg else caption_segments
     
-    # FFmpeg drawtext filters don't scale well with hundreds of captions
-    # If we have too many captions (>100), skip FFmpeg drawtext and use MoviePy overlay instead
-    MAX_FFMPEG_CAPTIONS = 100
-    if len(captions_for_ffmpeg) > MAX_FFMPEG_CAPTIONS:
-        log(f"[EXPORT] ⚠️ Too many captions ({len(captions_for_ffmpeg)}) for FFmpeg drawtext filters")
-        log(f"[EXPORT] Using MoviePy overlay with FFmpeg NVENC encoding instead (still fast)")
-        try_ffmpeg_export = False  # Skip FFmpeg drawtext, use MoviePy overlay + FFmpeg encoding
+    # Note: FFmpeg export handles many captions (>MAX_DRAWTEXT_CAPTIONS) via ASS subtitle files
+    # which is efficient and avoids command line length limits. No need to disable FFmpeg.
+    if len(captions_for_ffmpeg) > MAX_DRAWTEXT_CAPTIONS:
+        log(f"[EXPORT] Many captions detected ({len(captions_for_ffmpeg)}) - will use ASS subtitle file for efficient FFmpeg rendering")
     
     if try_ffmpeg_export:
         try:
