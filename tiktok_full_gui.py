@@ -2059,15 +2059,45 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Use passed parameters, fall back to globals, then defaults
         try:
-            # Font path - use passed preferred_font if it exists as a file, otherwise fall back to globals
+            # Font path - find actual font file path for FFmpeg
             font_path = None
+            
+            # First try the passed preferred_font if it exists as a file
             if preferred_font and os.path.exists(preferred_font):
                 font_path = preferred_font
+                log_fn(f"[EXPORT] Font: Using passed font file: {font_path}")
             else:
                 # Fall back to loaded font path from globals
                 loaded_path = globals().get('LOADED_FONT_PATH', None)
-                if loaded_path and os.path.exists(str(loaded_path)):
-                    font_path = loaded_path
+                if loaded_path:
+                    loaded_path_str = str(loaded_path)
+                    # Check if it's an actual file path
+                    if os.path.exists(loaded_path_str):
+                        font_path = loaded_path
+                        log_fn(f"[EXPORT] Font: Using cached font file: {font_path}")
+                    elif loaded_path_str.startswith("family:"):
+                        # Extract font name and search for the actual file
+                        font_name = loaded_path_str.replace("family:", "")
+                        log_fn(f"[EXPORT] Font: Searching for font by family name: {font_name}")
+                        found = find_font_file_recursive(font_name)
+                        if found:
+                            font_path = found
+                            log_fn(f"[EXPORT] Font: Found font file: {font_path}")
+                        else:
+                            log_fn(f"[EXPORT] Font: Could not find font file for '{font_name}', will use default")
+                    else:
+                        # Try to find font by name
+                        found = find_font_file_recursive(loaded_path_str)
+                        if found:
+                            font_path = found
+                            log_fn(f"[EXPORT] Font: Found font file by search: {font_path}")
+            
+            # If still no font, try the preferred_font name as a search
+            if not font_path and preferred_font:
+                found = find_font_file_recursive(preferred_font)
+                if found:
+                    font_path = found
+                    log_fn(f"[EXPORT] Font: Found font by preferred name search: {font_path}")
             
             # Text color - use passed value or default
             if text_color_rgba is None:
@@ -2091,6 +2121,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             
             if font_path:
                 log_fn(f"[EXPORT] Using custom font: {font_path}")
+            else:
+                log_fn(f"[EXPORT] Using default FFmpeg font (no custom font found)")
             log_fn(f"[EXPORT] Text color: {text_color_hex} (RGBA: {text_color_rgba})")
             log_fn(f"[EXPORT] Stroke color: {stroke_color_hex}")
             log_fn(f"[EXPORT] Stroke width: {stroke_width}px")
@@ -2183,6 +2215,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Label the filter output for mapping
         filter_chain += "[vout]"
+        
+        # Log input information for debugging
+        log_fn(f"[EXPORT] Background: {bg_path}")
+        log_fn(f"[EXPORT] Foreground: {fg_path}")
+        log_fn(f"[EXPORT] Audio: {audio_path}")
+        log_fn(f"[EXPORT] Output: {output_path} ({video_width}x{video_height})")
+        log_fn(f"[EXPORT] Filter chain: {filter_chain[:200]}...")
         
         # Build FFmpeg command
         cmd = [
