@@ -2213,21 +2213,24 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # ASS files need the actual font family name, not the filename
             font_name = "Arial"  # Default
             
-            # First try to get from global LOADED_FONT_FAMILY
-            loaded_family = globals().get('LOADED_FONT_FAMILY', None)
-            if loaded_family:
-                font_name = loaded_family
-                log_fn(f"[EXPORT] Using cached font family for ASS: {font_name}")
-            elif font_path and os.path.exists(font_path):
+            # ALWAYS extract font family from the actual font file being used
+            # This ensures we use the correct font even if LOADED_FONT_FAMILY is stale
+            if font_path and os.path.exists(font_path):
                 # Extract font family from font file
                 extracted_family = get_font_family_name(font_path)
                 if extracted_family:
                     font_name = extracted_family
-                    log_fn(f"[EXPORT] Extracted font family from file: {font_name}")
+                    log_fn(f"[EXPORT] Extracted font family from {os.path.basename(font_path)}: {font_name}")
                 else:
                     # Fallback to filename without extension
                     font_name = os.path.splitext(os.path.basename(font_path))[0]
                     log_fn(f"[EXPORT] Using font filename as family: {font_name}")
+            else:
+                # Fallback: try to get from global LOADED_FONT_FAMILY
+                loaded_family = globals().get('LOADED_FONT_FAMILY', None)
+                if loaded_family:
+                    font_name = loaded_family
+                    log_fn(f"[EXPORT] Using cached font family for ASS: {font_name}")
             
             _generate_ass_subtitle_file(
                 caption_segments, 
