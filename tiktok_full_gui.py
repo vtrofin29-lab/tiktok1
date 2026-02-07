@@ -2991,7 +2991,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, preferred_font=preferred_font, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration)
     finally:
         try:
             if preferred_font and old is not None:
