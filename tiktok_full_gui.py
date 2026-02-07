@@ -2016,7 +2016,7 @@ def _build_ffmpeg_effect_filters(effect_settings, log_fn=None):
     return ""
 
 
-def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None):
+def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None):
     """
     Fast export using pure FFmpeg complex filters.
     2-3x faster than MoviePy's Python frame processing.
@@ -2031,6 +2031,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         video_height: Video height
         log_fn: Logging function
         effect_settings: Dictionary with video effect settings (sharpness, saturation, contrast, etc.)
+        mirror_video: Whether to apply horizontal flip to the foreground video
+        target_duration: Target duration for the final video (for speed adjustment)
         
     Returns:
         True if successful, False otherwise
@@ -2039,6 +2041,10 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         log_fn("[EXPORT] ═══════════════════════════════════════════════════")
         log_fn("[EXPORT] Using fast FFmpeg filter-based export...")
         log_fn(f"[EXPORT] Building filter chain for {len(caption_segments)} caption segments...")
+        if mirror_video:
+            log_fn("[EXPORT] Mirror/flip: enabled")
+        if target_duration:
+            log_fn(f"[EXPORT] Target duration: {target_duration:.2f}s")
         
         # Get current font and color settings from globals
         try:
@@ -2110,13 +2116,27 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Build complete filter chain
         # [0:v] = background, [1:v] = foreground
         # Overlay foreground on background centered (x=(W-w)/2) to fill width and crop equally from both sides
+        
+        # Build foreground filter chain (apply mirror if needed)
+        # Note: When mirroring, we use a labeled intermediate output [fg_flipped]
+        # When not mirroring, we directly combine [0:v] and [1:v] in the overlay filter
+        # Both approaches work correctly - the mirrored case needs the semicolon to chain filters
+        if mirror_video:
+            # First apply hflip to foreground [1:v], output as [fg_flipped]
+            # Then overlay [fg_flipped] on background [0:v]
+            fg_filter = "[1:v]hflip[fg_flipped];[0:v][fg_flipped]"
+            log_fn("[EXPORT] ✓ Mirror/flip filter added")
+        else:
+            # No pre-processing needed, directly overlay foreground [1:v] on background [0:v]
+            fg_filter = "[0:v][1:v]"
+        
         if use_subtitle_file and ass_subtitle_path:
             # Use ass subtitle filter (burns subtitles into video)
             # Escape path for Windows
             escaped_ass_path = ass_subtitle_path.replace('\\', '/').replace(':', '\\:')
-            filter_chain = f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2,ass='{escaped_ass_path}'"
+            filter_chain = f"{fg_filter}overlay=x=(W-w)/2:y=(H-h)/2,ass='{escaped_ass_path}'"
         else:
-            filter_chain = f"[0:v][1:v]overlay=x=(W-w)/2:y=(H-h)/2"
+            filter_chain = f"{fg_filter}overlay=x=(W-w)/2:y=(H-h)/2"
             if caption_filters:
                 filter_chain += "," + caption_filters
         
@@ -2169,7 +2189,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         ])
         
         log_fn("[EXPORT] Executing FFmpeg command...")
-        log_fn(f"[EXPORT] Command: {' '.join(cmd[:15])}...")
+        log_fn(f"[EXPORT] Full command: {' '.join(cmd)}")
         
         # Run FFmpeg
         result = subprocess.run(
@@ -2184,13 +2204,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             return True
         else:
             log_fn(f"[EXPORT] ❌ FFmpeg failed with return code {result.returncode}")
-            log_fn(f"[EXPORT] Error: {result.stderr[:500]}")
+            log_fn(f"[EXPORT] FFmpeg stderr output:")
+            log_fn(f"{result.stderr[-1500:]}")  # Show last 1500 chars of error
             return False
             
     except Exception as e:
         log_fn(f"[EXPORT] ❌ FFmpeg export exception: {e}")
         import traceback
-        log_fn(f"[EXPORT] Traceback: {traceback.format_exc()[:500]}")
+        log_fn(f"[EXPORT] Traceback: {traceback.format_exc()}")
         return False
 
 
@@ -2266,7 +2287,7 @@ def apply_video_effects(frame, effect_settings):
         return np.array(img)
     return img
 
-def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None):
+def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None):
     """
     Compose final video with blurred background and caption overlays.
     
@@ -2276,6 +2297,11 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     - Added logging for caption composition errors
     - Verified caption layer creation and positioning
     - Ensured captions are properly composited onto final video
+    
+    Args:
+        pre_rendered_fg_path: Optional path to pre-rendered foreground video for fast FFmpeg export
+        mirror_video: Whether to apply horizontal flip to the video
+        target_duration: Target duration for the final video (for speed adjustment in FFmpeg)
     """
     try:
         log("Composing final video (with monitored export).")
@@ -2284,6 +2310,12 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     
     try:
         log(f"[compose] Starting composition with {len(caption_segments)} caption segments")
+        if pre_rendered_fg_path:
+            log(f"[compose] Pre-rendered foreground available: {pre_rendered_fg_path}")
+        if mirror_video:
+            log(f"[compose] Mirror video: enabled")
+        if target_duration:
+            log(f"[compose] Target duration: {target_duration:.2f}s")
     except Exception:
         pass
     
@@ -2568,16 +2600,19 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             audio_clip.write_audiofile(audio_temp_path, fps=44100, codec='mp3', verbose=False, logger=None)
             log(f"[EXPORT] Audio saved to: {audio_temp_path}")
             
-            # Get foreground video path (should be from pre-rendered temp file)
-            # If fg has a filename attribute, use it; otherwise we need to save it
+            # Get foreground video path - use pre-rendered path if available
             fg_video_path = None
-            if hasattr(fg, 'filename') and fg.filename:
-                fg_video_path = fg.filename
+            if pre_rendered_fg_path and os.path.exists(pre_rendered_fg_path):
+                fg_video_path = pre_rendered_fg_path
                 log(f"[EXPORT] Using pre-rendered foreground: {fg_video_path}")
+            elif hasattr(fg, 'filename') and fg.filename and os.path.exists(fg.filename):
+                fg_video_path = fg.filename
+                log(f"[EXPORT] Using foreground from clip: {fg_video_path}")
             else:
-                # Need to save foreground video first
+                # Need to save foreground video first (slow path - shows MoviePy progress)
                 fg_video_path = os.path.join(temp_dir, "foreground.mp4")
-                log(f"[EXPORT] Saving foreground video to: {fg_video_path}")
+                log(f"[EXPORT] ⚠️ No pre-rendered foreground - saving via MoviePy: {fg_video_path}")
+                log(f"[EXPORT] (This may show a progress bar - consider using pre-render)")
                 fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
             
             # Try FFmpeg export with word-by-word caption data
@@ -2590,7 +2625,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 video_width=WIDTH,
                 video_height=HEIGHT,
                 log_fn=log,
-                effect_settings=effect_settings  # Pass effect settings to FFmpeg export
+                effect_settings=effect_settings,
+                mirror_video=mirror_video,
+                target_duration=target_duration
             )
             
             if ffmpeg_export_successful:
@@ -2610,7 +2647,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             log(f"[EXPORT] ⚠️ FFmpeg export exception: {e}")
             log("[EXPORT] Falling back to MoviePy export...")
             import traceback
-            log(f"[EXPORT] Traceback: {traceback.format_exc()[:500]}")
+            log(f"[EXPORT] Traceback: {traceback.format_exc()}")
     
     # Fallback to MoviePy export (original code)
     if not ffmpeg_export_successful:
@@ -2775,7 +2812,7 @@ def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bott
     log(f"Crop done. Cropped size: {cropped_video.size}, duration: {cropped_video.duration:.2f}s")
     return cropped_video
 
-def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None):
+def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None):
     """Helper to temporarily override global CAPTION_FONT_PREFERRED for the duration of compose."""
     old = globals().get('CAPTION_FONT_PREFERRED')
     try:
@@ -2786,7 +2823,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration)
     finally:
         try:
             if preferred_font and old is not None:
@@ -3211,10 +3248,20 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         log(f"[FINAL COMPOSITION] Video duration: {synced_video.duration:.2f}s")
         log(f"[FINAL COMPOSITION] Audio duration: {mixed_audio.duration:.2f}s")
         log(f"[FINAL COMPOSITION] Caption segments: {len(caption_segments)}")
+        if temp_fg and os.path.exists(temp_fg):
+            log(f"[FINAL COMPOSITION] Pre-rendered foreground: {temp_fg}")
         log("━"*60)
         log("")
         
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings)
+        # Pass mirror_video and target_duration for FFmpeg export optimization
+        # Calculate target duration from audio or video, with fallback
+        target_duration = None
+        if mixed_audio and hasattr(mixed_audio, 'duration') and mixed_audio.duration:
+            target_duration = mixed_audio.duration
+        elif synced_video and hasattr(synced_video, 'duration') and synced_video.duration:
+            target_duration = synced_video.duration
+        
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
