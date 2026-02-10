@@ -62,6 +62,42 @@ def find_ttf_in_tiktok(font_name, search_root=r"C:\tiktok"):
         return None
 
 
+def validate_font_path_matches_name(font_path, font_name):
+    """
+    Check if a font file path corresponds to the expected font name.
+    Returns True if the path matches the font name (case-insensitive).
+    This prevents stale font paths from being used when user changes fonts.
+    """
+    if not font_path or not font_name:
+        return False
+    try:
+        import re, os
+        font_name_norm = re.sub(r'[^a-z0-9]', '', font_name.lower())
+        path_basename = os.path.basename(font_path).lower()
+        path_name_norm = re.sub(r'[^a-z0-9]', '', os.path.splitext(path_basename)[0])
+        return font_name_norm in path_name_norm or path_name_norm in font_name_norm
+    except Exception:
+        return False
+
+
+def get_validated_font(selected_font_name, selected_font_path):
+    """
+    Get the correct font identifier to use, validating that path matches name.
+    Returns font path if it matches the font name, otherwise returns the font name.
+    """
+    if selected_font_path and selected_font_name:
+        if validate_font_path_matches_name(selected_font_path, selected_font_name):
+            return selected_font_path
+        else:
+            # Mismatch - path is from old font. Use font name for search.
+            return selected_font_name
+    elif selected_font_path:
+        return selected_font_path
+    elif selected_font_name:
+        return selected_font_name
+    return None
+
+
 import sys
 import threading
 import queue
@@ -4996,10 +5032,9 @@ class App:
                         # determine preferred font: prefer selected_font_path (ttf path) else selected_font family name
             pf = None
             try:
-                if getattr(self, 'selected_font_path', None):
-                    pf = self.selected_font_path
-                elif getattr(self, 'selected_font', None):
-                    pf = self.selected_font
+                selected_font_name = getattr(self, 'selected_font', None)
+                selected_font_path = getattr(self, 'selected_font_path', None)
+                pf = get_validated_font(selected_font_name, selected_font_path)
             except Exception:
                 pf = None
             img_obj = generate_caption_image(preview_text, preferred_font=pf, log=lambda s: None)
@@ -5379,11 +5414,9 @@ class App:
                 return
             # preferred font: prefer selected_font_path (.ttf) else selected_font family name
             try:
-                pref_font = None
-                if getattr(self, 'selected_font_path', None):
-                    pref_font = self.selected_font_path
-                elif getattr(self, 'selected_font', None):
-                    pref_font = self.selected_font
+                selected_font_name = getattr(self, 'selected_font', None)
+                selected_font_path = getattr(self, 'selected_font_path', None)
+                pref_font = get_validated_font(selected_font_name, selected_font_path)
             except Exception:
                 pref_font = None
             
@@ -5603,11 +5636,9 @@ class App:
                 messagebox.showwarning("Missing fields", "Please select VIDEO and MUSIC before running.")
                 return
             try:
-                pref_font = None
-                if getattr(self, 'selected_font_path', None):
-                    pref_font = self.selected_font_path
-                elif getattr(self, 'selected_font', None):
-                    pref_font = self.selected_font
+                selected_font_name = getattr(self, 'selected_font', None)
+                selected_font_path = getattr(self, 'selected_font_path', None)
+                pref_font = get_validated_font(selected_font_name, selected_font_path)
             except Exception:
                 pref_font = None
             # create a queue for logs and start the job in a worker thread
@@ -6223,7 +6254,10 @@ class App:
                 sel = w.get(w.curselection()[0])
         
             if sel:
+                # IMMEDIATELY clear old font path to prevent stale values
+                self.selected_font_path = None
                 self.selected_font = sel
+                
                 try:
                     fnt = tkfont.Font(family=sel, size=16)
                     self.font_preview.config(font=fnt)
@@ -6232,17 +6266,25 @@ class App:
                         self.font_preview.config(font=(sel, 14))
                     except Exception:
                         pass
+                
                 # try to find a matching .ttf in C:\tiktok and store path
                 try:
                     found = find_ttf_in_tiktok(sel, search_root=os.path.normpath("C:\\tiktok"))
                     if found:
                         self.selected_font_path = found
+                        # Also update the global LOADED_FONT_PATH to match
+                        globals()['LOADED_FONT_PATH'] = found
                         try:
                             self.saved_font_label.config(text=f"Found TTF: {os.path.basename(found)}")
                         except Exception:
                             pass
                     else:
+                        # Font not found in C:\tiktok - use font name for downstream search
                         self.selected_font_path = None
+                        try:
+                            self.saved_font_label.config(text=f"Will search for: {sel}")
+                        except Exception:
+                            pass
                 except Exception:
                     self.selected_font_path = None
 
