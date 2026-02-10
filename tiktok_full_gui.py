@@ -806,6 +806,8 @@ CREATED_OUTPUTS = set()
 # ----------------- FONT / DIACRITICS / UTIL -----------------
 FONT_CANDIDATES = ["Bangers-Regular.ttf", "Bangers.ttf", "bangers.ttf", "Bangers.otf", "Bangers-Regular.otf"]
 
+# Custom font directory (can be set via environment variable TIKTOK_FONT_DIR)
+CUSTOM_FONT_ROOT = os.environ.get("TIKTOK_FONT_DIR", r"C:\tiktok")
 
 
 # --- Custom dark CanvasSlider widget ---
@@ -916,6 +918,9 @@ def _common_font_dirs():
     if os.name == "nt":
         windir = os.environ.get("WINDIR", r"C:\Windows")
         dirs.append(os.path.join(windir, "Fonts"))
+        # Add custom font directory for user fonts
+        dirs.append(CUSTOM_FONT_ROOT)
+        dirs.append(os.path.join(CUSTOM_FONT_ROOT, "fonts"))
     else:
         dirs += ["/usr/share/fonts", "/usr/share/fonts/truetype", "/usr/local/share/fonts", "/Library/Fonts", "/System/Library/Fonts"]
     return dirs
@@ -2121,15 +2126,39 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Font path - find actual font file path for FFmpeg
             font_path = None
             
-            # First try the passed preferred_font if it exists as a file
-            if preferred_font and os.path.exists(preferred_font):
-                font_path = preferred_font
-                log_fn(f"[EXPORT] Font: Using passed font file: {font_path}")
-            else:
-                # Fall back to loaded font path from globals
+            # Priority 1: Try the passed preferred_font
+            if preferred_font:
+                log_fn(f"[EXPORT] Font: Received preferred_font = '{preferred_font}'")
+                
+                # Check if it's already a valid file path
+                if os.path.exists(preferred_font):
+                    font_path = preferred_font
+                    log_fn(f"[EXPORT] Font: Using passed font file: {font_path}")
+                else:
+                    # It's a font name, search for the font file
+                    # Try find_ttf_in_tiktok first (searches custom font directory)
+                    found = None
+                    try:
+                        found = find_ttf_in_tiktok(preferred_font, search_root=CUSTOM_FONT_ROOT)
+                    except Exception as e:
+                        log_fn(f"[EXPORT] Font: find_ttf_in_tiktok error: {e}")
+                    
+                    if not found:
+                        # Fallback to general font search
+                        found = find_font_file_recursive(preferred_font)
+                    
+                    if found:
+                        font_path = found
+                        log_fn(f"[EXPORT] Font: Found font by search: {font_path}")
+                    else:
+                        log_fn(f"[EXPORT] Font: Could not find file for '{preferred_font}'")
+            
+            # Priority 2: Fall back to LOADED_FONT_PATH if preferred_font didn't work
+            if not font_path:
                 loaded_path = globals().get('LOADED_FONT_PATH', None)
                 if loaded_path:
                     loaded_path_str = str(loaded_path)
+                    log_fn(f"[EXPORT] Font: Falling back to LOADED_FONT_PATH = '{loaded_path_str}'")
                     # Check if it's an actual file path
                     if os.path.exists(loaded_path_str):
                         font_path = loaded_path
@@ -2138,7 +2167,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                         # Extract font name and search for the actual file
                         font_name = loaded_path_str.replace("family:", "")
                         log_fn(f"[EXPORT] Font: Searching for font by family name: {font_name}")
-                        found = find_font_file_recursive(font_name)
+                        # Try find_ttf_in_tiktok first
+                        found = None
+                        try:
+                            found = find_ttf_in_tiktok(font_name, search_root=CUSTOM_FONT_ROOT)
+                        except Exception as e:
+                            log_fn(f"[EXPORT] Font: find_ttf_in_tiktok error: {e}")
+                        if not found:
+                            found = find_font_file_recursive(font_name)
                         if found:
                             font_path = found
                             log_fn(f"[EXPORT] Font: Found font file: {font_path}")
@@ -2150,13 +2186,6 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                         if found:
                             font_path = found
                             log_fn(f"[EXPORT] Font: Found font file by search: {font_path}")
-            
-            # If still no font, try the preferred_font name as a search
-            if not font_path and preferred_font:
-                found = find_font_file_recursive(preferred_font)
-                if found:
-                    font_path = found
-                    log_fn(f"[EXPORT] Font: Found font by preferred name search: {font_path}")
             
             # Text color - use passed value or default
             if text_color_rgba is None:
