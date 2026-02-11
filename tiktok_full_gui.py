@@ -2000,7 +2000,7 @@ def _rgba_to_hex(rgba_tuple):
 
 def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial", fontsize=56, 
                                 text_color_rgba=(255, 255, 0, 255), stroke_width=3,
-                                video_width=1080, video_height=1920):
+                                video_width=1080, video_height=1920, y_offset=0, log_fn=None):
     """
     Generate an ASS (Advanced SubStation Alpha) subtitle file for word-by-word captions.
     
@@ -2013,6 +2013,8 @@ def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial"
         stroke_width: Outline/border width
         video_width: Video width for PlayResX
         video_height: Video height for PlayResY
+        y_offset: Vertical offset in pixels (negative = move up, positive = move down)
+        log_fn: Optional logging function
         
     Returns:
         Path to generated ASS file
@@ -2027,6 +2029,19 @@ def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial"
     text_color_ass = f"&H{alpha_hex}{b:02X}{g:02X}{r:02X}"
     outline_color_ass = "&H00000000"  # Black outline, fully opaque
     
+    # Calculate MarginV from y_offset
+    # y_offset is negative when moving up from bottom, positive when moving down
+    # In ASS, MarginV is the margin from bottom edge
+    # y_offset = -100 means 100px up from default position, so MarginV needs to increase
+    # Base margin is 150px
+    base_margin = 150
+    # When y_offset is negative (moving up), we ADD to margin (increase distance from bottom)
+    # When y_offset is positive (moving down), we SUBTRACT from margin (decrease distance from bottom)
+    margin_v = max(0, base_margin - y_offset)  # Invert: negative y_offset adds to margin
+    
+    if log_fn:
+        log_fn(f"[ASS] Caption Y offset: {y_offset}px → MarginV: {margin_v}px")
+    
     # ASS file header
     ass_content = f"""[Script Info]
 Title: Generated Subtitles
@@ -2038,7 +2053,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font_name},{fontsize},{text_color_ass},&H00FFFFFF,{outline_color_ass},&H00000000,0,0,0,0,100,100,0,0,1,{stroke_width},0,2,10,10,150,1
+Style: Default,{font_name},{fontsize},{text_color_ass},&H00FFFFFF,{outline_color_ass},&H00000000,0,0,0,0,100,100,0,0,1,{stroke_width},0,2,10,10,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -2436,6 +2451,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                     font_name = loaded_family
                     log_fn(f"[EXPORT] Using cached font family for ASS: {font_name}")
             
+            # Get caption Y offset from global
+            caption_y_offset = globals().get('CAPTION_Y_OFFSET', 0)
+            
             _generate_ass_subtitle_file(
                 caption_segments, 
                 ass_subtitle_path,
@@ -2444,7 +2462,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 text_color_rgba=text_color_rgba,
                 stroke_width=stroke_width,
                 video_width=video_width,
-                video_height=video_height
+                video_height=video_height,
+                y_offset=caption_y_offset,
+                log_fn=log_fn
             )
             log_fn(f"[EXPORT] ASS subtitle file generated: {ass_subtitle_path}")
             caption_filters = None
