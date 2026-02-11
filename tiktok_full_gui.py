@@ -994,6 +994,13 @@ LOADED_FONT = None
 LOADED_FONT_PATH = None
 LOADED_FONT_FAMILY = None  # Store the actual font family name for ASS subtitles
 
+def clear_font_cache():
+    """Clear the global font cache. Call when user selects a new font."""
+    global LOADED_FONT, LOADED_FONT_PATH, LOADED_FONT_FAMILY
+    LOADED_FONT = None
+    LOADED_FONT_PATH = None
+    LOADED_FONT_FAMILY = None
+
 def get_font_family_name(font_path):
     """
     Extract the actual font family name from a font file.
@@ -5420,11 +5427,14 @@ class App:
             except Exception:
                 pref_font = None
             
-            # Log crop settings for debugging
+            # Log crop and font settings for debugging
             use_custom = self.use_custom_crop_var.get()
             top_val = self.top_percent_var.get()
             bottom_val = self.bottom_percent_var.get()
             self.log_to_console(f"\n[DEBUG JOB] Creating job with:")
+            self.log_to_console(f"[DEBUG JOB] Selected font name: {selected_font_name}")
+            self.log_to_console(f"[DEBUG JOB] Selected font path: {selected_font_path}")
+            self.log_to_console(f"[DEBUG JOB] Validated font (will use): {pref_font}")
             self.log_to_console(f"[DEBUG JOB] Use custom crop checkbox: {use_custom}")
             self.log_to_console(f"[DEBUG JOB] Top percent: {top_val}")
             self.log_to_console(f"[DEBUG JOB] Bottom percent: {bottom_val}")
@@ -5639,6 +5649,14 @@ class App:
                 selected_font_name = getattr(self, 'selected_font', None)
                 selected_font_path = getattr(self, 'selected_font_path', None)
                 pref_font = get_validated_font(selected_font_name, selected_font_path)
+                # Log font being used
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[FONT DEBUG] selected_font={selected_font_name}, selected_font_path={selected_font_path}, using={pref_font}\n")
+                    self.log_widget.see('end')
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
             except Exception:
                 pref_font = None
             # create a queue for logs and start the job in a worker thread
@@ -6254,9 +6272,11 @@ class App:
                 sel = w.get(w.curselection()[0])
         
             if sel:
-                # IMMEDIATELY clear old font path to prevent stale values
+                # IMMEDIATELY clear ALL old font data to prevent stale values
                 self.selected_font_path = None
                 self.selected_font = sel
+                # Clear global font cache so export uses the new font
+                clear_font_cache()
                 
                 try:
                     fnt = tkfont.Font(family=sel, size=16)
