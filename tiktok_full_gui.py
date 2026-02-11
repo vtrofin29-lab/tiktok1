@@ -2031,13 +2031,23 @@ def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial"
     
     # Calculate MarginV from y_offset
     # y_offset is negative when moving up from bottom, positive when moving down
-    # In ASS, MarginV is the margin from bottom edge
-    # y_offset = -100 means 100px up from default position, so MarginV needs to increase
-    # Base margin is 150px
-    base_margin = 150
-    # When y_offset is negative (moving up), we ADD to margin (increase distance from bottom)
-    # When y_offset is positive (moving down), we SUBTRACT from margin (decrease distance from bottom)
-    margin_v = max(0, base_margin - y_offset)  # Invert: negative y_offset adds to margin
+    # In ASS, MarginV is the margin from bottom edge (where Alignment=2 positions from)
+    # 
+    # MoviePy uses: y = HEIGHT - img_clip.h + y_offset
+    #   y_offset = -618 → caption is 618px UP from bottom
+    #   y_offset = 0    → caption is at bottom
+    #   y_offset = +100 → caption is 100px BELOW bottom (off-screen)
+    #
+    # For ASS with Alignment=2 (bottom center):
+    #   MarginV = 0   → text at very bottom
+    #   MarginV = 618 → text 618px up from bottom
+    #
+    # So: MarginV = abs(y_offset) when y_offset is negative
+    #     MarginV = 0 when y_offset >= 0 (at or below bottom)
+    if y_offset < 0:
+        margin_v = abs(y_offset)
+    else:
+        margin_v = 0  # At bottom or below (clip to bottom)
     
     if log_fn:
         log_fn(f"[ASS] Caption Y offset: {y_offset}px → MarginV: {margin_v}px")
