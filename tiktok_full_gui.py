@@ -782,6 +782,98 @@ MUSIC_GAIN = 0.15  # Default: 0.15x quieter for subtle background music
 CAPTION_FONT_PREFERRED = "Bangers"
 CAPTION_FONT_SIZE = 56
 
+# Mapping of font filenames to proper font family names (for when fontTools is unavailable)
+# This allows FFmpeg ASS subtitles to use correct font family without fontTools dependency
+FONT_FILENAME_TO_FAMILY = {
+    # Arial variants
+    "arial-black": "Arial Black",
+    "arialblack": "Arial Black",
+    "arial_black": "Arial Black",
+    "arialbl": "Arial Black",
+    "ariblk": "Arial Black",
+    "arial": "Arial",
+    "arialbd": "Arial",
+    "ariali": "Arial",
+    "arialbi": "Arial",
+    # Bangers
+    "bangers": "Bangers",
+    "bangers-regular": "Bangers",
+    # Impact
+    "impact": "Impact",
+    # Comic Sans
+    "comic": "Comic Sans MS",
+    "comicsans": "Comic Sans MS",
+    "comicsansms": "Comic Sans MS",
+    # Times New Roman
+    "times": "Times New Roman",
+    "timesnewroman": "Times New Roman",
+    "timesbd": "Times New Roman",
+    "timesi": "Times New Roman",
+    # Courier New
+    "cour": "Courier New",
+    "courier": "Courier New",
+    "couriernew": "Courier New",
+    # Verdana
+    "verdana": "Verdana",
+    "verdanab": "Verdana",
+    "verdanai": "Verdana",
+    # Georgia
+    "georgia": "Georgia",
+    "georgiab": "Georgia",
+    "georgiai": "Georgia",
+    # Tahoma
+    "tahoma": "Tahoma",
+    "tahomabd": "Tahoma",
+    # Trebuchet MS
+    "trebuc": "Trebuchet MS",
+    "trebuchet": "Trebuchet MS",
+    "trebuchetms": "Trebuchet MS",
+    # Segoe UI
+    "segoeui": "Segoe UI",
+    "segoeuib": "Segoe UI",
+    "segoeuii": "Segoe UI",
+    # Popular Google Fonts
+    "roboto": "Roboto",
+    "roboto-regular": "Roboto",
+    "roboto-bold": "Roboto",
+    "robotobold": "Roboto",
+    "opensans": "Open Sans",
+    "open-sans": "Open Sans",
+    "opensans-regular": "Open Sans",
+    "opensansbold": "Open Sans",
+    "lato": "Lato",
+    "lato-regular": "Lato",
+    "lato-bold": "Lato",
+    "montserrat": "Montserrat",
+    "montserrat-regular": "Montserrat",
+    "montserrat-bold": "Montserrat",
+    "oswald": "Oswald",
+    "oswald-regular": "Oswald",
+    "poppins": "Poppins",
+    "poppins-regular": "Poppins",
+    "raleway": "Raleway",
+    "raleway-regular": "Raleway",
+    "ubuntu": "Ubuntu",
+    "ubuntu-regular": "Ubuntu",
+    "bebasneue": "Bebas Neue",
+    "bebas-neue": "Bebas Neue",
+    "bebas": "Bebas Neue",
+    "anton": "Anton",
+    "anton-regular": "Anton",
+    "sourcecodepro": "Source Code Pro",
+    "source-code-pro": "Source Code Pro",
+    "playfairdisplay": "Playfair Display",
+    "playfair-display": "Playfair Display",
+    "merriweather": "Merriweather",
+    "nunito": "Nunito",
+    "quicksand": "Quicksand",
+    "comfortaa": "Comfortaa",
+    "pacifico": "Pacifico",
+    "lobster": "Lobster",
+    "dancingscript": "Dancing Script",
+    "dancing-script": "Dancing Script",
+}
+
 # Debug: force saving caption images and force-visible overlay for testing
 CAPTION_DEBUG_SAVE_IMAGES = True
 CAPTION_DEBUG_FORCE_VISIBLE = True
@@ -1066,8 +1158,26 @@ def get_font_family_name(font_path, log_func=None):
         if log_func:
             log_func(f"[FONT-EXTRACT] Error reading font: {e}")
     
-    # Fallback: use filename without extension
+    # Fallback: try to use FONT_FILENAME_TO_FAMILY mapping
     fallback_name = os.path.splitext(os.path.basename(font_path))[0]
+    
+    # Normalize filename for lookup: lowercase, remove spaces/hyphens variations
+    lookup_key = fallback_name.lower().replace(" ", "").replace("_", "-")
+    
+    if lookup_key in FONT_FILENAME_TO_FAMILY:
+        mapped_name = FONT_FILENAME_TO_FAMILY[lookup_key]
+        if log_func:
+            log_func(f"[FONT-EXTRACT] Found in mapping: '{lookup_key}' → '{mapped_name}'")
+        return mapped_name
+    
+    # Try without hyphens too
+    lookup_key_no_hyphen = lookup_key.replace("-", "")
+    if lookup_key_no_hyphen in FONT_FILENAME_TO_FAMILY:
+        mapped_name = FONT_FILENAME_TO_FAMILY[lookup_key_no_hyphen]
+        if log_func:
+            log_func(f"[FONT-EXTRACT] Found in mapping (no hyphen): '{lookup_key_no_hyphen}' → '{mapped_name}'")
+        return mapped_name
+    
     if log_func:
         log_func(f"[FONT-EXTRACT] Using fallback name: '{fallback_name}'")
     return fallback_name
