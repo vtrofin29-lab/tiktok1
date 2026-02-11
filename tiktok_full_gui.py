@@ -1001,54 +1001,76 @@ def clear_font_cache():
     LOADED_FONT_PATH = None
     LOADED_FONT_FAMILY = None
 
-def get_font_family_name(font_path):
+def get_font_family_name(font_path, log_func=None):
     """
     Extract the actual font family name from a font file.
     
     Args:
         font_path: Path to the font file (.ttf, .otf)
+        log_func: Optional logging function
         
     Returns:
-        Font family name or None if extraction fails
+        Font family name or filename without extension if extraction fails
     """
+    if not font_path or not os.path.exists(font_path):
+        if log_func:
+            log_func(f"[FONT-EXTRACT] Invalid font path: {font_path}")
+        if font_path:
+            return os.path.splitext(os.path.basename(font_path))[0]
+        return None
+    
     try:
         from fontTools.ttLib import TTFont
+        if log_func:
+            log_func(f"[FONT-EXTRACT] Opening font file: {font_path}")
+        
         font = TTFont(font_path)
+        name_table = font['name']
         
-        # Look for the font family name in the name table
-        # Name ID 1 = Font Family name, Name ID 4 = Full font name
-        for name_record in font['name'].names:
-            # Platform 3 = Windows, Encoding 1 = Unicode BMP
-            # Platform 1 = Macintosh
-            if name_record.nameID == 1:  # Font Family name
-                try:
-                    name = name_record.toUnicode()
-                    if name:
-                        return name
-                except Exception:
-                    pass
+        # Try different name IDs in order of preference:
+        # nameID 1 = Font Family Name
+        # nameID 16 = Typographic Family Name (preferred for complex font families)
+        # nameID 4 = Full Font Name
+        family_name = None
         
-        # Fallback: try nameID 4 (Full name)
-        for name_record in font['name'].names:
-            if name_record.nameID == 4:
-                try:
-                    name = name_record.toUnicode()
-                    if name:
-                        return name.split()[0]  # Take first word as family
-                except Exception:
-                    pass
+        for name_id in (16, 1, 4):
+            for record in name_table.names:
+                if record.nameID == name_id:
+                    try:
+                        name = record.toUnicode()
+                        if name and name.strip():
+                            family_name = name.strip()
+                            if log_func:
+                                log_func(f"[FONT-EXTRACT] Found nameID {name_id}: '{family_name}'")
+                            break
+                    except Exception as e:
+                        if log_func:
+                            log_func(f"[FONT-EXTRACT] Error decoding nameID {name_id}: {e}")
+            if family_name:
+                break
         
         font.close()
-    except ImportError:
-        # fontTools not available, fall back to filename
-        pass
-    except Exception:
-        pass
+        
+        if family_name:
+            if log_func:
+                log_func(f"[FONT-EXTRACT] ✓ Extracted font family: '{family_name}'")
+            return family_name
+        else:
+            if log_func:
+                log_func(f"[FONT-EXTRACT] No family name found in name table, using filename")
+            
+    except ImportError as e:
+        if log_func:
+            log_func(f"[FONT-EXTRACT] fontTools not available: {e}")
+    except Exception as e:
+        if log_func:
+            log_func(f"[FONT-EXTRACT] Error reading font: {e}")
     
     # Fallback: use filename without extension
-    if font_path:
-        return os.path.splitext(os.path.basename(font_path))[0]
-    return None
+    fallback_name = os.path.splitext(os.path.basename(font_path))[0]
+    if log_func:
+        log_func(f"[FONT-EXTRACT] Using fallback name: '{fallback_name}'")
+    return fallback_name
 
 def load_preferred_font_cached(preferred, size, log=None):
     global LOADED_FONT, LOADED_FONT_PATH, LOADED_FONT_FAMILY
@@ -2288,11 +2310,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # ALWAYS extract font family from the actual font file being used
             # This ensures we use the correct font even if LOADED_FONT_FAMILY is stale
             if font_path and os.path.exists(font_path):
-                # Extract font family from font file
-                extracted_family = get_font_family_name(font_path)
+                # Extract font family from font file with logging for debugging
+                extracted_family = get_font_family_name(font_path, log_func=log_fn)
                 if extracted_family:
                     font_name = extracted_family
-                    log_fn(f"[EXPORT] Extracted font family from {os.path.basename(font_path)}: {font_name}")
+                    log_fn(f"[EXPORT] Using font family: {font_name}")
                 else:
                     # Fallback to filename without extension
                     font_name = os.path.splitext(os.path.basename(font_path))[0]
