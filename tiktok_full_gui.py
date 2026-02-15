@@ -4415,6 +4415,15 @@ class App:
                 self.caption_y_offset_scale.grid(row=0, column=1, padx=(6,8))
                 self.caption_y_offset_label = ttk.Label(pos_frame, text=f"{self.caption_y_offset_var.get()}px")
                 self.caption_y_offset_label.grid(row=0, column=2, sticky='w')
+                
+                # --- Font Size slider (row 1) ---
+                ttk.Label(pos_frame, text='Font Size:').grid(row=1, column=0, sticky='w', pady=(4,0))
+                # Font size in pixels (20-120 range, default 56)
+                self.caption_font_size_var = tk.IntVar(value=globals().get('CAPTION_FONT_SIZE', 56))
+                self.caption_font_size_scale = tk.Scale(pos_frame, from_=20, to=120, orient='horizontal', length=140, showvalue=0, variable=self.caption_font_size_var, command=self.on_caption_font_size_changed)
+                self.caption_font_size_scale.grid(row=1, column=1, padx=(6,8), pady=(4,0))
+                self.caption_font_size_label = ttk.Label(pos_frame, text=f"{self.caption_font_size_var.get()}px")
+                self.caption_font_size_label.grid(row=1, column=2, sticky='w', pady=(4,0))
             except Exception:
                 pass
 
@@ -5157,6 +5166,60 @@ class App:
             try:
                 self.log_widget.config(state='normal')
                 self.log_widget.insert('end', f"[CAPTION-POS-ERR] {e}\n")
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def on_caption_font_size_changed(self, val):
+        """Callback when caption font size slider changes."""
+        try:
+            # val comes as string; set global and update label
+            try:
+                size = int(float(val))
+            except Exception:
+                try:
+                    size = int(val)
+                except Exception:
+                    size = 56
+            # Clamp to valid range
+            size = max(20, min(120, size))
+            globals()['CAPTION_FONT_SIZE'] = size
+            try:
+                if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
+                    self.caption_font_size_label.config(text=f"{size}px")
+            except Exception:
+                pass
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[FONT-SIZE-CHANGE] Font size changed to: {size}px\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+            
+            # Update mini preview to show new font size - FORCE REDRAW
+            try:
+                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
+                    # Redraw the mini preview with updated caption
+                    top_pct = float(self.top_percent_var.get())/100.0
+                    bottom_pct = float(self.bottom_percent_var.get())/100.0
+                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
+                    # Use centralized redraw method that includes caption indicator
+                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
+                    # Force canvas update
+                    self.mini_canvas.update_idletasks()
+                    
+            except Exception as e:
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[FONT-SIZE-UPDATE-ERR] {e}\n")
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[FONT-SIZE-ERR] {e}\n")
                 self.log_widget.config(state='disabled')
             except Exception:
                 pass
@@ -6570,6 +6633,7 @@ class App:
                 "caption_stroke_color": list(globals()['CAPTION_STROKE_COLOR']),
                 "caption_stroke_width": self.stroke_width_var.get(),
                 "caption_y_offset": self.caption_y_offset_var.get(),
+                "caption_font_size": self.caption_font_size_var.get() if hasattr(self, 'caption_font_size_var') else globals().get('CAPTION_FONT_SIZE', 56),
                 
                 # Video effects
                 "effect_sharpness": self.effect_sharpness_var.get(),
@@ -6660,6 +6724,13 @@ class App:
                 globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
             self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
             self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            # Load font size (apply block 1)
+            if hasattr(self, 'caption_font_size_var'):
+                font_size = preset_data.get("caption_font_size", 56)
+                self.caption_font_size_var.set(font_size)
+                globals()["CAPTION_FONT_SIZE"] = font_size
+                if hasattr(self, 'caption_font_size_label'):
+                    self.caption_font_size_label.config(text=f"{font_size}px")
             
             # Apply video effects
             self.effect_sharpness_var.set(preset_data.get("effect_sharpness", False))
@@ -6747,6 +6818,13 @@ class App:
                 globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
             self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
             self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            # Load font size (apply block 2)
+            if hasattr(self, 'caption_font_size_var'):
+                font_size = preset_data.get("caption_font_size", 56)
+                self.caption_font_size_var.set(font_size)
+                globals()["CAPTION_FONT_SIZE"] = font_size
+                if hasattr(self, 'caption_font_size_label'):
+                    self.caption_font_size_label.config(text=f"{font_size}px")
             
             # Apply video effects
             self.effect_sharpness_var.set(preset_data.get("effect_sharpness", False))
@@ -6820,6 +6898,12 @@ class App:
             globals()['CAPTION_STROKE_COLOR'] = (0, 0, 0, 150)
             self.stroke_width_var.set(max(1, int(CAPTION_FONT_SIZE * 0.05)))
             self.caption_y_offset_var.set(0)
+            # Reset font size
+            if hasattr(self, 'caption_font_size_var'):
+                self.caption_font_size_var.set(56)
+                globals()["CAPTION_FONT_SIZE"] = 56
+                if hasattr(self, 'caption_font_size_label'):
+                    self.caption_font_size_label.config(text="56px")
             
             # Reset video effects
             self.effect_sharpness_var.set(False)
