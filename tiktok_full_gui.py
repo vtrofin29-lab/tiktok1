@@ -4151,9 +4151,12 @@ class App:
             to=3, 
             increment=1,
             textvariable=self.words_per_caption_var,
-            width=10
+            width=10,
+            command=self.on_words_per_caption_changed
         )
         words_per_caption_spinbox.grid(row=row, column=1, sticky="w", padx=(6,0))
+        # Also bind to var changes for direct typing
+        self.words_per_caption_var.trace_add('write', self.on_words_per_caption_changed)
         ttk.Label(left_frame, text="(1=single word, 2-3=groups)").grid(row=row, column=2, sticky="w", padx=(3,0))
         row += 1
 
@@ -5060,11 +5063,16 @@ class App:
             font_size = globals().get('CAPTION_FONT_SIZE', 56)
             text_color = globals().get('CAPTION_TEXT_COLOR', (255, 255, 0, 255))
             stroke_color = globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 255))
+            stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)  # Get actual stroke width
+            words_per_caption = globals().get('WORDS_PER_GROUP', 2)  # Get words per caption
             font_family = globals().get('LOADED_FONT_FAMILY', None) or globals().get('CAPTION_FONT_PREFERRED', 'Arial')
             
             # Scale font size for mini preview (mini canvas is much smaller than 1920px)
             # Mini canvas height is about 380px vs 1920px actual
             scaled_font_size = max(10, int(font_size * preview_ratio))
+            
+            # Scale stroke width for mini preview (proportional to font size scaling)
+            scaled_stroke_width = max(1, int(stroke_width * preview_ratio))
             
             # Convert RGB tuple to hex color
             try:
@@ -5081,12 +5089,23 @@ class App:
             # Use the loaded font family name, tkinter handles unknown fonts gracefully
             canvas_font = (font_family if font_family else "Arial", scaled_font_size, "bold")
             
-            sample_text = "SAMPLE TEXT"
+            # Generate sample text based on words per caption setting (max 3 words)
+            word_list = ["WORD", "ONE", "TWO"]
+            sample_words = word_list[:min(words_per_caption, len(word_list))]
+            sample_text = " ".join(sample_words)
+            
             text_x = composed.width // 2
             text_y = caption_y - scaled_font_size // 2
             
-            # Draw stroke (outline) effect by drawing text multiple times with offset
-            stroke_offsets = [(-1, -1), (-1, 1), (1, -1), (1, 1), (-2, 0), (2, 0), (0, -2), (0, 2)]
+            # Draw stroke (outline) effect by drawing text at the outer boundary only
+            # This is more efficient than drawing at every pixel of the stroke width
+            stroke_offsets = [
+                (-scaled_stroke_width, -scaled_stroke_width), (-scaled_stroke_width, scaled_stroke_width),
+                (scaled_stroke_width, -scaled_stroke_width), (scaled_stroke_width, scaled_stroke_width),
+                (-scaled_stroke_width, 0), (scaled_stroke_width, 0),
+                (0, -scaled_stroke_width), (0, scaled_stroke_width)
+            ]
+            
             for dx, dy in stroke_offsets:
                 self.mini_canvas.create_text(text_x + dx, text_y + dy, 
                                             text=sample_text, 
@@ -5100,7 +5119,7 @@ class App:
                                         tags="caption_sample")
             
             # Draw small info label below the sample text
-            info_text = f"Y: {offset}px | Size: {font_size}px"
+            info_text = f"Y: {offset}px | Size: {font_size}px | Words: {words_per_caption}"
             self.mini_canvas.create_text(text_x, caption_y + 10, 
                                         text=info_text, 
                                         fill="#00FF00", font=("Arial", 8), 
@@ -5258,6 +5277,55 @@ class App:
             try:
                 self.log_widget.config(state='normal')
                 self.log_widget.insert('end', f"[FONT-SIZE-ERR] {e}\n")
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def on_words_per_caption_changed(self, *args):
+        """Callback when words per caption spinbox changes."""
+        try:
+            # Get the new value from spinbox
+            try:
+                words = self.words_per_caption_var.get()
+            except Exception:
+                words = 2
+            # Clamp to valid range
+            words = max(1, min(3, words))
+            
+            # Update the global WORDS_PER_GROUP
+            globals()['WORDS_PER_GROUP'] = words
+            
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[WORDS-PER-CAPTION] Changed to: {words} words\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+            
+            # Update mini preview to show new sample text - FORCE REDRAW
+            try:
+                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
+                    # Redraw the mini preview with updated caption
+                    top_pct = float(self.top_percent_var.get())/100.0
+                    bottom_pct = float(self.bottom_percent_var.get())/100.0
+                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
+                    # Use centralized redraw method that includes caption indicator
+                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
+                    # Force canvas update
+                    self.mini_canvas.update_idletasks()
+                    
+            except Exception as e:
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[WORDS-UPDATE-ERR] {e}\n")
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[WORDS-ERR] {e}\n")
                 self.log_widget.config(state='disabled')
             except Exception:
                 pass
