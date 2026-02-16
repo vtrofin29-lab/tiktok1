@@ -307,10 +307,6 @@ def test_source_code_no_hardcoded_fontsize():
         content = f.read()
 
     # Find the _export_with_ffmpeg_filters function
-    # Check that fontsize=56 is NOT passed as a hardcoded arg in the call to _generate_ass_subtitle_file
-    # Instead it should use caption_font_size variable
-    
-    # Look for the ASS call within the export function
     export_fn_start = content.find('def _export_with_ffmpeg_filters')
     if export_fn_start == -1:
         print("✗ Could not find _export_with_ffmpeg_filters function")
@@ -320,11 +316,11 @@ def test_source_code_no_hardcoded_fontsize():
     next_fn = content.find('\ndef ', export_fn_start + 1)
     export_fn_body = content[export_fn_start:next_fn] if next_fn != -1 else content[export_fn_start:]
 
-    # Check that the ASS subtitle call uses caption_font_size, not hardcoded 56
-    if 'fontsize=caption_font_size' in export_fn_body:
-        print("✓ ASS subtitle call uses caption_font_size variable")
+    # Check that the ASS subtitle call uses font_size variable, not hardcoded 56
+    if 'fontsize=font_size' in export_fn_body:
+        print("✓ ASS subtitle call uses font_size variable")
     else:
-        print("✗ ASS subtitle call does not use caption_font_size variable")
+        print("✗ ASS subtitle call does not use font_size variable")
         return False
 
     if 'fontsize=56' in export_fn_body:
@@ -340,10 +336,10 @@ def test_source_code_no_hardcoded_fontsize():
         return False
 
     # Check _build_all_caption_filters call passes fontsize
-    if 'fontsize=caption_font_size' in export_fn_body:
-        print("✓ _build_all_caption_filters call passes caption_font_size")
+    if 'fontsize=font_size' in export_fn_body:
+        print("✓ _build_all_caption_filters call passes font_size")
     else:
-        print("✗ _build_all_caption_filters call does not pass caption_font_size")
+        print("✗ _build_all_caption_filters call does not pass font_size")
         return False
 
     # Check CAPTION_FONT_SIZE is read from globals
@@ -460,9 +456,10 @@ def test_source_code_ass_has_stroke_color_param():
         print("✗ Could not find _generate_ass_subtitle_file function")
         return False
 
-    # Get function signature (up to the closing parenthesis of def)
-    next_colon = content.find(':', ass_fn_start)
-    fn_sig = content[ass_fn_start:next_colon]
+    # Get the function signature area (may span multiple lines)
+    # Look for the docstring start to capture full signature
+    fn_sig_end = content.find('"""', ass_fn_start)
+    fn_sig = content[ass_fn_start:fn_sig_end] if fn_sig_end != -1 else content[ass_fn_start:ass_fn_start+500]
 
     if 'stroke_color_rgba' in fn_sig:
         print("✓ _generate_ass_subtitle_file accepts stroke_color_rgba parameter")
