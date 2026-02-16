@@ -2051,6 +2051,7 @@ def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial"
     
     if log_fn:
         log_fn(f"[ASS] Caption Y offset: {y_offset}px → MarginV: {margin_v}px")
+        log_fn(f"[ASS] Font size in ASS: {fontsize}px")
     
     # ASS file header
     ass_content = f"""[Script Info]
@@ -2463,6 +2464,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             
             # Get caption Y offset from global
             caption_y_offset = globals().get('CAPTION_Y_OFFSET', 0)
+            
+            # Log the actual values being used for ASS generation
+            log_fn(f"[ASS-GEN] Generating ASS with: font_name={font_name}, font_size={font_size}, y_offset={caption_y_offset}")
             
             _generate_ass_subtitle_file(
                 caption_segments, 
