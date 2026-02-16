@@ -1760,7 +1760,8 @@ def _rgba_to_hex(rgba_tuple):
 
 
 def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial", fontsize=56, 
-                                text_color_rgba=(255, 255, 0, 255), stroke_width=3):
+                                text_color_rgba=(255, 255, 255, 255), stroke_width=3,
+                                stroke_color_rgba=(0, 0, 0, 150)):
     """
     Generate an ASS (Advanced SubStation Alpha) subtitle file for word-by-word captions.
     
@@ -1771,6 +1772,7 @@ def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial"
         fontsize: Font size in pixels
         text_color_rgba: Text color as RGBA tuple
         stroke_width: Outline/border width
+        stroke_color_rgba: Stroke/outline color as RGBA tuple
         
     Returns:
         Path to generated ASS file
@@ -1783,7 +1785,10 @@ def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial"
     # Convert alpha: 255 = fully opaque = 00, 0 = fully transparent = FF
     alpha_hex = f"{255 - int(a):02X}"
     text_color_ass = f"&H{alpha_hex}{b:02X}{g:02X}{r:02X}"
-    outline_color_ass = "&H00000000"  # Black outline, fully opaque
+    # Convert stroke color RGBA to ASS format
+    sr, sg, sb, sa = stroke_color_rgba
+    stroke_alpha_hex = f"{255 - int(sa):02X}"
+    outline_color_ass = f"&H{stroke_alpha_hex}{sb:02X}{sg:02X}{sr:02X}"
     
     # ASS file header
     ass_content = f"""[Script Info]
@@ -2008,7 +2013,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 font_name=font_name,
                 fontsize=caption_font_size,
                 text_color_rgba=text_color_rgba,
-                stroke_width=stroke_width
+                stroke_width=stroke_width,
+                stroke_color_rgba=stroke_color_rgba
             )
             log_fn(f"[EXPORT] ASS subtitle file generated: {ass_subtitle_path}")
             caption_filters = None

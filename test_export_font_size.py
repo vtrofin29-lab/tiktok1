@@ -57,12 +57,16 @@ def _escape_ffmpeg_text(text):
 
 
 def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial", fontsize=56,
-                                text_color_rgba=(255, 255, 0, 255), stroke_width=3):
+                                text_color_rgba=(255, 255, 255, 255), stroke_width=3,
+                                stroke_color_rgba=(0, 0, 0, 150)):
     """Generate an ASS subtitle file using the given fontsize."""
     r, g, b, a = text_color_rgba
     alpha_hex = f"{255 - int(a):02X}"
     text_color_ass = f"&H{alpha_hex}{b:02X}{g:02X}{r:02X}"
-    outline_color_ass = "&H00000000"
+    # Convert stroke color RGBA to ASS format
+    sr, sg, sb, sa = stroke_color_rgba
+    stroke_alpha_hex = f"{255 - int(sa):02X}"
+    outline_color_ass = f"&H{stroke_alpha_hex}{sb:02X}{sg:02X}{sr:02X}"
 
     ass_content = f"""[Script Info]
 Title: Generated Subtitles
@@ -352,6 +356,143 @@ def test_source_code_no_hardcoded_fontsize():
     return True
 
 
+def test_ass_subtitle_uses_stroke_color():
+    """Test that _generate_ass_subtitle_file uses the provided stroke_color_rgba parameter."""
+    print("\nTesting ASS subtitle file uses provided stroke color...")
+
+    caption_segments = [
+        {"text": "Hello world", "start": 0.0, "end": 1.0},
+    ]
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.ass', delete=False) as f:
+        output_path = f.name
+
+    try:
+        # Use red stroke color (255, 0, 0, 200)
+        _generate_ass_subtitle_file(
+            caption_segments, output_path,
+            font_name="Arial", fontsize=56,
+            text_color_rgba=(255, 255, 255, 255), stroke_width=3,
+            stroke_color_rgba=(255, 0, 0, 200)
+        )
+
+        with open(output_path, 'r') as f:
+            content = f.read()
+
+        # ASS format: &HAABBGGRR -> for (255,0,0,200), alpha=255-200=55=0x37, B=0, G=0, R=255
+        # Expected: &H370000FF
+        style_lines = [l for l in content.split('\n') if l.startswith('Style:')]
+        
+        # Check that hardcoded black "&H00000000" is NOT the outline color
+        for line in style_lines:
+            # OutlineColour is the 6th field (0-indexed: 5th) in the Style line
+            # Style: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, ...
+            parts = line.split(',')
+            if len(parts) >= 6:
+                outline_color = parts[5]  # OutlineColour field
+                if outline_color == "&H00000000":
+                    print("✗ ASS subtitle file still uses hardcoded black outline (&H00000000)")
+                    return False
+                if "0000FF" in outline_color:  # Should contain red component (FF in RR position)
+                    print(f"✓ ASS subtitle file uses custom stroke color: {outline_color}")
+                else:
+                    print(f"✗ ASS subtitle file has unexpected outline color: {outline_color}")
+                    return False
+
+        return True
+    finally:
+        os.unlink(output_path)
+
+
+def test_ass_subtitle_default_text_color_is_white():
+    """Test that _generate_ass_subtitle_file defaults to white text, not yellow."""
+    print("\nTesting ASS subtitle file defaults to white text color...")
+
+    caption_segments = [
+        {"text": "Hello world", "start": 0.0, "end": 1.0},
+    ]
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.ass', delete=False) as f:
+        output_path = f.name
+
+    try:
+        # Call without specifying text_color_rgba - should default to white (255,255,255,255)
+        _generate_ass_subtitle_file(
+            caption_segments, output_path,
+            font_name="Arial", fontsize=56,
+        )
+
+        with open(output_path, 'r') as f:
+            content = f.read()
+
+        # White in ASS format: &H00FFFFFF (alpha=0 means opaque, BGR=FFFFFF)
+        style_lines = [l for l in content.split('\n') if l.startswith('Style:')]
+        for line in style_lines:
+            parts = line.split(',')
+            if len(parts) >= 4:
+                primary_color = parts[3]  # PrimaryColour field
+                # For white (255,255,255,255): alpha=255-255=0x00, B=FF, G=FF, R=FF -> &H00FFFFFF
+                if primary_color == "&H00FFFFFF":
+                    print(f"✓ Default text color is white: {primary_color}")
+                elif "00FFFF" in primary_color:  # Yellow would be &H0000FFFF
+                    print(f"✗ Default text color is yellow (old bug): {primary_color}")
+                    return False
+                else:
+                    print(f"✗ Unexpected default text color: {primary_color}")
+                    return False
+
+        return True
+    finally:
+        os.unlink(output_path)
+
+
+def test_source_code_ass_has_stroke_color_param():
+    """Verify source code passes stroke_color_rgba to _generate_ass_subtitle_file."""
+    print("\nVerifying source code passes stroke_color_rgba to ASS generator...")
+
+    source_path = os.path.join(os.path.dirname(__file__), 'tiktok_full_gui.py')
+    with open(source_path, 'r') as f:
+        content = f.read()
+
+    # Check _generate_ass_subtitle_file has stroke_color_rgba parameter
+    ass_fn_start = content.find('def _generate_ass_subtitle_file')
+    if ass_fn_start == -1:
+        print("✗ Could not find _generate_ass_subtitle_file function")
+        return False
+
+    # Get function signature (up to the closing parenthesis of def)
+    next_colon = content.find(':', ass_fn_start)
+    fn_sig = content[ass_fn_start:next_colon]
+
+    if 'stroke_color_rgba' in fn_sig:
+        print("✓ _generate_ass_subtitle_file accepts stroke_color_rgba parameter")
+    else:
+        print("✗ _generate_ass_subtitle_file missing stroke_color_rgba parameter")
+        return False
+
+    # Check the export function passes stroke_color_rgba to ASS generator
+    export_fn_start = content.find('def _export_with_ffmpeg_filters')
+    next_fn = content.find('\ndef ', export_fn_start + 1)
+    export_fn_body = content[export_fn_start:next_fn] if next_fn != -1 else content[export_fn_start:]
+
+    if 'stroke_color_rgba=stroke_color_rgba' in export_fn_body:
+        print("✓ Export function passes stroke_color_rgba to ASS generator")
+    else:
+        print("✗ Export function does not pass stroke_color_rgba to ASS generator")
+        return False
+
+    # Check that outline color is NOT hardcoded in the ASS function body
+    ass_fn_end = content.find('\ndef ', ass_fn_start + 1)
+    ass_fn_body = content[ass_fn_start:ass_fn_end] if ass_fn_end != -1 else content[ass_fn_start:]
+    
+    if '"&H00000000"' in ass_fn_body:
+        print("✗ _generate_ass_subtitle_file still has hardcoded black outline")
+        return False
+    print("✓ _generate_ass_subtitle_file does not have hardcoded outline color")
+
+    return True
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -364,6 +505,9 @@ if __name__ == "__main__":
         test_stroke_color_passed_to_filters(),
         test_rgba_to_hex_conversion(),
         test_source_code_no_hardcoded_fontsize(),
+        test_ass_subtitle_uses_stroke_color(),
+        test_ass_subtitle_default_text_color_is_white(),
+        test_source_code_ass_has_stroke_color_param(),
     ]
 
     print("\n" + "=" * 60)
