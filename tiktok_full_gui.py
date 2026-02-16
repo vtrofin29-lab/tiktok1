@@ -5088,7 +5088,7 @@ class App:
             try:
                 text_hex = '#%02x%02x%02x' % (text_color[0], text_color[1], text_color[2])
             except Exception:
-                text_hex = '#FFFF00'  # Default yellow
+                text_hex = '#FFFFFF'  # Default white
             
             try:
                 stroke_hex = '#%02x%02x%02x' % (stroke_color[0], stroke_color[1], stroke_color[2])
