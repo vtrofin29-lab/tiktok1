@@ -5021,7 +5021,7 @@ class App:
                 pass
 
     def _draw_caption_indicator_on_preview(self, composed, h, top_y, bottom_y, offset):
-        """Draw the caption position indicator on the mini preview canvas.
+        """Draw the caption position indicator and SAMPLE TEXT on the mini preview canvas.
         
         Args:
             composed: The composed PIL image
@@ -5035,6 +5035,8 @@ class App:
             self.mini_canvas.delete("caption_line")
             self.mini_canvas.delete("caption_box")
             self.mini_canvas.delete("caption_label")
+            self.mini_canvas.delete("caption_sample")
+            self.mini_canvas.delete("caption_sample_stroke")
             
             # Calculate where caption will appear on the preview
             # offset: negative = move up, positive = move down
@@ -5052,21 +5054,57 @@ class App:
             
             # Draw green dashed line showing caption baseline - PERMANENT
             self.mini_canvas.create_line(0, caption_y, composed.width, caption_y, 
-                                        fill="#00FF00", dash=(6, 4), width=3, tags="caption_line")
+                                        fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
             
-            # Draw outlined box showing caption area
-            box_width = 80
-            box_height = 18
-            self.mini_canvas.create_rectangle(composed.width//2 - box_width, caption_y - box_height, 
-                                             composed.width//2 + box_width, caption_y, 
-                                             fill="", outline="#00FF00", width=2, tags="caption_box")
+            # Get current caption settings for the SAMPLE TEXT preview
+            font_size = globals().get('CAPTION_FONT_SIZE', 56)
+            text_color = globals().get('CAPTION_TEXT_COLOR', (255, 255, 0, 255))
+            stroke_color = globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 255))
+            font_family = globals().get('LOADED_FONT_FAMILY', None) or globals().get('CAPTION_FONT_PREFERRED', 'Arial')
             
-            # Draw label with offset value
-            self.mini_canvas.create_text(composed.width//2, caption_y - box_height//2, 
-                                        text=f"Caption Y: {offset}px", 
-                                        fill="#00FF00", font=("Arial", 9, "bold"), tags="caption_label")
+            # Scale font size for mini preview (mini canvas is much smaller than 1920px)
+            # Mini canvas height is about 380px vs 1920px actual
+            scaled_font_size = max(10, int(font_size * preview_ratio))
             
-            # Removed repetitive logging - caption position only logged once during processing
+            # Convert RGB tuple to hex color
+            try:
+                text_hex = '#%02x%02x%02x' % (text_color[0], text_color[1], text_color[2])
+            except Exception:
+                text_hex = '#FFFF00'  # Default yellow
+            
+            try:
+                stroke_hex = '#%02x%02x%02x' % (stroke_color[0], stroke_color[1], stroke_color[2])
+            except Exception:
+                stroke_hex = '#000000'  # Default black
+            
+            # Create font tuple for tkinter canvas
+            # Use the loaded font family name, tkinter handles unknown fonts gracefully
+            canvas_font = (font_family if font_family else "Arial", scaled_font_size, "bold")
+            
+            sample_text = "SAMPLE TEXT"
+            text_x = composed.width // 2
+            text_y = caption_y - scaled_font_size // 2
+            
+            # Draw stroke (outline) effect by drawing text multiple times with offset
+            stroke_offsets = [(-1, -1), (-1, 1), (1, -1), (1, 1), (-2, 0), (2, 0), (0, -2), (0, 2)]
+            for dx, dy in stroke_offsets:
+                self.mini_canvas.create_text(text_x + dx, text_y + dy, 
+                                            text=sample_text, 
+                                            fill=stroke_hex, font=canvas_font, 
+                                            tags="caption_sample_stroke")
+            
+            # Draw main caption text
+            self.mini_canvas.create_text(text_x, text_y, 
+                                        text=sample_text, 
+                                        fill=text_hex, font=canvas_font, 
+                                        tags="caption_sample")
+            
+            # Draw small info label below the sample text
+            info_text = f"Y: {offset}px | Size: {font_size}px"
+            self.mini_canvas.create_text(text_x, caption_y + 10, 
+                                        text=info_text, 
+                                        fill="#00FF00", font=("Arial", 8), 
+                                        tags="caption_label")
                 
         except Exception as e:
             try:
