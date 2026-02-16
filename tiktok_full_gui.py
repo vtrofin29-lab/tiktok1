@@ -1888,7 +1888,8 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
 
 def _build_all_caption_filters(caption_segments, video_width, video_height, 
                                font_path=None, text_color="0xFFFFFF", 
-                               stroke_color="0x000000", stroke_width=3, words_per_line=None):
+                               stroke_color="0x000000", stroke_width=3, words_per_line=None,
+                               fontsize=56):
     """
     Build all caption drawtext filters and chain them together with custom styling.
     
@@ -1901,6 +1902,7 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
         stroke_color: Stroke color in hex format
         stroke_width: Stroke width in pixels
         words_per_line: Maximum words per line (optional)
+        fontsize: Font size in pixels
         
     Returns:
         Complete filter_complex string for all captions
@@ -1917,6 +1919,7 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
             end_time=segment['end'],
             video_width=video_width,
             video_height=video_height,
+            fontsize=fontsize,
             font_path=font_path,
             text_color=text_color,
             stroke_color=stroke_color,
@@ -1956,17 +1959,21 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         try:
             font_path = globals().get('LOADED_FONT_PATH', None)
             text_color_rgba = globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255))
+            stroke_color_rgba = globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150))
             stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)
+            caption_font_size = globals().get('CAPTION_FONT_SIZE', 56)
             words_per_caption = globals().get('WORDS_PER_CAPTION', None)  # Get words per caption setting
             
             # Convert colors to hex for FFmpeg
             text_color_hex = _rgba_to_hex(text_color_rgba)
-            stroke_color_hex = "0x000000"  # Black stroke (can be made customizable later)
+            stroke_color_hex = _rgba_to_hex(stroke_color_rgba)
             
             if font_path:
                 log_fn(f"[EXPORT] Using custom font: {font_path}")
             log_fn(f"[EXPORT] Text color: {text_color_hex} (RGBA: {text_color_rgba})")
+            log_fn(f"[EXPORT] Stroke color: {stroke_color_hex} (RGBA: {stroke_color_rgba})")
             log_fn(f"[EXPORT] Stroke width: {stroke_width}px")
+            log_fn(f"[EXPORT] Font size: {caption_font_size}px")
             if words_per_caption:
                 log_fn(f"[EXPORT] Words per caption: {words_per_caption}")
         except Exception as e:
@@ -1975,6 +1982,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             text_color_hex = "0xFFFFFF"
             stroke_color_hex = "0x000000"
             stroke_width = 3
+            caption_font_size = 56
             words_per_caption = None
         
         # For many captions (>100), use subtitle file approach to avoid command line length limits
@@ -1998,7 +2006,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 caption_segments, 
                 ass_subtitle_path,
                 font_name=font_name,
-                fontsize=56,
+                fontsize=caption_font_size,
                 text_color_rgba=text_color_rgba,
                 stroke_width=stroke_width
             )
@@ -2013,7 +2021,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 text_color=text_color_hex,
                 stroke_color=stroke_color_hex,
                 stroke_width=stroke_width,
-                words_per_line=words_per_caption  # Pass words per caption setting
+                words_per_line=words_per_caption,  # Pass words per caption setting
+                fontsize=caption_font_size
             )
         
         # Build complete filter chain
