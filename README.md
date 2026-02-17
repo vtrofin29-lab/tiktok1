@@ -48,11 +48,35 @@ pip install -r requirements.txt
 Required packages:
 - `Pillow>=10.0.0` - Image processing
 - `numpy>=1.24.0` - Numerical operations
-- `moviepy` - Video editing
-- `whisper` - Speech recognition
-- `googletrans==4.0.0rc1` - Translation (new)
-- `requests>=2.28.0` - HTTP requests for APIs (new)
-- `gtts>=2.3.0` - Text-to-Speech (new)
+- `moviepy>=1.0.3` - Video editing and compositing
+- `openai-whisper>=20230918` - AI speech-to-text transcription
+- `torch>=2.0.0` - GPU acceleration for Whisper (see GPU note below)
+- `googletrans==4.0.0rc1` - Translation
+- `requests>=2.28.0` - HTTP requests for APIs
+- `gtts>=2.3.0` - Text-to-Speech
+- `pydub>=0.25.1` - Audio processing
+
+Optional packages:
+- `fonttools>=4.40.0` - Auto-detect TikTok fonts on your system
+- `opencv-python>=4.8.0` - Video preview thumbnails
+
+#### PyTorch GPU Support
+
+For faster Whisper transcription and NVENC video encoding, install PyTorch with CUDA:
+```bash
+# For NVIDIA GPU (CUDA 11.8):
+pip install torch --index-url https://download.pytorch.org/whl/cu118
+
+# For NVIDIA GPU (CUDA 12.1):
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# CPU-only (slower, but works without GPU):
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+#### System Requirements
+- **FFmpeg** must be installed and available in PATH (for video encoding)
+- **NVIDIA GPU** (optional) - enables NVENC hardware encoding and faster Whisper
 
 ## Usage
 
