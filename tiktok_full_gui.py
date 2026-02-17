@@ -2515,22 +2515,61 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Build video effect filters (to match MoviePy effects)
         effect_filter_str = _build_ffmpeg_effect_filters(effect_settings, log_fn)
         
-        # Build complete filter chain
-        # [0:v] = background, [1:v] = foreground
-        # Overlay foreground on background centered (x=(W-w)/2) to fill width and crop equally from both sides
+        # Get blur/dim settings for video background
+        blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
+        bg_scale_extra = globals().get('BG_SCALE_EXTRA', 1.08)
+        dim_factor = globals().get('DIM_FACTOR', 0.55)
         
-        # Build foreground filter chain (apply mirror if needed)
-        # Note: When mirroring, we use a labeled intermediate output [fg_flipped]
-        # When not mirroring, we directly combine [0:v] and [1:v] in the overlay filter
-        # Both approaches work correctly - the mirrored case needs the semicolon to chain filters
+        # Build complete filter chain
+        # Use the foreground video itself as the blurred background (instead of a static image)
+        # Input [0:v] = foreground video (used for both background and foreground)
+        # Input [1:a] = audio
+        
+        # Calculate speed adjustment factor if target_duration is set
+        speed_factor = None
+        if target_duration and target_duration > 0:
+            # We need to probe the foreground video duration to calculate speed factor
+            try:
+                probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", fg_path]
+                probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+                fg_duration = float(probe_result.stdout.strip())
+                if abs(fg_duration - target_duration) > 0.05:
+                    speed_factor = fg_duration / target_duration
+                    log_fn(f"[EXPORT] Video speed adjustment: {fg_duration:.2f}s → {target_duration:.2f}s (factor: {speed_factor:.4f})")
+            except Exception as e:
+                log_fn(f"[EXPORT] Could not probe video duration for speed adjustment: {e}")
+        
+        # Build the setpts expression for speed adjustment
+        setpts_filter = ""
+        if speed_factor and speed_factor > 0:
+            # setpts=PTS/factor speeds up (factor>1) or slows down (factor<1)
+            setpts_filter = f"setpts=PTS/{speed_factor:.6f},"
+            log_fn(f"[EXPORT] ✓ Speed adjustment filter: setpts=PTS/{speed_factor:.6f}")
+        
+        # Build background from video: scale to fill canvas, apply blur and dim
+        # boxblur uses radius:power format - higher power = more blur. Convert Gaussian radius to boxblur approximation.
+        box_blur_val = max(5, blur_radius // 2)
+        # brightness adjustment: dim_factor 0.55 means reduce to 55% brightness
+        # FFmpeg eq filter brightness is additive (-1.0 to 1.0), so: brightness = dim_factor - 1.0
+        eq_brightness = dim_factor - 1.0
+        
+        bg_filter = (
+            f"[0:v]{setpts_filter}scale={int(video_width * bg_scale_extra)}:{int(video_height * bg_scale_extra)},"
+            f"crop={video_width}:{video_height},"
+            f"boxblur={box_blur_val}:{box_blur_val},"
+            f"eq=brightness={eq_brightness:.2f}[bg]"
+        )
+        
+        # Build foreground filter (with optional mirror and speed adjustment)
         if mirror_video:
-            # First apply hflip to foreground [1:v], output as [fg_flipped]
-            # Then overlay [fg_flipped] on background [0:v]
-            fg_filter = "[1:v]hflip[fg_flipped];[0:v][fg_flipped]"
+            fg_prep = f"[0:v]{setpts_filter}hflip[fg_ready]"
             log_fn("[EXPORT] ✓ Mirror/flip filter added")
         else:
-            # No pre-processing needed, directly overlay foreground [1:v] on background [0:v]
-            fg_filter = "[0:v][1:v]"
+            fg_prep = f"[0:v]{setpts_filter}copy[fg_ready]"
+        
+        # Combine: bg + fg overlay
+        filter_parts = [bg_filter, fg_prep, "[bg][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
         
         if use_subtitle_file and ass_subtitle_path:
             # Use ass subtitle filter (burns subtitles into video)
@@ -2547,36 +2586,38 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             else:
                 ass_filter = f"ass='{escaped_ass_path}'"
             
-            filter_chain = f"{fg_filter}overlay=x=(W-w)/2:y=(H-h)/2,{ass_filter}"
+            # Append ASS subtitle filter after overlay
+            filter_parts[-1] += f",{ass_filter}"
         else:
-            filter_chain = f"{fg_filter}overlay=x=(W-w)/2:y=(H-h)/2"
             if caption_filters:
-                filter_chain += "," + caption_filters
+                filter_parts[-1] += "," + caption_filters
         
         # Add video effects to filter chain (same as MoviePy applies)
         if effect_filter_str:
-            filter_chain += "," + effect_filter_str
+            filter_parts[-1] += "," + effect_filter_str
             log_fn(f"[EXPORT] ✓ Video effects added to FFmpeg filter chain")
         
         # Label the filter output for mapping
-        filter_chain += "[vout]"
+        filter_parts[-1] += "[vout]"
+        
+        # Join all filter parts with semicolons
+        filter_chain = ";".join(filter_parts)
         
         # Log input information for debugging
-        log_fn(f"[EXPORT] Background: {bg_path}")
+        log_fn(f"[EXPORT] Background: blurred video from {fg_path}")
         log_fn(f"[EXPORT] Foreground: {fg_path}")
         log_fn(f"[EXPORT] Audio: {audio_path}")
         log_fn(f"[EXPORT] Output: {output_path} ({video_width}x{video_height})")
-        log_fn(f"[EXPORT] Filter chain: {filter_chain[:200]}...")
+        log_fn(f"[EXPORT] Filter chain: {filter_chain[:300]}...")
         
-        # Build FFmpeg command
+        # Build FFmpeg command - single video input used for both bg and fg
         cmd = [
             "ffmpeg", "-y",
-            "-loop", "1", "-i", bg_path,  # Background (looped image) [0:v]
-            "-i", fg_path,                # Foreground video [1:v]
-            "-i", audio_path,             # Audio [2:a]
+            "-i", fg_path,                # Video [0:v] (used for both bg and fg)
+            "-i", audio_path,             # Audio [1:a]
             "-filter_complex", filter_chain,
             "-map", "[vout]",             # Use video from filter_complex output
-            "-map", "2:a",                # Use audio from audio file
+            "-map", "1:a",                # Use audio from audio file
             "-shortest",                   # End when shortest input ends
             "-c:a", "aac",                # Audio codec
             "-b:a", "192k",               # Audio bitrate
@@ -2739,24 +2780,29 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
     
-    # build background (static blurred frame)
-    t_mid = min(max(0.001, video_clip.duration / 2.0), max(0.001, video_clip.duration - 0.01))
-    frame = video_clip.get_frame(t_mid)
-    img = Image.fromarray(frame)
-    img_w, img_h = img.size
+    # build background (blurred video - matches the foreground video with blur and dim)
+    img_w, img_h = video_clip.w, video_clip.h
     scale_needed = max(WIDTH / img_w, HEIGHT / img_h) * bg_scale_extra
     new_w = int(img_w * scale_needed)
     new_h = int(img_h * scale_needed)
-    img = img.resize((new_w, new_h), Image.LANCZOS)
     left = max(0, (new_w - WIDTH) // 2)
     top = max(0, (new_h - HEIGHT) // 2)
-    img = img.crop((left, top, left + WIDTH, top + HEIGHT))
-    img = img.filter(ImageFilter.GaussianBlur(blur_radius))
-    img = ImageEnhance.Brightness(img).enhance(dim_factor)
-    bg_static = ImageClip(np.array(img)).set_duration(video_clip.duration)
+    
+    def make_blurred_bg_frame(get_frame, t):
+        """Apply blur and dim to each frame for the video background."""
+        frame = get_frame(t)
+        img = Image.fromarray(frame)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        img = img.crop((left, top, left + WIDTH, top + HEIGHT))
+        img = img.filter(ImageFilter.GaussianBlur(blur_radius))
+        img = ImageEnhance.Brightness(img).enhance(dim_factor)
+        return np.array(img)
+    
+    bg_video = video_clip.fl(make_blurred_bg_frame).set_duration(video_clip.duration)
+    bg_static = bg_video  # Keep variable name for compatibility with rest of function
     
     try:
-        log(f"[compose] Background created: {WIDTH}x{HEIGHT}, blur={blur_radius}")
+        log(f"[compose] Video background created: {WIDTH}x{HEIGHT}, blur={blur_radius}, dim={dim_factor}")
     except Exception:
         pass
 
@@ -3004,13 +3050,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             if not caption_segments:
                 log("[EXPORT] Note: No captions to render (video will have no text overlay)")
             
-            # Save background image to temp file
             temp_dir = tempfile.mkdtemp(prefix="tiktok_ffmpeg_export_")
-            bg_image_path = os.path.join(temp_dir, "background.png")
-            bg_array = bg_static.get_frame(0)
-            # Image is already imported at top of file
-            Image.fromarray(bg_array).save(bg_image_path)
-            log(f"[EXPORT] Background saved to: {bg_image_path}")
             
             # Save audio to temp file
             audio_temp_path = os.path.join(temp_dir, "audio.mp3")
@@ -3032,9 +3072,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 log(f"[EXPORT] (This may show a progress bar - consider using pre-render)")
                 fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
             
-            # Try FFmpeg export with word-by-word caption data
+            # Try FFmpeg export with video background (blurred video from same source)
             ffmpeg_export_successful = _export_with_ffmpeg_filters(
-                bg_path=bg_image_path,
+                bg_path=fg_video_path,  # Same video used for blurred background
                 fg_path=fg_video_path,
                 caption_segments=captions_for_ffmpeg,
                 audio_path=audio_temp_path,
