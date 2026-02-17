@@ -2625,6 +2625,25 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         log_fn(f"[EXPORT] Output: {output_path} ({video_width}x{video_height})")
         log_fn(f"[EXPORT] Filter chain: {filter_chain[:300]}...")
         
+        # Determine explicit output duration to prevent FFmpeg from hanging.
+        # -shortest does NOT work reliably with -filter_complex; we must use -t.
+        output_duration = None
+        if target_duration and target_duration > 0:
+            output_duration = target_duration
+        else:
+            # Probe audio duration as our definitive length
+            try:
+                dur_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                           "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
+                dur_result = subprocess.run(dur_cmd, capture_output=True, text=True, timeout=30)
+                if dur_result.returncode == 0 and dur_result.stdout.strip():
+                    output_duration = float(dur_result.stdout.strip())
+                    log_fn(f"[EXPORT] Audio duration probed: {output_duration:.2f}s")
+                else:
+                    log_fn(f"[EXPORT] ffprobe audio duration failed (rc={dur_result.returncode}): {dur_result.stderr.strip()}")
+            except Exception as e:
+                log_fn(f"[EXPORT] Could not probe audio duration: {e}")
+        
         # Build FFmpeg command - single video input used for both bg and fg
         # Enable hardware decoding when GPU is available for faster input processing
         use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
@@ -2633,13 +2652,27 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if use_gpu and USE_HARDWARE_DECODING:
             cmd.extend(["-hwaccel", "cuda"])  # GPU-accelerated decoding
         
+        # Loop video input so FFmpeg never runs out of frames.
+        # Without this, setpts slow-down causes a hang when all source frames
+        # are consumed but the target duration hasn't been reached yet.
+        # The -t flag later guarantees the output is cut at the correct length.
+        cmd.extend(["-stream_loop", "-1"])
+        
         cmd.extend([
             "-i", fg_path,                # Video [0:v] (used for both bg and fg)
             "-i", audio_path,             # Audio [1:a]
             "-filter_complex", filter_chain,
             "-map", "[vout]",             # Use video from filter_complex output
             "-map", "1:a",                # Use audio from audio file
-            "-shortest",                   # End when shortest input ends
+        ])
+        
+        # Explicit duration limit prevents hanging (critical with -filter_complex)
+        if output_duration and output_duration > 0:
+            cmd.extend(["-t", f"{output_duration:.3f}"])
+            log_fn(f"[EXPORT] Output duration limited to {output_duration:.2f}s")
+        
+        cmd.extend([
+            "-shortest",                   # Safety net (may not work with filter_complex)
             "-c:a", "aac",                # Audio codec
             "-b:a", "192k",               # Audio bitrate
         ])
