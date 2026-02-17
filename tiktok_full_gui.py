@@ -2550,7 +2550,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             setpts_filter = f"setpts=PTS/{speed_factor:.6f},"
             log_fn(f"[EXPORT] ✓ Speed adjustment filter: setpts=PTS/{speed_factor:.6f}")
         
-        # Build background from video: scale to fill canvas, apply blur and dim
+        # Build background from video: scale to FILL canvas (preserving aspect ratio), apply blur and dim
         # FFmpeg boxblur approximates Gaussian blur; halving the radius gives similar visual results.
         # Minimum of 5 ensures visible blur even with small radius settings.
         box_blur_val = max(5, blur_radius // 2)
@@ -2558,8 +2558,16 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # FFmpeg eq filter brightness is additive (-1.0 to 1.0), so: brightness = dim_factor - 1.0
         eq_brightness = dim_factor - 1.0
         
+        # Ensure target dimensions are even (required for yuv420p pixel format)
+        bg_target_w = int(video_width * bg_scale_extra) & ~1  # Ensure even
+        bg_target_h = int(video_height * bg_scale_extra) & ~1
+        
+        # Use force_original_aspect_ratio=increase to scale video to FILL the target area
+        # (preserves aspect ratio, may overflow in one dimension), then crop to exact canvas size.
+        # Without this, a wide foreground video (e.g. 1978x389) would be distorted
+        # when forced into a 9:16 frame, making the output look narrower than expected.
         bg_filter = (
-            f"[0:v]{setpts_filter}scale={int(video_width * bg_scale_extra)}:{int(video_height * bg_scale_extra)},"
+            f"[0:v]{setpts_filter}scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
             f"crop={video_width}:{video_height},"
             f"boxblur={box_blur_val}:{box_blur_val},"
             f"eq=brightness={eq_brightness:.2f}[bg]"
@@ -3475,8 +3483,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         
         log(f"[SCALE] min_scale_to_fit={min_scale_to_fit:.3f}, fit_scale={fit_scale:.3f}, user_zoom={user_zoom:.2f}, final={fg_scale:.3f}")
         
-        scale_w = max(1, int(round(crop_w * fg_scale)))
-        scale_h = max(1, int(round(crop_h * fg_scale)))
+        scale_w = max(2, int(round(crop_w * fg_scale)) & ~1)  # Ensure even (required for yuv420p)
+        scale_h = max(2, int(round(crop_h * fg_scale)) & ~1)
         
         # Get caption offset for logging
         y_offset = globals().get('CAPTION_Y_OFFSET', 0)
