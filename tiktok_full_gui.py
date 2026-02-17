@@ -914,7 +914,7 @@ DIM_FACTOR = 0.55
 USE_GPU_IF_AVAILABLE = True
 PREFERRED_NVENC_CODEC = "h264_nvenc"
 USE_HARDWARE_DECODING = True  # Enable GPU-accelerated decoding
-NVENC_PRESET_SPEED = "p4"  # p1=fastest, p7=slowest/best quality. p4=balanced for speed
+NVENC_PRESET_SPEED = "p1"  # p1=fastest, p7=slowest/best quality. Using p1 for maximum export speed
 
 CAPTION_RAISE = 420
 CAPTION_Y_OFFSET = 0  # Vertical offset in pixels (negative = move up, positive = move down)
@@ -1315,7 +1315,7 @@ def get_export_settings():
     threads = 4  # Use 4 threads for better CPU utilization (was 0/auto)
     libx264_params = ["-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]  # Changed from slow to ultrafast
     libx264_codec = "libx264"
-    nvenc_params = ["-rc", "vbr_hq", "-cq", "19", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
+    nvenc_params = ["-rc", "vbr_hq", "-cq", "19", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-spatial_aq", "1", "-temporal_aq", "1", "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
@@ -1333,7 +1333,8 @@ def reencode_with_libx264(input_path, output_path, log=None):
     # Use NVENC if available, otherwise use faster CPU preset
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "vbr_hq", "-cq", "20", "-b:v", "0", 
-                   "-preset", NVENC_PRESET_SPEED, "-pix_fmt", "yuv420p", "-profile:v", "high"])
+                   "-preset", NVENC_PRESET_SPEED, "-spatial_aq", "1", "-temporal_aq", "1",
+                   "-pix_fmt", "yuv420p", "-profile:v", "high"])
     else:
         cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", 
                    "-pix_fmt", "yuv420p", "-profile:v", "high"])
@@ -1376,8 +1377,8 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
     
     if use_nvenc and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         codec = PREFERRED_NVENC_CODEC
-        # Use faster preset for pre-render (p2 instead of p4)
-        vparams = ["-c:v", codec, "-rc", "vbr_hq", "-cq", "22", "-b:v", "0", "-preset", "p2"]
+        # Use fastest preset for pre-render (p1 = maximum speed)
+        vparams = ["-c:v", codec, "-rc", "vbr_hq", "-cq", "22", "-b:v", "0", "-preset", "p1"]
     else:
         codec = "libx264"
         vparams = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22"]  # Changed from veryfast to ultrafast
@@ -1878,12 +1879,14 @@ def _make_ffmpeg_params_for_codec(codec):
     - NVENC encoding below (works!)
     """
     if codec in ("h264_nvenc", "hevc_nvenc"):
-        # GPU encoding with NVENC - optimized for speed and quality
+        # GPU encoding with NVENC - optimized for maximum speed
         return [
             "-rc", "vbr_hq",           # Variable bitrate, high quality
             "-cq", "19",               # Constant quality level (lower = better)
             "-b:v", "0",               # Let CQ control quality
-            "-preset", NVENC_PRESET_SPEED,  # p4 for speed (configurable)
+            "-preset", NVENC_PRESET_SPEED,  # p1 for max speed (configurable)
+            "-spatial_aq", "1",        # GPU spatial adaptive quantization
+            "-temporal_aq", "1",       # GPU temporal adaptive quantization
             "-pix_fmt", "yuv420p",     # Standard pixel format
             "-profile:v", "high",      # H.264 High profile
             "-movflags", "+faststart"  # Web streaming optimization
@@ -2623,8 +2626,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         log_fn(f"[EXPORT] Filter chain: {filter_chain[:300]}...")
         
         # Build FFmpeg command - single video input used for both bg and fg
-        cmd = [
-            "ffmpeg", "-y",
+        # Enable hardware decoding when GPU is available for faster input processing
+        use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
+        cmd = ["ffmpeg", "-y"]
+        
+        if use_gpu and USE_HARDWARE_DECODING:
+            cmd.extend(["-hwaccel", "cuda"])  # GPU-accelerated decoding
+        
+        cmd.extend([
             "-i", fg_path,                # Video [0:v] (used for both bg and fg)
             "-i", audio_path,             # Audio [1:a]
             "-filter_complex", filter_chain,
@@ -2633,17 +2642,19 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             "-shortest",                   # End when shortest input ends
             "-c:a", "aac",                # Audio codec
             "-b:a", "192k",               # Audio bitrate
-        ]
+        ])
         
         # Add video encoding parameters
-        if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
-            log_fn(f"[EXPORT] Using GPU acceleration (NVENC: {PREFERRED_NVENC_CODEC})...")
+        if use_gpu:
+            log_fn(f"[EXPORT] Using GPU acceleration (NVENC: {PREFERRED_NVENC_CODEC}, preset: {NVENC_PRESET_SPEED}, hwaccel: {USE_HARDWARE_DECODING})...")
             cmd.extend([
                 "-c:v", PREFERRED_NVENC_CODEC,
                 "-rc", "vbr_hq",
                 "-cq", "19",
                 "-b:v", "0",
                 "-preset", NVENC_PRESET_SPEED,
+                "-spatial_aq", "1",        # GPU spatial adaptive quantization
+                "-temporal_aq", "1",       # GPU temporal adaptive quantization
                 "-pix_fmt", "yuv420p",
                 "-profile:v", "high"
             ])
@@ -2653,7 +2664,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 "-c:v", "libx264",
                 "-preset", "ultrafast",
                 "-crf", "20",
-                "-pix_fmt", "yuv420p"
+                "-pix_fmt", "yuv420p",
+                "-threads", "0"            # Use all CPU threads when no GPU
             ])
         
         cmd.extend([
