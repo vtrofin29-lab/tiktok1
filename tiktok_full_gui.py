@@ -2548,10 +2548,16 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Build the setpts expression for speed adjustment
         setpts_filter = ""
+        # Track whether we're slowing down (need looping) or speeding up
+        needs_stream_loop = False
         if speed_factor and speed_factor > 0:
             # setpts=PTS/factor speeds up (factor>1) or slows down (factor<1)
             setpts_filter = f"setpts=PTS/{speed_factor:.6f},"
             log_fn(f"[EXPORT] ✓ Speed adjustment filter: setpts=PTS/{speed_factor:.6f}")
+            if speed_factor < 1.0:
+                # Slowing down: video becomes longer, need looping to avoid running out of frames
+                needs_stream_loop = True
+                log_fn(f"[EXPORT] Video is being slowed down (factor={speed_factor:.4f}) - looping enabled")
         
         # Build background from video: scale to FILL canvas (preserving aspect ratio), apply blur and dim
         # FFmpeg boxblur approximates Gaussian blur; halving the radius gives similar visual results.
@@ -2565,26 +2571,27 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_target_w = int(video_width * bg_scale_extra) & ~1  # Ensure even
         bg_target_h = int(video_height * bg_scale_extra) & ~1
         
-        # Use force_original_aspect_ratio=increase to scale video to FILL the target area
-        # (preserves aspect ratio, may overflow in one dimension), then crop to exact canvas size.
-        # Without this, a wide foreground video (e.g. 1978x389) would be distorted
-        # when forced into a 9:16 frame, making the output look narrower than expected.
+        # Use split filter to decode [0:v] only once, then branch into bg and fg paths.
+        # This avoids decoding the input twice which conflicts with GPU hardware decoding.
+        split_filter = f"[0:v]{setpts_filter}split=2[v_bg][v_fg]"
+        
+        # Background: scale to fill canvas (preserving aspect ratio), blur, dim
         bg_filter = (
-            f"[0:v]{setpts_filter}scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
+            f"[v_bg]scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
             f"crop={video_width}:{video_height},"
             f"boxblur={box_blur_val}:{box_blur_val},"
             f"eq=brightness={eq_brightness:.2f}[bg]"
         )
         
-        # Build foreground filter (with optional mirror and speed adjustment)
+        # Foreground filter (with optional mirror)
         if mirror_video:
-            fg_prep = f"[0:v]{setpts_filter}hflip[fg_ready]"
+            fg_prep = f"[v_fg]hflip[fg_ready]"
             log_fn("[EXPORT] ✓ Mirror/flip filter added")
         else:
-            fg_prep = f"[0:v]{setpts_filter}copy[fg_ready]"
+            fg_prep = f"[v_fg]copy[fg_ready]"
         
-        # Combine: bg + fg overlay
-        filter_parts = [bg_filter, fg_prep, "[bg][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
+        # Combine: split → bg + fg overlay
+        filter_parts = [split_filter, bg_filter, fg_prep, "[bg][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
         
         if use_subtitle_file and ass_subtitle_path:
             # Use ass subtitle filter (burns subtitles into video)
@@ -2644,22 +2651,28 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             except Exception as e:
                 log_fn(f"[EXPORT] Could not probe audio duration: {e}")
         
-        # Build FFmpeg command - single video input used for both bg and fg
+        # Build FFmpeg command - single video input used for both bg and fg (via split filter)
         # Enable hardware decoding when GPU is available for faster input processing
         use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
         cmd = ["ffmpeg", "-y"]
         
-        if use_gpu and USE_HARDWARE_DECODING:
+        # -hwaccel cuda conflicts with -stream_loop -1 (GPU decoder can't handle looping,
+        # falls back to CPU silently → GPU drops to 1-3%). Only use hwaccel when no loop.
+        if use_gpu and USE_HARDWARE_DECODING and not needs_stream_loop:
             cmd.extend(["-hwaccel", "cuda"])  # GPU-accelerated decoding
+            log_fn("[EXPORT] ✓ GPU hardware decoding enabled (no stream loop needed)")
+        elif use_gpu and needs_stream_loop:
+            log_fn("[EXPORT] ⚠️ GPU hwaccel disabled (incompatible with -stream_loop). NVENC encoding still active.")
         
-        # Loop video input so FFmpeg never runs out of frames.
-        # Without this, setpts slow-down causes a hang when all source frames
-        # are consumed but the target duration hasn't been reached yet.
-        # The -t flag later guarantees the output is cut at the correct length.
-        cmd.extend(["-stream_loop", "-1"])
+        # Only loop video when slowing down (speed_factor < 1) to prevent running out of frames.
+        # When speeding up or at normal speed, the video has enough frames already.
+        # -stream_loop -1 conflicts with -hwaccel cuda, so we only use it when truly needed.
+        if needs_stream_loop:
+            cmd.extend(["-stream_loop", "-1"])
+            log_fn("[EXPORT] ✓ Stream loop enabled (video is being slowed down)")
         
         cmd.extend([
-            "-i", fg_path,                # Video [0:v] (used for both bg and fg)
+            "-i", fg_path,                # Video [0:v] (split into bg and fg in filter)
             "-i", audio_path,             # Audio [1:a]
             "-filter_complex", filter_chain,
             "-map", "[vout]",             # Use video from filter_complex output

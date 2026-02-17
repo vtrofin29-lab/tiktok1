@@ -614,6 +614,78 @@ def test_source_code_drawtext_no_hardcoded_position():
     return True
 
 
+def test_source_code_uses_split_filter():
+    """Test that filter chain uses split filter instead of referencing [0:v] twice."""
+    print("\n--- Test: Source code uses split filter ---")
+    source_path = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Find the _export_with_ffmpeg_filters function body
+    export_fn_start = content.find('def _export_with_ffmpeg_filters')
+    next_fn = content.find('\ndef ', export_fn_start + 1)
+    export_fn_body = content[export_fn_start:next_fn] if next_fn != -1 else content[export_fn_start:]
+
+    # Check that split filter is used
+    if 'split=2[v_bg][v_fg]' in export_fn_body:
+        print("✓ Filter chain uses split=2 to decode input once")
+    else:
+        print("✗ Missing split filter - input decoded twice (GPU conflict)")
+        return False
+
+    # Check that bg uses [v_bg] not [0:v]
+    if '[v_bg]scale=' in export_fn_body:
+        print("✓ Background filter uses [v_bg] from split")
+    else:
+        print("✗ Background filter still uses [0:v] directly")
+        return False
+
+    # Check that fg uses [v_fg] not [0:v]
+    if '[v_fg]' in export_fn_body:
+        print("✓ Foreground filter uses [v_fg] from split")
+    else:
+        print("✗ Foreground filter still uses [0:v] directly")
+        return False
+
+    return True
+
+
+def test_source_code_hwaccel_stream_loop_conflict():
+    """Test that -hwaccel cuda is not used together with -stream_loop -1."""
+    print("\n--- Test: hwaccel/stream_loop conflict handled ---")
+    source_path = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Find the _export_with_ffmpeg_filters function body
+    export_fn_start = content.find('def _export_with_ffmpeg_filters')
+    next_fn = content.find('\ndef ', export_fn_start + 1)
+    export_fn_body = content[export_fn_start:next_fn] if next_fn != -1 else content[export_fn_start:]
+
+    # Check that hwaccel is conditional on not needs_stream_loop
+    if 'not needs_stream_loop' in export_fn_body:
+        print("✓ hwaccel cuda is disabled when stream_loop is needed")
+    else:
+        print("✗ hwaccel not conditional on stream_loop - GPU conflict possible")
+        return False
+
+    # Check that stream_loop is conditional
+    if 'if needs_stream_loop:' in export_fn_body:
+        print("✓ stream_loop is only enabled when needed (slowdown)")
+    else:
+        print("✗ stream_loop is always used - conflicts with hwaccel")
+        return False
+
+    # Check needs_stream_loop is properly set based on speed_factor
+    if 'speed_factor < 1.0' in export_fn_body and 'needs_stream_loop = True' in export_fn_body:
+        print("✓ needs_stream_loop is set based on speed_factor < 1.0")
+    else:
+        print("✗ needs_stream_loop not properly set")
+        return False
+
+    return True
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -632,6 +704,8 @@ if __name__ == "__main__":
         test_drawtext_uses_y_offset(),
         test_build_all_caption_filters_passes_y_offset(),
         test_source_code_drawtext_no_hardcoded_position(),
+        test_source_code_uses_split_filter(),
+        test_source_code_hwaccel_stream_loop_conflict(),
     ]
 
     print("\n" + "=" * 60)
