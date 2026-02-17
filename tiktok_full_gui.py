@@ -2784,33 +2784,10 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
     
-    # build background (blurred video - matches the foreground video with blur and dim)
-    # Note: This per-frame processing is only used in the MoviePy fallback path.
-    # The primary FFmpeg export path uses native boxblur/eq filters for much better performance.
-    img_w, img_h = video_clip.w, video_clip.h
-    scale_needed = max(WIDTH / img_w, HEIGHT / img_h) * bg_scale_extra
-    new_w = int(img_w * scale_needed)
-    new_h = int(img_h * scale_needed)
-    left = max(0, (new_w - WIDTH) // 2)
-    top = max(0, (new_h - HEIGHT) // 2)
-    
-    def make_blurred_bg_frame(get_frame, t):
-        """Apply blur and dim to each frame for the video background."""
-        frame = get_frame(t)
-        img = Image.fromarray(frame)
-        img = img.resize((new_w, new_h), Image.LANCZOS)
-        img = img.crop((left, top, left + WIDTH, top + HEIGHT))
-        img = img.filter(ImageFilter.GaussianBlur(blur_radius))
-        img = ImageEnhance.Brightness(img).enhance(dim_factor)
-        return np.array(img)
-    
-    bg_clip = video_clip.fl(make_blurred_bg_frame).set_duration(video_clip.duration)
-    bg_static = bg_clip  # Keep variable name for compatibility with rest of function
-    
-    try:
-        log(f"[compose] Video background created: {WIDTH}x{HEIGHT}, blur={blur_radius}, dim={dim_factor}")
-    except Exception:
-        pass
+    # Background creation is deferred until needed (MoviePy fallback only).
+    # The primary FFmpeg export path creates the blurred background via native boxblur/eq filters,
+    # so this expensive per-frame MoviePy processing is skipped when FFmpeg export succeeds.
+    bg_static = None  # Will be created lazily if MoviePy fallback is needed
 
     # foreground: zoom to fill width (left/right borders) with user-controllable zoom
     # Calculate scale to fill the canvas width while maintaining aspect ratio
@@ -3133,6 +3110,29 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     log(f"[COMPOSE] Audio clip duration: {audio_clip.duration:.2f}s")
                 except Exception:
                     pass
+            
+            # Create blurred video background lazily (only for MoviePy fallback path)
+            # This per-frame processing is expensive, so we skip it when FFmpeg export succeeds
+            log("[COMPOSE] Creating blurred video background for MoviePy export...")
+            img_w, img_h = video_clip.w, video_clip.h
+            scale_needed = max(WIDTH / img_w, HEIGHT / img_h) * bg_scale_extra
+            new_w = int(img_w * scale_needed)
+            new_h = int(img_h * scale_needed)
+            left_bg = max(0, (new_w - WIDTH) // 2)
+            top_bg = max(0, (new_h - HEIGHT) // 2)
+            
+            def make_blurred_bg_frame(get_frame, t):
+                """Apply blur and dim to each frame for the video background."""
+                frame = get_frame(t)
+                img = Image.fromarray(frame)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                img = img.crop((left_bg, top_bg, left_bg + WIDTH, top_bg + HEIGHT))
+                img = img.filter(ImageFilter.GaussianBlur(blur_radius))
+                img = ImageEnhance.Brightness(img).enhance(dim_factor)
+                return np.array(img)
+            
+            bg_static = video_clip.fl(make_blurred_bg_frame).set_duration(video_clip.duration)
+            log(f"[COMPOSE] Video background created: {WIDTH}x{HEIGHT}, blur={blur_radius}, dim={dim_factor}")
             
             final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
             try:
