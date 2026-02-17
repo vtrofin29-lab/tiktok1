@@ -2533,10 +2533,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                              "-of", "default=noprint_wrappers=1:nokey=1", fg_path]
                 probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
-                fg_duration = float(probe_result.stdout.strip())
-                if abs(fg_duration - target_duration) > 0.05:
-                    speed_factor = fg_duration / target_duration
-                    log_fn(f"[EXPORT] Video speed adjustment: {fg_duration:.2f}s → {target_duration:.2f}s (factor: {speed_factor:.4f})")
+                if probe_result.returncode == 0 and probe_result.stdout.strip():
+                    fg_duration = float(probe_result.stdout.strip())
+                    if abs(fg_duration - target_duration) > 0.05:
+                        speed_factor = fg_duration / target_duration
+                        log_fn(f"[EXPORT] Video speed adjustment: {fg_duration:.2f}s → {target_duration:.2f}s (factor: {speed_factor:.4f})")
+                else:
+                    log_fn(f"[EXPORT] ffprobe failed (rc={probe_result.returncode}), skipping speed adjustment")
             except Exception as e:
                 log_fn(f"[EXPORT] Could not probe video duration for speed adjustment: {e}")
         
@@ -2548,7 +2551,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             log_fn(f"[EXPORT] ✓ Speed adjustment filter: setpts=PTS/{speed_factor:.6f}")
         
         # Build background from video: scale to fill canvas, apply blur and dim
-        # boxblur uses radius:power format - higher power = more blur. Convert Gaussian radius to boxblur approximation.
+        # FFmpeg boxblur approximates Gaussian blur; halving the radius gives similar visual results.
+        # Minimum of 5 ensures visible blur even with small radius settings.
         box_blur_val = max(5, blur_radius // 2)
         # brightness adjustment: dim_factor 0.55 means reduce to 55% brightness
         # FFmpeg eq filter brightness is additive (-1.0 to 1.0), so: brightness = dim_factor - 1.0
@@ -2781,6 +2785,8 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         pass
     
     # build background (blurred video - matches the foreground video with blur and dim)
+    # Note: This per-frame processing is only used in the MoviePy fallback path.
+    # The primary FFmpeg export path uses native boxblur/eq filters for much better performance.
     img_w, img_h = video_clip.w, video_clip.h
     scale_needed = max(WIDTH / img_w, HEIGHT / img_h) * bg_scale_extra
     new_w = int(img_w * scale_needed)
@@ -2798,8 +2804,8 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         img = ImageEnhance.Brightness(img).enhance(dim_factor)
         return np.array(img)
     
-    bg_video = video_clip.fl(make_blurred_bg_frame).set_duration(video_clip.duration)
-    bg_static = bg_video  # Keep variable name for compatibility with rest of function
+    bg_clip = video_clip.fl(make_blurred_bg_frame).set_duration(video_clip.duration)
+    bg_static = bg_clip  # Keep variable name for compatibility with rest of function
     
     try:
         log(f"[compose] Video background created: {WIDTH}x{HEIGHT}, blur={blur_radius}, dim={dim_factor}")
