@@ -9,10 +9,19 @@ moviepy>=1.0.3
 openai-whisper>=20230918
 
 # === GPU acceleration for Whisper (required for AI transcription) ===
-# Install PyTorch with CUDA for GPU support:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu118
-# Or CPU-only (slower):
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch BEFORE running pip install -r requirements.txt:
+#
+#   RTX 5070/5080/5090 (Blackwell, sm_120) — requires nightly with CUDA 13.0:
+#     pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130
+#
+#   RTX 4060/4070/4080/4090 (Ada Lovelace) — stable release:
+#     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+#   RTX 3060/3070/3080/3090 (Ampere) — stable release:
+#     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+#   CPU-only (no GPU, slower):
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0
 
 # === Optional but recommended ===

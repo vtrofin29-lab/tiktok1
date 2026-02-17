@@ -62,17 +62,25 @@ Optional packages:
 
 #### PyTorch GPU Support
 
-For faster Whisper transcription and NVENC video encoding, install PyTorch with CUDA:
-```bash
-# For NVIDIA GPU (CUDA 11.8):
-pip install torch --index-url https://download.pytorch.org/whl/cu118
+**Install PyTorch BEFORE** running `pip install -r requirements.txt`:
 
-# For NVIDIA GPU (CUDA 12.1):
-pip install torch --index-url https://download.pytorch.org/whl/cu121
+```bash
+# RTX 5070/5080/5090 (Blackwell) — REQUIRES nightly with CUDA 13.0:
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130
+
+# RTX 4060/4070/4080/4090 (Ada Lovelace) — stable with CUDA 12.1:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# RTX 3060/3070/3080/3090 (Ampere) — stable with CUDA 11.8:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
 # CPU-only (slower, but works without GPU):
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 ```
+
+> **⚠️ RTX 50-series users:** You MUST use the nightly `cu130` build. Stable PyTorch releases
+> do not yet support Blackwell architecture (sm_120). See `RTX_5070_INSTALARE_PYTORCH_RO.md`
+> for a detailed Romanian guide.
 
 #### System Requirements
 - **FFmpeg** must be installed and available in PATH (for video encoding)
