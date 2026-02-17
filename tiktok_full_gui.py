@@ -2107,7 +2107,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_width, video_height, 
                                    fontsize=56, font_path=None, text_color="0xFFFFFF", 
-                                   stroke_color="0x000000", stroke_width=3, words_per_line=None):
+                                   stroke_color="0x000000", stroke_width=3, words_per_line=None,
+                                   y_offset=0):
     """
     Build FFmpeg drawtext filter for a single caption with custom styling.
     
@@ -2123,6 +2124,8 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
         stroke_color: Stroke/border color in hex format (e.g., '0x000000')
         stroke_width: Stroke width in pixels
         words_per_line: Maximum words per line (optional, overrides character-based wrapping)
+        y_offset: Vertical offset in pixels (negative = move up, positive = move down).
+                  Matches CAPTION_Y_OFFSET: 0 = bottom, -618 = 618px up from bottom.
         
     Returns:
         FFmpeg drawtext filter string
@@ -2134,9 +2137,12 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
     escaped_lines = [_escape_ffmpeg_text(line) for line in lines]
     text_with_newlines = '\\n'.join(escaped_lines)
     
-    # Position: bottom-center with safer offset from bottom
-    # Use h-150 instead of video_height-100 to ensure captions stay within bounds
-    y_position = "h-150"  # 150px from bottom for multi-line text (dynamic, works with any height)
+    # Position: use y_offset to match preview/MoviePy positioning
+    # MoviePy uses: y = HEIGHT - img_clip.h + y_offset
+    # FFmpeg drawtext equivalent: y = h - text_h + y_offset
+    # y_offset = 0 → text at bottom, y_offset = -618 → text 618px up from bottom
+    # 'th' is the rendered text height in FFmpeg drawtext expressions
+    y_position = f"h-th+({y_offset})"
     
     # Build drawtext filter with custom styling
     filter_parts = [
@@ -2146,7 +2152,7 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
         f"borderw={stroke_width}",
         f"bordercolor={stroke_color}",
         f"x=(w-text_w)/2",  # Center horizontally
-        f"y={y_position}",   # Bottom positioning (safe margin)
+        f"y={y_position}",   # Bottom positioning with offset
         f"enable='between(t,{start_time:.3f},{end_time:.3f})'"  # Timing
     ]
     
@@ -2161,7 +2167,8 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
 
 def _build_all_caption_filters(caption_segments, video_width, video_height, 
                                font_path=None, text_color="0xFFFFFF", 
-                               stroke_color="0x000000", stroke_width=3, words_per_line=None, fontsize=56):
+                               stroke_color="0x000000", stroke_width=3, words_per_line=None, fontsize=56,
+                               y_offset=0):
     """
     Build all caption drawtext filters and chain them together with custom styling.
     
@@ -2175,6 +2182,7 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
         stroke_width: Stroke width in pixels
         words_per_line: Maximum words per line (optional)
         fontsize: Font size in pixels
+        y_offset: Vertical offset in pixels (negative = move up, positive = move down)
         
     Returns:
         Complete filter_complex string for all captions
@@ -2196,7 +2204,8 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
             text_color=text_color,
             stroke_color=stroke_color,
             stroke_width=stroke_width,
-            words_per_line=words_per_line  # Pass through words_per_line
+            words_per_line=words_per_line,
+            y_offset=y_offset
         )
         filters.append(caption_filter)
     
@@ -2437,6 +2446,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         use_subtitle_file = len(caption_segments) > MAX_DRAWTEXT_CAPTIONS
         ass_subtitle_path = None
         
+        # Get caption Y offset from global (used by both ASS and drawtext paths)
+        caption_y_offset = globals().get('CAPTION_Y_OFFSET', 0)
+        
         if use_subtitle_file:
             log_fn(f"[EXPORT] Using ASS subtitle file for {len(caption_segments)} captions (efficient for many captions)")
             # Generate ASS subtitle file in temp directory
@@ -2467,8 +2479,6 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                     font_name = loaded_family
                     log_fn(f"[EXPORT] Using cached font family for ASS: {font_name}")
             
-            # Get caption Y offset from global
-            caption_y_offset = globals().get('CAPTION_Y_OFFSET', 0)
             
             # Log the actual values being used for ASS generation
             log_fn(f"[ASS-GEN] Generating ASS with: font_name={font_name}, font_size={font_size}, y_offset={caption_y_offset}")
@@ -2498,7 +2508,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 stroke_color=stroke_color_hex,
                 stroke_width=stroke_width,
                 words_per_line=words_per_caption,
-                fontsize=font_size
+                fontsize=font_size,
+                y_offset=caption_y_offset
             )
         
         # Build video effect filters (to match MoviePy effects)

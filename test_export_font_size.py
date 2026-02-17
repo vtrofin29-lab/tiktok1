@@ -107,12 +107,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_width, video_height,
                                    fontsize=56, font_path=None, text_color="0xFFFFFF",
-                                   stroke_color="0x000000", stroke_width=3, words_per_line=None):
+                                   stroke_color="0x000000", stroke_width=3, words_per_line=None,
+                                   y_offset=0):
     """Build FFmpeg drawtext filter for a single caption with custom styling."""
     lines = _calculate_text_lines(caption_text, max_chars=40, words_per_line=words_per_line)
     escaped_lines = [_escape_ffmpeg_text(line) for line in lines]
     text_with_newlines = '\\n'.join(escaped_lines)
-    y_position = "h-150"
+    y_position = f"h-th+({y_offset})"
     filter_parts = [
         f"drawtext=text='{text_with_newlines}'",
         f"fontsize={fontsize}",
@@ -131,7 +132,7 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
 def _build_all_caption_filters(caption_segments, video_width, video_height,
                                font_path=None, text_color="0xFFFFFF",
                                stroke_color="0x000000", stroke_width=3, words_per_line=None,
-                               fontsize=56):
+                               fontsize=56, y_offset=0):
     """Build all caption drawtext filters and chain them together."""
     if not caption_segments:
         return None
@@ -148,7 +149,8 @@ def _build_all_caption_filters(caption_segments, video_width, video_height,
             text_color=text_color,
             stroke_color=stroke_color,
             stroke_width=stroke_width,
-            words_per_line=words_per_line
+            words_per_line=words_per_line,
+            y_offset=y_offset
         )
         filters.append(caption_filter)
     return ','.join(filters)
@@ -490,6 +492,128 @@ def test_source_code_ass_has_stroke_color_param():
     return True
 
 
+def test_drawtext_uses_y_offset():
+    """Test that _build_caption_drawtext_filter uses y_offset instead of hardcoded h-150."""
+    print("\nTesting drawtext filter uses y_offset parameter...")
+
+    # Test with default y_offset=0 (bottom position)
+    filter_str = _build_caption_drawtext_filter(
+        caption_text="Hello world",
+        start_time=0.0, end_time=1.0,
+        video_width=1080, video_height=1920,
+        y_offset=0,
+    )
+
+    if "h-150" in filter_str:
+        print("✗ Drawtext filter still uses hardcoded h-150")
+        return False
+    if "h-th+(0)" in filter_str:
+        print("✓ Default y_offset=0 produces y=h-th+(0)")
+    else:
+        print(f"✗ Unexpected y position in filter: {filter_str}")
+        return False
+
+    # Test with negative y_offset (moving captions up)
+    filter_str_up = _build_caption_drawtext_filter(
+        caption_text="Hello world",
+        start_time=0.0, end_time=1.0,
+        video_width=1080, video_height=1920,
+        y_offset=-618,
+    )
+
+    if "h-th+(-618)" in filter_str_up:
+        print("✓ Negative y_offset=-618 produces y=h-th+(-618)")
+    else:
+        print(f"✗ Unexpected y position with offset: {filter_str_up}")
+        return False
+
+    return True
+
+
+def test_build_all_caption_filters_passes_y_offset():
+    """Test that _build_all_caption_filters passes y_offset to individual filters."""
+    print("\nTesting _build_all_caption_filters passes y_offset through...")
+
+    caption_segments = [
+        {"text": "Hello world", "start": 0.0, "end": 1.0},
+        {"text": "Test caption", "start": 1.5, "end": 2.5},
+    ]
+
+    filters_str = _build_all_caption_filters(
+        caption_segments,
+        video_width=1080, video_height=1920,
+        y_offset=-400,
+    )
+
+    if filters_str is None:
+        print("✗ _build_all_caption_filters returned None")
+        return False
+
+    count_offset = filters_str.count("h-th+(-400)")
+    if count_offset == len(caption_segments):
+        print(f"✓ All {count_offset} caption filters use y_offset=-400")
+    else:
+        print(f"✗ Expected {len(caption_segments)} occurrences of h-th+(-400), got {count_offset}")
+        return False
+
+    if "h-150" in filters_str:
+        print("✗ Filters still contain hardcoded h-150")
+        return False
+    print("✓ No hardcoded h-150 found in filters")
+    return True
+
+
+def test_source_code_drawtext_no_hardcoded_position():
+    """Verify source code no longer has hardcoded y position in drawtext."""
+    print("\nVerifying source code drawtext uses y_offset (no hardcoded h-150)...")
+
+    source_path = os.path.join(os.path.dirname(__file__), 'tiktok_full_gui.py')
+    with open(source_path, 'r') as f:
+        content = f.read()
+
+    # Find the _build_caption_drawtext_filter function
+    fn_start = content.find('def _build_caption_drawtext_filter')
+    if fn_start == -1:
+        print("✗ Could not find _build_caption_drawtext_filter function")
+        return False
+
+    next_fn = content.find('\ndef ', fn_start + 1)
+    fn_body = content[fn_start:next_fn] if next_fn != -1 else content[fn_start:]
+
+    # Check that y_offset parameter exists
+    if 'y_offset' in fn_body[:fn_body.find('"""', 10)]:  # Check in signature area
+        print("✓ _build_caption_drawtext_filter accepts y_offset parameter")
+    else:
+        print("✗ _build_caption_drawtext_filter missing y_offset parameter")
+        return False
+
+    # Check that hardcoded h-150 is NOT used
+    if 'h-150' in fn_body:
+        print("✗ _build_caption_drawtext_filter still has hardcoded h-150")
+        return False
+    print("✓ No hardcoded h-150 in drawtext filter function")
+
+    # Check that y_offset is used in y_position
+    if 'y_offset' in fn_body[fn_body.find('y_position'):]:
+        print("✓ y_position uses y_offset parameter")
+    else:
+        print("✗ y_position does not use y_offset")
+        return False
+
+    # Check export function passes y_offset to _build_all_caption_filters
+    export_fn_start = content.find('def _export_with_ffmpeg_filters')
+    next_fn2 = content.find('\ndef ', export_fn_start + 1)
+    export_fn_body = content[export_fn_start:next_fn2] if next_fn2 != -1 else content[export_fn_start:]
+
+    if 'y_offset=caption_y_offset' in export_fn_body:
+        print("✓ Export function passes caption_y_offset to caption filters")
+    else:
+        print("✗ Export function does not pass y_offset to caption filters")
+        return False
+
+    return True
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -505,6 +629,9 @@ if __name__ == "__main__":
         test_ass_subtitle_uses_stroke_color(),
         test_ass_subtitle_default_text_color_is_white(),
         test_source_code_ass_has_stroke_color_param(),
+        test_drawtext_uses_y_offset(),
+        test_build_all_caption_filters_passes_y_offset(),
+        test_source_code_drawtext_no_hardcoded_position(),
     ]
 
     print("\n" + "=" * 60)
