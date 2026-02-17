@@ -45,6 +45,11 @@ A comprehensive TikTok video editor with automatic transcription, translation, a
 pip install -r requirements.txt
 ```
 
+Or simply run the installer script:
+```bash
+python install_requirements.py
+```
+
 Required packages:
 - `Pillow>=10.0.0` - Image processing
 - `numpy>=1.24.0` - Numerical operations
