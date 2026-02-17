@@ -2571,13 +2571,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_target_w = int(video_width * bg_scale_extra) & ~1  # Ensure even
         bg_target_h = int(video_height * bg_scale_extra) & ~1
         
-        # Use split filter to decode [0:v] only once, then branch into bg and fg paths.
-        # This avoids decoding the input twice which conflicts with GPU hardware decoding.
-        split_filter = f"[0:v]{setpts_filter}split=2[v_bg][v_fg]"
+        # Use dual [0:v] references for bg and fg paths.
+        # The split filter causes massive CPU buffering overhead that starves the GPU encoder,
+        # dropping GPU utilization from 60-70% to 1-3%. Using [0:v] twice lets FFmpeg
+        # pipeline both paths independently, keeping the GPU encoder fed with frames.
         
         # Background: scale to fill canvas (preserving aspect ratio), blur, dim
         bg_filter = (
-            f"[v_bg]scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
+            f"[0:v]{setpts_filter}scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
             f"crop={video_width}:{video_height},"
             f"boxblur={box_blur_val}:{box_blur_val},"
             f"eq=brightness={eq_brightness:.2f}[bg]"
@@ -2585,13 +2586,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Foreground filter (with optional mirror)
         if mirror_video:
-            fg_prep = f"[v_fg]hflip[fg_ready]"
+            fg_prep = f"[0:v]{setpts_filter}hflip[fg_ready]"
             log_fn("[EXPORT] ✓ Mirror/flip filter added")
         else:
-            fg_prep = f"[v_fg]copy[fg_ready]"
+            fg_prep = f"[0:v]{setpts_filter}copy[fg_ready]"
         
-        # Combine: split → bg + fg overlay
-        filter_parts = [split_filter, bg_filter, fg_prep, "[bg][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
+        # Combine: bg + fg overlay
+        filter_parts = [bg_filter, fg_prep, "[bg][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
         
         if use_subtitle_file and ass_subtitle_path:
             # Use ass subtitle filter (burns subtitles into video)
@@ -2651,7 +2652,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             except Exception as e:
                 log_fn(f"[EXPORT] Could not probe audio duration: {e}")
         
-        # Build FFmpeg command - single video input used for both bg and fg (via split filter)
+        # Build FFmpeg command - single video input, dual [0:v] references for bg and fg
         # Enable hardware decoding when GPU is available for faster input processing
         use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
         cmd = ["ffmpeg", "-y"]
@@ -2672,7 +2673,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             log_fn("[EXPORT] ✓ Stream loop enabled (video is being slowed down)")
         
         cmd.extend([
-            "-i", fg_path,                # Video [0:v] (split into bg and fg in filter)
+            "-i", fg_path,                # Video [0:v] (used twice: bg + fg)
             "-i", audio_path,             # Audio [1:a]
             "-filter_complex", filter_chain,
             "-map", "[vout]",             # Use video from filter_complex output

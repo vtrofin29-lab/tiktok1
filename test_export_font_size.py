@@ -614,9 +614,9 @@ def test_source_code_drawtext_no_hardcoded_position():
     return True
 
 
-def test_source_code_uses_split_filter():
-    """Test that filter chain uses split filter instead of referencing [0:v] twice."""
-    print("\n--- Test: Source code uses split filter ---")
+def test_source_code_uses_dual_input_refs():
+    """Test that filter chain uses dual [0:v] references (not split filter which kills GPU)."""
+    print("\n--- Test: Source code uses dual [0:v] references ---")
     source_path = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
     with open(source_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -626,25 +626,25 @@ def test_source_code_uses_split_filter():
     next_fn = content.find('\ndef ', export_fn_start + 1)
     export_fn_body = content[export_fn_start:next_fn] if next_fn != -1 else content[export_fn_start:]
 
-    # Check that split filter is used
-    if 'split=2[v_bg][v_fg]' in export_fn_body:
-        print("✓ Filter chain uses split=2 to decode input once")
+    # Check that split filter is NOT used (it causes CPU bottleneck, drops GPU to 1-3%)
+    if 'split=2[v_bg][v_fg]' not in export_fn_body:
+        print("✓ No split filter (split causes CPU buffering that starves GPU)")
     else:
-        print("✗ Missing split filter - input decoded twice (GPU conflict)")
+        print("✗ split filter found - this kills GPU utilization (drops to 1-3%)")
         return False
 
-    # Check that bg uses [v_bg] not [0:v]
-    if '[v_bg]scale=' in export_fn_body:
-        print("✓ Background filter uses [v_bg] from split")
+    # Check that bg uses [0:v] directly
+    if '[0:v]' in export_fn_body and 'scale=' in export_fn_body:
+        print("✓ Background filter uses [0:v] directly for better GPU pipelining")
     else:
-        print("✗ Background filter still uses [0:v] directly")
+        print("✗ Background filter doesn't reference [0:v]")
         return False
 
-    # Check that fg uses [v_fg] not [0:v]
-    if '[v_fg]' in export_fn_body:
-        print("✓ Foreground filter uses [v_fg] from split")
+    # Check that fg also uses [0:v]
+    if 'copy[fg_ready]' in export_fn_body or 'hflip[fg_ready]' in export_fn_body:
+        print("✓ Foreground filter produces [fg_ready] output")
     else:
-        print("✗ Foreground filter still uses [0:v] directly")
+        print("✗ Foreground filter missing [fg_ready] output")
         return False
 
     return True
@@ -704,7 +704,7 @@ if __name__ == "__main__":
         test_drawtext_uses_y_offset(),
         test_build_all_caption_filters_passes_y_offset(),
         test_source_code_drawtext_no_hardcoded_position(),
-        test_source_code_uses_split_filter(),
+        test_source_code_uses_dual_input_refs(),
         test_source_code_hwaccel_stream_loop_conflict(),
     ]
 
