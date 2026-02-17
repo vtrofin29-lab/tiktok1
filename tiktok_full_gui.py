@@ -1303,11 +1303,41 @@ class QueueWriter:
         pass
 
 # ----------------- ffmpeg / pre-render / export helpers -----------------
+_nvenc_cache = {}  # Cache NVENC test results to avoid repeated probing
+
 def ffmpeg_supports_nvenc(codec_name="h264_nvenc"):
+    """Test if NVENC encoding actually works (not just listed in encoders)."""
+    if codec_name in _nvenc_cache:
+        return _nvenc_cache[codec_name]
     try:
-        out = subprocess.check_output(["ffmpeg", "-hide_banner", "-encoders"], stderr=subprocess.STDOUT, text=True)
-        return codec_name in out
+        # Step 1: Check encoder is listed
+        out = subprocess.check_output(["ffmpeg", "-hide_banner", "-encoders"],
+                                      stderr=subprocess.STDOUT, text=True, timeout=15)
+        if codec_name not in out:
+            _nvenc_cache[codec_name] = False
+            return False
+        # Step 2: Actually test encoding a tiny dummy frame
+        import tempfile
+        tmp_dir = tempfile.mkdtemp(prefix="nvenc_test_")
+        tmp_path = os.path.join(tmp_dir, "test.mp4")
+        try:
+            test_cmd = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
+                "-c:v", codec_name, "-t", "0.1", tmp_path
+            ]
+            result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=15)
+            works = (result.returncode == 0)
+        finally:
+            try:
+                import shutil
+                shutil.rmtree(tmp_dir)
+            except Exception:
+                pass
+        _nvenc_cache[codec_name] = works
+        return works
     except Exception:
+        _nvenc_cache[codec_name] = False
         return False
 
 def get_export_settings():
@@ -2571,28 +2601,80 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_target_w = int(video_width * bg_scale_extra) & ~1  # Ensure even
         bg_target_h = int(video_height * bg_scale_extra) & ~1
         
-        # Use dual [0:v] references for bg and fg paths.
-        # The split filter causes massive CPU buffering overhead that starves the GPU encoder,
-        # dropping GPU utilization from 60-70% to 1-3%. Using [0:v] twice lets FFmpeg
-        # pipeline both paths independently, keeping the GPU encoder fed with frames.
+        # ── TWO-PASS STRATEGY ──
+        # Pass 1: Pre-render blurred background video to a temp file.
+        #         Heavy CPU filters (boxblur, scale, crop, eq) run here.
+        # Pass 2: Final encode uses two simple inputs (bg + fg) with just
+        #         overlay + captions. GPU NVENC can encode at full speed
+        #         because the filter chain is lightweight.
+        import tempfile
+        bg_temp_dir = tempfile.mkdtemp(prefix="tiktok_bg_")
+        bg_prerendered_path = os.path.join(bg_temp_dir, "bg_blurred.mp4")
         
-        # Background: scale to fill canvas (preserving aspect ratio), blur, dim
-        bg_filter = (
-            f"[0:v]{setpts_filter}scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
+        bg_vf = (
+            f"{setpts_filter}scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
             f"crop={video_width}:{video_height},"
             f"boxblur={box_blur_val}:{box_blur_val},"
-            f"eq=brightness={eq_brightness:.2f}[bg]"
+            f"eq=brightness={eq_brightness:.2f}"
         )
         
-        # Foreground filter (with optional mirror)
+        bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        if needs_stream_loop:
+            bg_cmd.extend(["-stream_loop", "-1"])
+        bg_cmd.extend(["-i", fg_path, "-an", "-vf", bg_vf])
+        
+        # Use NVENC for bg pre-render if available, else CPU ultrafast
+        use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
+        if use_gpu:
+            bg_cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-preset", "p1", "-rc", "vbr_hq", "-cq", "26", "-b:v", "0"])
+        else:
+            bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
+        
+        # Limit bg to same duration as output
+        bg_duration_limit = None
+        if target_duration and target_duration > 0:
+            bg_duration_limit = target_duration
+        else:
+            try:
+                dur_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                           "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
+                dur_result = subprocess.run(dur_cmd, capture_output=True, text=True, timeout=30)
+                if dur_result.returncode == 0 and dur_result.stdout.strip():
+                    bg_duration_limit = float(dur_result.stdout.strip())
+            except Exception:
+                pass
+        if bg_duration_limit:
+            bg_cmd.extend(["-t", f"{bg_duration_limit:.3f}"])
+        
+        bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
+        
+        log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
+        log_fn(f"[EXPORT]   GPU: {'NVENC' if use_gpu else 'CPU'}, blur={box_blur_val}, dim={eq_brightness:.2f}")
+        bg_timeout = max(300, int((bg_duration_limit or 60) * 5))  # 5x video duration, min 5 min
+        bg_result = subprocess.run(bg_cmd, capture_output=True, text=True, timeout=bg_timeout)
+        if bg_result.returncode != 0:
+            log_fn(f"[EXPORT] ⚠️ Background pre-render failed: {bg_result.stderr}")
+            try:
+                import shutil
+                shutil.rmtree(bg_temp_dir)
+            except Exception:
+                pass
+            return False
+        log_fn("[EXPORT] ✓ Background pre-rendered successfully")
+        
+        # ── Pass 2: Final encode ──
+        # Two inputs: [0:v]=bg (pre-rendered blurred), [1:v]=fg (original), [2:a]=audio
+        # Lightweight filter: just overlay + captions. GPU can run at full speed.
+        
+        # Foreground filter (with optional speed adjust + mirror)
         if mirror_video:
-            fg_prep = f"[0:v]{setpts_filter}hflip[fg_ready]"
+            fg_prep = f"[1:v]{setpts_filter}hflip[fg_ready]"
             log_fn("[EXPORT] ✓ Mirror/flip filter added")
         else:
-            fg_prep = f"[0:v]{setpts_filter}copy[fg_ready]"
+            fg_prep = f"[1:v]{setpts_filter}copy[fg_ready]"
         
         # Combine: bg + fg overlay
-        filter_parts = [bg_filter, fg_prep, "[bg][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
+        filter_parts = [fg_prep, "[0:v][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
         
         if use_subtitle_file and ass_subtitle_path:
             # Use ass subtitle filter (burns subtitles into video)
@@ -2627,7 +2709,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         filter_chain = ";".join(filter_parts)
         
         # Log input information for debugging
-        log_fn(f"[EXPORT] Background: blurred video from {fg_path}")
+        log_fn(f"[EXPORT] Pass 2/2: Final encode with lightweight filter chain")
+        log_fn(f"[EXPORT] Background (pre-rendered): {bg_prerendered_path}")
         log_fn(f"[EXPORT] Foreground: {fg_path}")
         log_fn(f"[EXPORT] Audio: {audio_path}")
         log_fn(f"[EXPORT] Output: {output_path} ({video_width}x{video_height})")
@@ -2635,49 +2718,39 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Determine explicit output duration to prevent FFmpeg from hanging.
         # -shortest does NOT work reliably with -filter_complex; we must use -t.
-        output_duration = None
-        if target_duration and target_duration > 0:
-            output_duration = target_duration
-        else:
-            # Probe audio duration as our definitive length
-            try:
-                dur_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                           "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
-                dur_result = subprocess.run(dur_cmd, capture_output=True, text=True, timeout=30)
-                if dur_result.returncode == 0 and dur_result.stdout.strip():
-                    output_duration = float(dur_result.stdout.strip())
-                    log_fn(f"[EXPORT] Audio duration probed: {output_duration:.2f}s")
-                else:
-                    log_fn(f"[EXPORT] ffprobe audio duration failed (rc={dur_result.returncode}): {dur_result.stderr.strip()}")
-            except Exception as e:
-                log_fn(f"[EXPORT] Could not probe audio duration: {e}")
+        output_duration = bg_duration_limit  # Already probed during bg pre-render
+        if not output_duration:
+            if target_duration and target_duration > 0:
+                output_duration = target_duration
+            else:
+                try:
+                    dur_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                               "-of", "default=noprint_wrappers=1:nokey=1", audio_path]
+                    dur_result = subprocess.run(dur_cmd, capture_output=True, text=True, timeout=30)
+                    if dur_result.returncode == 0 and dur_result.stdout.strip():
+                        output_duration = float(dur_result.stdout.strip())
+                        log_fn(f"[EXPORT] Audio duration probed: {output_duration:.2f}s")
+                except Exception as e:
+                    log_fn(f"[EXPORT] Could not probe audio duration: {e}")
         
-        # Build FFmpeg command - single video input, dual [0:v] references for bg and fg
-        # Enable hardware decoding when GPU is available for faster input processing
-        use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
+        # Build FFmpeg command - two video inputs + audio
+        # [0:v] = pre-rendered blurred background (lightweight, already processed)
+        # [1:v] = foreground video (just needs overlay + captions)
+        # [2:a] = audio
         cmd = ["ffmpeg", "-y"]
         
-        # -hwaccel cuda conflicts with -stream_loop -1 (GPU decoder can't handle looping,
-        # falls back to CPU silently → GPU drops to 1-3%). Only use hwaccel when no loop.
-        if use_gpu and USE_HARDWARE_DECODING and not needs_stream_loop:
-            cmd.extend(["-hwaccel", "cuda"])  # GPU-accelerated decoding
-            log_fn("[EXPORT] ✓ GPU hardware decoding enabled (no stream loop needed)")
-        elif use_gpu and needs_stream_loop:
-            log_fn("[EXPORT] ⚠️ GPU hwaccel disabled (incompatible with -stream_loop). NVENC encoding still active.")
-        
-        # Only loop video when slowing down (speed_factor < 1) to prevent running out of frames.
-        # When speeding up or at normal speed, the video has enough frames already.
-        # -stream_loop -1 conflicts with -hwaccel cuda, so we only use it when truly needed.
-        if needs_stream_loop:
-            cmd.extend(["-stream_loop", "-1"])
-            log_fn("[EXPORT] ✓ Stream loop enabled (video is being slowed down)")
+        # GPU hardware decoding: safe with two pre-rendered inputs (no stream_loop needed)
+        if use_gpu and USE_HARDWARE_DECODING:
+            cmd.extend(["-hwaccel", "cuda"])
+            log_fn("[EXPORT] ✓ GPU hardware decoding enabled")
         
         cmd.extend([
-            "-i", fg_path,                # Video [0:v] (used twice: bg + fg)
-            "-i", audio_path,             # Audio [1:a]
+            "-i", bg_prerendered_path,    # [0:v] Pre-rendered blurred background
+            "-i", fg_path,                # [1:v] Foreground video
+            "-i", audio_path,             # [2:a] Audio
             "-filter_complex", filter_chain,
-            "-map", "[vout]",             # Use video from filter_complex output
-            "-map", "1:a",                # Use audio from audio file
+            "-map", "[vout]",
+            "-map", "2:a",                # Audio from input 2
         ])
         
         # Explicit duration limit prevents hanging (critical with -filter_complex)
@@ -2686,22 +2759,22 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             log_fn(f"[EXPORT] Output duration limited to {output_duration:.2f}s")
         
         cmd.extend([
-            "-shortest",                   # Safety net (may not work with filter_complex)
-            "-c:a", "aac",                # Audio codec
-            "-b:a", "192k",               # Audio bitrate
+            "-shortest",
+            "-c:a", "aac",
+            "-b:a", "192k",
         ])
         
-        # Add video encoding parameters
+        # Add video encoding parameters - GPU NVENC or CPU libx264
         if use_gpu:
-            log_fn(f"[EXPORT] Using GPU acceleration (NVENC: {PREFERRED_NVENC_CODEC}, preset: {NVENC_PRESET_SPEED}, hwaccel: {USE_HARDWARE_DECODING})...")
+            log_fn(f"[EXPORT] ✓ GPU NVENC encoding: {PREFERRED_NVENC_CODEC}, preset={NVENC_PRESET_SPEED}")
             cmd.extend([
                 "-c:v", PREFERRED_NVENC_CODEC,
                 "-rc", "vbr_hq",
                 "-cq", "19",
                 "-b:v", "0",
                 "-preset", NVENC_PRESET_SPEED,
-                "-spatial_aq", "1",        # GPU spatial adaptive quantization
-                "-temporal_aq", "1",       # GPU temporal adaptive quantization
+                "-spatial_aq", "1",
+                "-temporal_aq", "1",
                 "-pix_fmt", "yuv420p",
                 "-profile:v", "high"
             ])
@@ -2712,7 +2785,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 "-preset", "ultrafast",
                 "-crf", "20",
                 "-pix_fmt", "yuv420p",
-                "-threads", "0"            # Use all CPU threads when no GPU
+                "-threads", "0"
             ])
         
         cmd.extend([
@@ -2720,16 +2793,24 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             output_path
         ])
         
-        log_fn("[EXPORT] Executing FFmpeg command...")
+        log_fn("[EXPORT] Executing FFmpeg final encode...")
         log_fn(f"[EXPORT] Full command: {' '.join(cmd)}")
         
         # Run FFmpeg
+        final_timeout = max(600, int((output_duration or 60) * 5))  # 5x duration, min 10 min
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=600  # 10 minute timeout
+            timeout=final_timeout
         )
+        
+        # Clean up background temp file
+        try:
+            import shutil
+            shutil.rmtree(bg_temp_dir)
+        except Exception:
+            pass
         
         if result.returncode == 0:
             log_fn("[EXPORT] ✅ Fast FFmpeg export completed successfully!")
@@ -2737,7 +2818,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         else:
             log_fn(f"[EXPORT] ❌ FFmpeg failed with return code {result.returncode}")
             log_fn(f"[EXPORT] FFmpeg stderr output:")
-            log_fn(f"{result.stderr[-1500:]}")  # Show last 1500 chars of error
+            log_fn(f"{result.stderr[-1500:]}")
             return False
             
     except Exception as e:

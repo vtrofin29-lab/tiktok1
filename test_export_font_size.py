@@ -614,9 +614,9 @@ def test_source_code_drawtext_no_hardcoded_position():
     return True
 
 
-def test_source_code_uses_dual_input_refs():
-    """Test that filter chain uses dual [0:v] references (not split filter which kills GPU)."""
-    print("\n--- Test: Source code uses dual [0:v] references ---")
+def test_source_code_uses_two_pass_export():
+    """Test that export uses two-pass approach: pre-render bg, then lightweight final encode."""
+    print("\n--- Test: Source code uses two-pass export (pre-render bg) ---")
     source_path = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
     with open(source_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -626,62 +626,59 @@ def test_source_code_uses_dual_input_refs():
     next_fn = content.find('\ndef ', export_fn_start + 1)
     export_fn_body = content[export_fn_start:next_fn] if next_fn != -1 else content[export_fn_start:]
 
-    # Check that split filter is NOT used (it causes CPU bottleneck, drops GPU to 1-3%)
-    if 'split=2[v_bg][v_fg]' not in export_fn_body:
-        print("✓ No split filter (split causes CPU buffering that starves GPU)")
-    else:
-        print("✗ split filter found - this kills GPU utilization (drops to 1-3%)")
+    # Check that bg is pre-rendered to a temp file
+    if 'bg_prerendered_path' not in export_fn_body:
+        print("✗ bg_prerendered_path not found - bg should be pre-rendered")
         return False
+    print("✓ Background is pre-rendered to temp file")
 
-    # Check that bg uses [0:v] directly
-    if '[0:v]' in export_fn_body and 'scale=' in export_fn_body:
-        print("✓ Background filter uses [0:v] directly for better GPU pipelining")
-    else:
-        print("✗ Background filter doesn't reference [0:v]")
+    # Check that boxblur is in the bg pre-render
+    if 'boxblur=' not in export_fn_body:
+        print("✗ boxblur not found in pre-render")
         return False
+    print("✓ boxblur filter present in pre-render pass")
 
-    # Check that fg also uses [0:v]
-    if 'copy[fg_ready]' in export_fn_body or 'hflip[fg_ready]' in export_fn_body:
-        print("✓ Foreground filter produces [fg_ready] output")
-    else:
+    # Check two-input approach: [0:v] for bg, [1:v] for fg
+    if '[1:v]' not in export_fn_body:
+        print("✗ Foreground should reference [1:v]")
+        return False
+    if '[0:v][fg_ready]overlay' not in export_fn_body:
+        print("✗ Overlay should use [0:v] (bg) + [fg_ready]")
+        return False
+    print("✓ Final encode uses two simple inputs: [0:v]=bg, [1:v]=fg")
+
+    # Check that fg uses [1:v] for prep
+    if 'copy[fg_ready]' not in export_fn_body and 'hflip[fg_ready]' not in export_fn_body:
         print("✗ Foreground filter missing [fg_ready] output")
         return False
+    print("✓ Foreground filter produces [fg_ready] output")
 
     return True
 
 
-def test_source_code_hwaccel_stream_loop_conflict():
-    """Test that -hwaccel cuda is not used together with -stream_loop -1."""
-    print("\n--- Test: hwaccel/stream_loop conflict handled ---")
+def test_source_code_nvenc_detection_robust():
+    """Test that NVENC detection actually tests encoding, not just string matching."""
+    print("\n--- Test: NVENC detection is robust ---")
     source_path = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
     with open(source_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
-    # Find the _export_with_ffmpeg_filters function body
-    export_fn_start = content.find('def _export_with_ffmpeg_filters')
-    next_fn = content.find('\ndef ', export_fn_start + 1)
-    export_fn_body = content[export_fn_start:next_fn] if next_fn != -1 else content[export_fn_start:]
+    # Find the ffmpeg_supports_nvenc function body
+    fn_start = content.find('def ffmpeg_supports_nvenc')
+    next_fn = content.find('\ndef ', fn_start + 1)
+    fn_body = content[fn_start:next_fn] if next_fn != -1 else content[fn_start:]
 
-    # Check that hwaccel is conditional on not needs_stream_loop
-    if 'not needs_stream_loop' in export_fn_body:
-        print("✓ hwaccel cuda is disabled when stream_loop is needed")
-    else:
-        print("✗ hwaccel not conditional on stream_loop - GPU conflict possible")
+    # Check that it does an actual encoding test, not just string matching
+    if 'color=c=black' not in fn_body and 'lavfi' not in fn_body:
+        print("✗ NVENC detection should test actual encoding")
         return False
+    print("✓ NVENC detection tests actual encoding with dummy input")
 
-    # Check that stream_loop is conditional
-    if 'if needs_stream_loop:' in export_fn_body:
-        print("✓ stream_loop is only enabled when needed (slowdown)")
-    else:
-        print("✗ stream_loop is always used - conflicts with hwaccel")
+    # Check that results are cached
+    if '_nvenc_cache' not in content:
+        print("✗ NVENC results should be cached")
         return False
-
-    # Check needs_stream_loop is properly set based on speed_factor
-    if 'speed_factor < 1.0' in export_fn_body and 'needs_stream_loop = True' in export_fn_body:
-        print("✓ needs_stream_loop is set based on speed_factor < 1.0")
-    else:
-        print("✗ needs_stream_loop not properly set")
-        return False
+    print("✓ NVENC detection results are cached")
 
     return True
 
@@ -704,8 +701,8 @@ if __name__ == "__main__":
         test_drawtext_uses_y_offset(),
         test_build_all_caption_filters_passes_y_offset(),
         test_source_code_drawtext_no_hardcoded_position(),
-        test_source_code_uses_dual_input_refs(),
-        test_source_code_hwaccel_stream_loop_conflict(),
+        test_source_code_uses_two_pass_export(),
+        test_source_code_nvenc_detection_robust(),
     ]
 
     print("\n" + "=" * 60)
