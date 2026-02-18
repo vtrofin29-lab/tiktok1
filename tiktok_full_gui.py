@@ -1455,11 +1455,10 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
     cmd.extend(["-i", input_path, "-an"])
     
     if gpu_filters:
-        # GPU path: crop runs on CPU (no CUDA equivalent), hwupload_cuda moves frames
-        # to GPU memory, then scale_cuda does the resize on GPU.
-        # We need explicit hwupload_cuda here because crop (CPU filter) forces a
-        # download even when -hwaccel_output_format cuda is set.
-        vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},hwupload_cuda,scale_cuda={scale_w}:{scale_h}"
+        # GPU path: -hwaccel_output_format cuda keeps decoded frames in CUDA memory.
+        # crop is a CPU-only filter, so we must hwdownload first, then crop on CPU,
+        # then hwupload_cuda back to GPU for scale_cuda.
+        vf = f"hwdownload,format=nv12,crop={crop_w}:{crop_h}:{crop_x}:{crop_y},hwupload_cuda,scale_cuda={scale_w}:{scale_h}"
         if log: log(f"[ffmpeg] Using GPU-accelerated scale_cuda for pre-render")
     else:
         vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={scale_w}:{scale_h}:flags=lanczos"

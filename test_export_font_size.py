@@ -735,6 +735,48 @@ def test_source_code_gpu_filters_support():
     return True
 
 
+def test_source_code_cuda_format_handling():
+    """Test that GPU filter paths properly handle CUDA-to-CPU format transitions."""
+    print("\n--- Test: CUDA format handling (hwdownload before CPU filters) ---")
+    source_path = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Check pre_render_foreground_ffmpeg: when -hwaccel_output_format cuda is used,
+    # crop (CPU filter) needs hwdownload,format=nv12 BEFORE it
+    fn_start = content.find('def pre_render_foreground_ffmpeg')
+    next_fn = content.find('\ndef ', fn_start + 1)
+    fn_body = content[fn_start:next_fn] if next_fn != -1 else content[fn_start:]
+
+    if 'hwdownload,format=nv12' in fn_body and 'crop=' in fn_body:
+        print("✓ Pre-render has hwdownload before crop (CUDA→CPU transition)")
+    else:
+        print("✗ Pre-render must hwdownload before crop when using -hwaccel_output_format cuda")
+        return False
+
+    # Verify the order: hwdownload must come BEFORE crop in the filter chain
+    hwdl_pos = fn_body.find('hwdownload,format=nv12')
+    crop_pos = fn_body.find('crop=', hwdl_pos)
+    if hwdl_pos < crop_pos:
+        print("✓ hwdownload comes before crop in filter chain (correct order)")
+    else:
+        print("✗ hwdownload must come before crop to avoid CUDA format error")
+        return False
+
+    # Check bg pre-render also has correct order: scale_cuda → hwdownload → crop
+    export_fn_start = content.find('def _export_with_ffmpeg_filters')
+    next_fn2 = content.find('\ndef ', export_fn_start + 1)
+    export_body = content[export_fn_start:next_fn2] if next_fn2 != -1 else content[export_fn_start:]
+
+    if 'scale_cuda=' in export_body and 'hwdownload,format=nv12' in export_body:
+        print("✓ Background pre-render has scale_cuda → hwdownload transition")
+    else:
+        print("✗ Background pre-render should use scale_cuda with hwdownload")
+        return False
+
+    return True
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -756,6 +798,7 @@ if __name__ == "__main__":
         test_source_code_uses_two_pass_export(),
         test_source_code_nvenc_detection_robust(),
         test_source_code_gpu_filters_support(),
+        test_source_code_cuda_format_handling(),
     ]
 
     print("\n" + "=" * 60)
