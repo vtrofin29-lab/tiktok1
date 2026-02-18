@@ -642,8 +642,10 @@ def test_source_code_uses_two_pass_export():
     if '[1:v]' not in export_fn_body:
         print("✗ Foreground should reference [1:v]")
         return False
-    if '[0:v][fg_ready]overlay' not in export_fn_body:
-        print("✗ Overlay should use [0:v] (bg) + [fg_ready]")
+    has_cpu_overlay = '[0:v][fg_ready]overlay' in export_fn_body
+    has_gpu_overlay = 'overlay_cuda' in export_fn_body
+    if not has_cpu_overlay and not has_gpu_overlay:
+        print("✗ Overlay should use [0:v] (bg) + [fg_ready] (CPU or GPU)")
         return False
     print("✓ Final encode uses two simple inputs: [0:v]=bg, [1:v]=fg")
 
@@ -683,6 +685,56 @@ def test_source_code_nvenc_detection_robust():
     return True
 
 
+def test_source_code_gpu_filters_support():
+    """Test that GPU-accelerated filters (scale_cuda, overlay_cuda) are supported."""
+    print("\n--- Test: GPU filters (scale_cuda/overlay_cuda) support ---")
+    source_path = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Check ffmpeg_gpu_filters_available function exists
+    if 'def ffmpeg_gpu_filters_available' not in content:
+        print("✗ ffmpeg_gpu_filters_available function not found")
+        return False
+    print("✓ ffmpeg_gpu_filters_available function exists")
+
+    # Check it tests for scale_cuda and overlay_cuda
+    fn_start = content.find('def ffmpeg_gpu_filters_available')
+    next_fn = content.find('\ndef ', fn_start + 1)
+    fn_body = content[fn_start:next_fn] if next_fn != -1 else content[fn_start:]
+
+    if 'scale_cuda' in fn_body and 'overlay_cuda' in fn_body:
+        print("✓ Tests for scale_cuda and overlay_cuda availability")
+    else:
+        print("✗ Should test for both scale_cuda and overlay_cuda")
+        return False
+
+    # Check export function uses GPU filters
+    export_fn_start = content.find('def _export_with_ffmpeg_filters')
+    next_fn2 = content.find('\ndef ', export_fn_start + 1)
+    export_fn_body = content[export_fn_start:next_fn2] if next_fn2 != -1 else content[export_fn_start:]
+
+    if 'overlay_cuda' in export_fn_body:
+        print("✓ Export function uses overlay_cuda when available")
+    else:
+        print("✗ Export function should use overlay_cuda")
+        return False
+
+    if 'scale_cuda' in export_fn_body:
+        print("✓ Export function uses scale_cuda when available")
+    else:
+        print("✗ Export function should use scale_cuda")
+        return False
+
+    if 'hwupload_cuda' in export_fn_body:
+        print("✓ Export function uses hwupload_cuda for GPU memory transfer")
+    else:
+        print("✗ Export function should use hwupload_cuda")
+        return False
+
+    return True
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -703,6 +755,7 @@ if __name__ == "__main__":
         test_source_code_drawtext_no_hardcoded_position(),
         test_source_code_uses_two_pass_export(),
         test_source_code_nvenc_detection_robust(),
+        test_source_code_gpu_filters_support(),
     ]
 
     print("\n" + "=" * 60)

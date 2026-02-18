@@ -1305,6 +1305,7 @@ class QueueWriter:
 # ----------------- ffmpeg / pre-render / export helpers -----------------
 _nvenc_cache = {}  # Cache NVENC test results to avoid repeated probing
 _nvenc_diag = {}   # Store diagnostic info for logging
+_gpu_filters_cache = None  # Cache GPU filter availability test
 
 def ffmpeg_supports_nvenc(codec_name="h264_nvenc"):
     """Test if NVENC encoding actually works (not just listed in encoders)."""
@@ -1364,7 +1365,28 @@ def get_nvenc_diagnostic():
             alt_ok = ffmpeg_supports_nvenc(alt)
             alt_diag = _nvenc_diag.get(alt, "not tested")
             lines.append(f"  {alt}: {'✓ AVAILABLE' if alt_ok else '✗ UNAVAILABLE'} ({alt_diag})")
+    # GPU filter availability
+    gpu_filters = ffmpeg_gpu_filters_available()
+    lines.append(f"  GPU filters (scale_cuda/overlay_cuda): {'✓ AVAILABLE' if gpu_filters else '✗ UNAVAILABLE'}")
     return "\n".join(lines)
+
+def ffmpeg_gpu_filters_available():
+    """Test if FFmpeg supports scale_cuda and overlay_cuda GPU filters."""
+    global _gpu_filters_cache
+    if _gpu_filters_cache is not None:
+        return _gpu_filters_cache
+    try:
+        out = subprocess.check_output(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            stderr=subprocess.STDOUT, text=True, timeout=15
+        )
+        has_scale = "scale_cuda" in out
+        has_overlay = "overlay_cuda" in out
+        _gpu_filters_cache = has_scale and has_overlay
+        return _gpu_filters_cache
+    except Exception:
+        _gpu_filters_cache = False
+        return False
 
 def get_export_settings():
     audio_bitrate = "192k"
@@ -1420,16 +1442,29 @@ def probe_file_with_ffmpeg(path):
     return True, err
 
 def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, crop_h, scale_w, scale_h, fps, use_nvenc, log):
-    vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={scale_w}:{scale_h}:flags=lanczos"
+    gpu_filters = use_nvenc and ffmpeg_gpu_filters_available()
     
     # Build command with hardware acceleration if available
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     
-    # Add hardware decoding for speed (without output format to maintain filter compatibility)
     if USE_HARDWARE_DECODING and use_nvenc:
         cmd.extend(["-hwaccel", "cuda"])
+        if gpu_filters:
+            cmd.extend(["-hwaccel_output_format", "cuda"])
     
-    cmd.extend(["-i", input_path, "-an", "-vf", vf, "-r", str(int(fps))])
+    cmd.extend(["-i", input_path, "-an"])
+    
+    if gpu_filters:
+        # GPU path: crop runs on CPU (no CUDA equivalent), hwupload_cuda moves frames
+        # to GPU memory, then scale_cuda does the resize on GPU.
+        # We need explicit hwupload_cuda here because crop (CPU filter) forces a
+        # download even when -hwaccel_output_format cuda is set.
+        vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},hwupload_cuda,scale_cuda={scale_w}:{scale_h}"
+        if log: log(f"[ffmpeg] Using GPU-accelerated scale_cuda for pre-render")
+    else:
+        vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={scale_w}:{scale_h}:flags=lanczos"
+    
+    cmd.extend(["-vf", vf, "-r", str(int(fps))])
     
     if use_nvenc and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         codec = PREFERRED_NVENC_CODEC
@@ -2637,13 +2672,6 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_temp_dir = tempfile.mkdtemp(prefix="tiktok_bg_")
         bg_prerendered_path = os.path.join(bg_temp_dir, "bg_blurred.mp4")
         
-        bg_vf = (
-            f"{setpts_filter}scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
-            f"crop={video_width}:{video_height},"
-            f"boxblur={box_blur_val}:{box_blur_val},"
-            f"eq=brightness={eq_brightness:.2f}"
-        )
-        
         # Determine GPU availability and select codec
         use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
         nvenc_codec = PREFERRED_NVENC_CODEC
@@ -2656,12 +2684,36 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                     log_fn(f"[EXPORT] Primary codec {PREFERRED_NVENC_CODEC} unavailable, using fallback: {alt_codec}")
                     break
         
+        gpu_filters = use_gpu and ffmpeg_gpu_filters_available()
+        
         # Log GPU diagnostic info
         log_fn(f"[EXPORT] ═══ GPU DIAGNOSTIC ═══")
         log_fn(f"[EXPORT] GPU encoding: {'✓ ENABLED (' + nvenc_codec + ')' if use_gpu else '✗ DISABLED (using CPU libx264)'}")
+        log_fn(f"[EXPORT] GPU filters: {'✓ ENABLED (scale_cuda/overlay_cuda)' if gpu_filters else '✗ DISABLED (using CPU filters)'}")
         if not use_gpu:
             log_fn(f"[EXPORT] {get_nvenc_diagnostic()}")
         log_fn(f"[EXPORT] ═══════════════════")
+        
+        # Build background video filter chain
+        # boxblur/eq have no GPU equivalent, so we use: scale_cuda → hwdownload → boxblur → eq
+        # GPU filters disabled with stream_loop because -hwaccel_output_format cuda
+        # conflicts with -stream_loop (GPU decoder cannot handle looped streams)
+        if gpu_filters and not needs_stream_loop:
+            bg_vf = (
+                f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
+                f"hwdownload,format=nv12,"
+                f"crop={video_width}:{video_height},"
+                f"boxblur={box_blur_val}:{box_blur_val},"
+                f"eq=brightness={eq_brightness:.2f}"
+            )
+            log_fn("[EXPORT] Pass 1 using GPU scale_cuda → CPU boxblur pipeline")
+        else:
+            bg_vf = (
+                f"{setpts_filter}scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
+                f"crop={video_width}:{video_height},"
+                f"boxblur={box_blur_val}:{box_blur_val},"
+                f"eq=brightness={eq_brightness:.2f}"
+            )
         
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         # GPU hardware decoding for background pre-render.
@@ -2669,6 +2721,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # -stream_loop because the GPU decoder cannot handle looped input streams.
         if use_gpu and USE_HARDWARE_DECODING and not needs_stream_loop:
             bg_cmd.extend(["-hwaccel", "cuda"])
+            if gpu_filters:
+                bg_cmd.extend(["-hwaccel_output_format", "cuda"])
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
         bg_cmd.extend(["-i", fg_path, "-an", "-vf", bg_vf])
@@ -2716,41 +2770,64 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Two inputs: [0:v]=bg (pre-rendered blurred), [1:v]=fg (original), [2:a]=audio
         # Lightweight filter: just overlay + captions. GPU can run at full speed.
         
-        # Foreground filter (with optional speed adjust + mirror)
-        if mirror_video:
-            fg_prep = f"[1:v]{setpts_filter}hflip[fg_ready]"
-            log_fn("[EXPORT] ✓ Mirror/flip filter added")
+        # Decide if we can use full GPU pipeline for Pass 2.
+        # overlay_cuda requires both inputs in CUDA memory and no CPU-only filters after it.
+        # Subtitles (ass/drawtext) are CPU-only, so if we have captions we need CPU overlay
+        # OR we do GPU overlay first, then hwdownload for subtitle burn-in.
+        has_captions = (use_subtitle_file and ass_subtitle_path) or caption_filters
+        use_gpu_overlay = gpu_filters and not has_captions and not mirror_video
+        
+        if use_gpu_overlay:
+            # Full GPU pipeline: hwupload both inputs → overlay_cuda
+            # No captions/effects = pure GPU path
+            fg_prep = f"[1:v]{setpts_filter}hwupload_cuda[fg_ready]"
+            filter_parts = [
+                fg_prep,
+                "[0:v]hwupload_cuda[bg_cuda]",
+                "[bg_cuda][fg_ready]overlay_cuda=x=(W-w)/2:y=(H-h)/2"
+            ]
+            if effect_filter_str:
+                # Effects are CPU-only, need hwdownload
+                filter_parts[-1] += f"[gpu_out];[gpu_out]hwdownload,format=nv12,{effect_filter_str}"
+                log_fn(f"[EXPORT] ✓ GPU overlay + CPU effects")
+            log_fn("[EXPORT] ✓ Using GPU-accelerated overlay_cuda (full GPU pipeline)")
         else:
-            fg_prep = f"[1:v]{setpts_filter}copy[fg_ready]"
-        
-        # Combine: bg + fg overlay
-        filter_parts = [fg_prep, "[0:v][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
-        
-        if use_subtitle_file and ass_subtitle_path:
-            # Use ass subtitle filter (burns subtitles into video)
-            # Escape path for Windows
-            escaped_ass_path = ass_subtitle_path.replace('\\', '/').replace(':', '\\:')
-            
-            # If we have a custom font, specify the fonts directory so FFmpeg can find it
-            # The fontsdir option tells FFmpeg where to look for fonts used in the ASS file
-            if font_path and os.path.exists(font_path):
-                font_dir = os.path.dirname(font_path)
-                escaped_font_dir = font_dir.replace('\\', '/').replace(':', '\\:')
-                ass_filter = f"ass='{escaped_ass_path}':fontsdir='{escaped_font_dir}'"
-                log_fn(f"[EXPORT] ASS filter using font directory: {font_dir}")
+            # CPU overlay pipeline (when captions or mirror are needed)
+            if mirror_video:
+                fg_prep = f"[1:v]{setpts_filter}hflip[fg_ready]"
+                log_fn("[EXPORT] ✓ Mirror/flip filter added")
             else:
-                ass_filter = f"ass='{escaped_ass_path}'"
+                fg_prep = f"[1:v]{setpts_filter}copy[fg_ready]"
             
-            # Append ASS subtitle filter after overlay
-            filter_parts[-1] += f",{ass_filter}"
-        else:
-            if caption_filters:
-                filter_parts[-1] += "," + caption_filters
+            # Combine: bg + fg overlay
+            filter_parts = [fg_prep, "[0:v][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
         
-        # Add video effects to filter chain (same as MoviePy applies)
-        if effect_filter_str:
-            filter_parts[-1] += "," + effect_filter_str
-            log_fn(f"[EXPORT] ✓ Video effects added to FFmpeg filter chain")
+        if not use_gpu_overlay:
+            if use_subtitle_file and ass_subtitle_path:
+                # Use ass subtitle filter (burns subtitles into video)
+                # Escape path for Windows
+                escaped_ass_path = ass_subtitle_path.replace('\\', '/').replace(':', '\\:')
+                
+                # If we have a custom font, specify the fonts directory so FFmpeg can find it
+                # The fontsdir option tells FFmpeg where to look for fonts used in the ASS file
+                if font_path and os.path.exists(font_path):
+                    font_dir = os.path.dirname(font_path)
+                    escaped_font_dir = font_dir.replace('\\', '/').replace(':', '\\:')
+                    ass_filter = f"ass='{escaped_ass_path}':fontsdir='{escaped_font_dir}'"
+                    log_fn(f"[EXPORT] ASS filter using font directory: {font_dir}")
+                else:
+                    ass_filter = f"ass='{escaped_ass_path}'"
+                
+                # Append ASS subtitle filter after overlay
+                filter_parts[-1] += f",{ass_filter}"
+            else:
+                if caption_filters:
+                    filter_parts[-1] += "," + caption_filters
+            
+            # Add video effects to filter chain (same as MoviePy applies)
+            if effect_filter_str:
+                filter_parts[-1] += "," + effect_filter_str
+                log_fn(f"[EXPORT] ✓ Video effects added to FFmpeg filter chain")
         
         # Label the filter output for mapping
         filter_parts[-1] += "[vout]"
