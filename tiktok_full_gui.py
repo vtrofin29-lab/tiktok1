@@ -1304,6 +1304,7 @@ class QueueWriter:
 
 # ----------------- ffmpeg / pre-render / export helpers -----------------
 _nvenc_cache = {}  # Cache NVENC test results to avoid repeated probing
+_nvenc_diag = {}   # Store diagnostic info for logging
 
 def ffmpeg_supports_nvenc(codec_name="h264_nvenc"):
     """Test if NVENC encoding actually works (not just listed in encoders)."""
@@ -1315,6 +1316,7 @@ def ffmpeg_supports_nvenc(codec_name="h264_nvenc"):
                                       stderr=subprocess.STDOUT, text=True, timeout=15)
         if codec_name not in out:
             _nvenc_cache[codec_name] = False
+            _nvenc_diag[codec_name] = f"Codec '{codec_name}' not listed in FFmpeg encoders"
             return False
         # Step 2: Actually test encoding a tiny dummy frame
         import tempfile
@@ -1322,12 +1324,16 @@ def ffmpeg_supports_nvenc(codec_name="h264_nvenc"):
         tmp_path = os.path.join(tmp_dir, "test.mp4")
         try:
             test_cmd = [
-                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
                 "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
                 "-c:v", codec_name, "-t", "0.1", tmp_path
             ]
             result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=15)
             works = (result.returncode == 0)
+            if not works:
+                _nvenc_diag[codec_name] = f"Test encode failed: {result.stderr.strip()[:200]}"
+            else:
+                _nvenc_diag[codec_name] = "OK"
         finally:
             try:
                 import shutil
@@ -1336,9 +1342,29 @@ def ffmpeg_supports_nvenc(codec_name="h264_nvenc"):
                 pass
         _nvenc_cache[codec_name] = works
         return works
-    except Exception:
+    except Exception as e:
         _nvenc_cache[codec_name] = False
+        _nvenc_diag[codec_name] = f"Exception: {e}"
         return False
+
+def get_nvenc_diagnostic():
+    """Return diagnostic info about GPU/NVENC availability."""
+    lines = []
+    lines.append(f"  USE_GPU_IF_AVAILABLE = {USE_GPU_IF_AVAILABLE}")
+    lines.append(f"  USE_HARDWARE_DECODING = {USE_HARDWARE_DECODING}")
+    lines.append(f"  PREFERRED_NVENC_CODEC = {PREFERRED_NVENC_CODEC}")
+    lines.append(f"  NVENC_PRESET_SPEED = {NVENC_PRESET_SPEED}")
+    # Test primary codec
+    primary_ok = ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
+    diag = _nvenc_diag.get(PREFERRED_NVENC_CODEC, "not tested")
+    lines.append(f"  {PREFERRED_NVENC_CODEC}: {'✓ AVAILABLE' if primary_ok else '✗ UNAVAILABLE'} ({diag})")
+    # Test fallback codecs
+    for alt in ["hevc_nvenc", "h264_nvenc"]:
+        if alt != PREFERRED_NVENC_CODEC:
+            alt_ok = ffmpeg_supports_nvenc(alt)
+            alt_diag = _nvenc_diag.get(alt, "not tested")
+            lines.append(f"  {alt}: {'✓ AVAILABLE' if alt_ok else '✗ UNAVAILABLE'} ({alt_diag})")
+    return "\n".join(lines)
 
 def get_export_settings():
     audio_bitrate = "192k"
@@ -2618,15 +2644,38 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             f"eq=brightness={eq_brightness:.2f}"
         )
         
+        # Determine GPU availability and select codec
+        use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
+        nvenc_codec = PREFERRED_NVENC_CODEC
+        if not use_gpu and USE_GPU_IF_AVAILABLE:
+            # Try fallback NVENC codecs
+            for alt_codec in ["hevc_nvenc", "h264_nvenc"]:
+                if alt_codec != PREFERRED_NVENC_CODEC and ffmpeg_supports_nvenc(alt_codec):
+                    use_gpu = True
+                    nvenc_codec = alt_codec
+                    log_fn(f"[EXPORT] Primary codec {PREFERRED_NVENC_CODEC} unavailable, using fallback: {alt_codec}")
+                    break
+        
+        # Log GPU diagnostic info
+        log_fn(f"[EXPORT] ═══ GPU DIAGNOSTIC ═══")
+        log_fn(f"[EXPORT] GPU encoding: {'✓ ENABLED (' + nvenc_codec + ')' if use_gpu else '✗ DISABLED (using CPU libx264)'}")
+        if not use_gpu:
+            log_fn(f"[EXPORT] {get_nvenc_diagnostic()}")
+        log_fn(f"[EXPORT] ═══════════════════")
+        
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        # GPU hardware decoding for background pre-render.
+        # Disabled when stream_loop is needed: -hwaccel cuda conflicts with
+        # -stream_loop because the GPU decoder cannot handle looped input streams.
+        if use_gpu and USE_HARDWARE_DECODING and not needs_stream_loop:
+            bg_cmd.extend(["-hwaccel", "cuda"])
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
         bg_cmd.extend(["-i", fg_path, "-an", "-vf", bg_vf])
         
         # Use NVENC for bg pre-render if available, else CPU ultrafast
-        use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
         if use_gpu:
-            bg_cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-preset", "p1", "-rc", "vbr_hq", "-cq", "26", "-b:v", "0"])
+            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "vbr_hq", "-cq", "26", "-b:v", "0"])
         else:
             bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
         
@@ -2649,7 +2698,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
-        log_fn(f"[EXPORT]   GPU: {'NVENC' if use_gpu else 'CPU'}, blur={box_blur_val}, dim={eq_brightness:.2f}")
+        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={box_blur_val}, dim={eq_brightness:.2f}")
+        log_fn(f"[EXPORT]   Command: {' '.join(bg_cmd)}")
         bg_timeout = max(300, int((bg_duration_limit or 60) * 5))  # 5x video duration, min 5 min
         bg_result = subprocess.run(bg_cmd, capture_output=True, text=True, timeout=bg_timeout)
         if bg_result.returncode != 0:
@@ -2766,9 +2816,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Add video encoding parameters - GPU NVENC or CPU libx264
         if use_gpu:
-            log_fn(f"[EXPORT] ✓ GPU NVENC encoding: {PREFERRED_NVENC_CODEC}, preset={NVENC_PRESET_SPEED}")
+            log_fn(f"[EXPORT] ✓ GPU NVENC encoding: {nvenc_codec}, preset={NVENC_PRESET_SPEED}")
             cmd.extend([
-                "-c:v", PREFERRED_NVENC_CODEC,
+                "-c:v", nvenc_codec,
                 "-rc", "vbr_hq",
                 "-cq", "19",
                 "-b:v", "0",
