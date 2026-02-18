@@ -1325,7 +1325,7 @@ def ffmpeg_supports_nvenc(codec_name="h264_nvenc"):
         try:
             test_cmd = [
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
-                "-f", "lavfi", "-i", "color=c=black:s=64x64:d=0.1",
+                "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1",
                 "-c:v", codec_name, "-t", "0.1", tmp_path
             ]
             result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=15)
