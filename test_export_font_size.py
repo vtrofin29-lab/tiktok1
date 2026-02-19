@@ -928,10 +928,12 @@ def test_foreground_width_based_scaling():
         "Still using max() which fills entire canvas and hides background"
     print("✓ Does NOT use max() fill scaling (which hides background)")
 
-    # Should have max(1.0, width_scale) to prevent shrinking narrow videos
-    assert 'max(1.0, width_scale)' in source, \
-        "Missing max(1.0, width_scale) clamp"
-    print("✓ Has max(1.0, width_scale) clamp for narrow videos")
+    # Should use width_scale directly (no max(1.0,...) clamp that blocks downscaling)
+    assert 'fit_scale = width_scale * base_scale_factor' in source, \
+        "Missing direct width_scale usage (no max clamp)"
+    print("✓ Uses width_scale directly for both landscape and portrait videos")
+
+    return True
 
 
 if __name__ == '__main__':

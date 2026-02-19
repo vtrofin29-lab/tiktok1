@@ -3671,12 +3671,13 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         
         # TikTok layout: foreground fills canvas width, blurred bg shows above/below
         # width_scale ensures the foreground matches the 1080px canvas width
-        # For portrait videos already narrower than canvas, max(1.0,...) prevents shrinking
+        # For landscape videos (width_scale < 1.0): scales down to fit canvas width
+        # For portrait videos (width_scale > 1.0): scales up to fill canvas width
         is_4k = globals().get('IS_4K_MODE', False)
         base_scale_factor = 1.03
         
-        # Scale to fill canvas width (don't shrink below 1.0 for narrow videos)
-        fit_scale = max(1.0, width_scale) * base_scale_factor
+        # Scale foreground to match canvas width exactly
+        fit_scale = width_scale * base_scale_factor
         
         # Apply user's zoom factor directly - no capping
         # User zoom of 1.08x means 8% larger than the auto-fit size
