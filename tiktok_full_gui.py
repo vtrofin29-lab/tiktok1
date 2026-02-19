@@ -1458,7 +1458,7 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
         # GPU path: -hwaccel_output_format cuda keeps decoded frames in CUDA memory.
         # crop is a CPU-only filter, so we must hwdownload first, then crop on CPU,
         # then hwupload_cuda back to GPU for scale_cuda.
-        vf = f"hwdownload,format=nv12,crop={crop_w}:{crop_h}:{crop_x}:{crop_y},hwupload_cuda,scale_cuda={scale_w}:{scale_h}"
+        vf = f"hwdownload,format=nv12,crop={crop_w}:{crop_h}:{crop_x}:{crop_y},hwupload_cuda,scale_cuda={scale_w}:{scale_h},hwdownload,format=nv12"
         if log: log(f"[ffmpeg] Using GPU-accelerated scale_cuda for pre-render")
     else:
         vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={scale_w}:{scale_h}:flags=lanczos"
@@ -2783,11 +2783,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             filter_parts = [
                 fg_prep,
                 "[0:v]hwupload_cuda[bg_cuda]",
-                "[bg_cuda][fg_ready]overlay_cuda=x=(W-w)/2:y=(H-h)/2"
+                "[bg_cuda][fg_ready]overlay_cuda=x=(W-w)/2:y=(H-h)/2,hwdownload,format=nv12"
             ]
             if effect_filter_str:
-                # Effects are CPU-only, need hwdownload
-                filter_parts[-1] += f"[gpu_out];[gpu_out]hwdownload,format=nv12,{effect_filter_str}"
+                # Effects are CPU-only; data is already in CPU format (nv12) after hwdownload
+                filter_parts[-1] += f",{effect_filter_str}"
                 log_fn(f"[EXPORT] ✓ GPU overlay + CPU effects")
             log_fn("[EXPORT] ✓ Using GPU-accelerated overlay_cuda (full GPU pipeline)")
         else:
