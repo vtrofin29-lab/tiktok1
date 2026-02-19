@@ -2698,7 +2698,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # conflicts with -stream_loop (GPU decoder cannot handle looped streams)
         if gpu_filters and not needs_stream_loop:
             bg_vf = (
-                f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
+                f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h},"
                 f"hwdownload,format=nv12,"
                 f"crop={video_width}:{video_height},"
                 f"boxblur={box_blur_val}:{box_blur_val},"
@@ -3108,7 +3108,8 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
 
-    # Build caption clips (FIXED: single clean loop, no duplication)
+    # Collect caption timing data (lightweight - fast, no PIL rendering)
+    # MoviePy caption clips are created lazily only if FFmpeg export fails
     caption_clips = []
     caption_data_for_ffmpeg = []  # Collect word-group caption data for FFmpeg export
     MIN_GROUP_DURATION = 0.25
@@ -3129,33 +3130,16 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             text = normalize_text(segment.get("text", "").strip())
             
             if not text:
-                try:
-                    log(f"[compose WARNING] Segment {seg_idx} has empty text, skipping")
-                except Exception:
-                    pass
                 continue
             
-            try:
-                log(f"[COMPOSE] ═══════════════════════════════════════════════")
-                log(f"[COMPOSE] Processing segment #{seg_idx}")
-                log(f"[COMPOSE] Text: '{text[:80]}{'...' if len(text) > 80 else ''}'")
-                log(f"[COMPOSE] Time range: {start_t:.2f}s - {end_t:.2f}s (duration: {seg_dur:.2f}s)")
-                log(f"[COMPOSE] Preferred font: {preferred_font or 'default'}")
-            except Exception:
-                pass
-            
             # Use word-level timestamps if available (CapCut-style auto-captions)
-            # Check if segment has word-level timing data
             word_data = segment.get("words", [])
             
             if word_data:
-                # Word-by-word captions like CapCut
                 groups_with_timing = []
                 for word_idx in range(0, len(word_data), tpl):
-                    # Group up to tpl words together
                     word_group = word_data[word_idx:word_idx + tpl]
                     grp_text = " ".join([w.get("word", "").strip() for w in word_group])
-                    # Use the start time of the first word and end time of the last word
                     grp_start = word_group[0].get("start", start_t)
                     grp_end = word_group[-1].get("end", end_t)
                     groups_with_timing.append({
@@ -3164,7 +3148,6 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                         "end": grp_end
                     })
             else:
-                # Fallback: split text evenly if no word timestamps
                 words = text.split()
                 groups_with_timing = []
                 raw_group_dur = seg_dur / max(1, len(words) // tpl + (1 if len(words) % tpl else 0))
@@ -3178,111 +3161,25 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                         "end": g_end
                     })
             
-            for i, group_data in enumerate(groups_with_timing):
+            for group_data in groups_with_timing:
                 grp_text = group_data["text"]
                 g_start = group_data["start"]
                 g_dur = max(MIN_GROUP_DURATION, group_data["end"] - group_data["start"])
                 if g_start >= end_t:
                     g_start = max(start_t, end_t - g_dur)
                 
-                try:
-                    try:
-                        log(f"[COMPOSE]   Caption group {i+1}/{len(groups_with_timing)}: '{grp_text}'")
-                        log(f"[COMPOSE]   Display time: {g_start:.2f}s - {g_start + g_dur:.2f}s (duration: {g_dur:.2f}s)")
-                    except Exception:
-                        pass
+                caption_data_for_ffmpeg.append({
+                    'text': grp_text,
+                    'start': g_start,
+                    'end': g_start + g_dur
+                })
                     
-                    # generate PIL image for the caption group (FIXED: proper function call)
-                    pil_img = generate_caption_image(grp_text, preferred_font=preferred_font, log=log)
-                    if pil_img is None:
-                        try:
-                            log(f"[COMPOSE ERROR] generate_caption_image returned None for '{grp_text}'")
-                        except Exception:
-                            pass
-                        continue
-                    
-                    # Ensure RGBA mode
-                    pil_rgba = pil_img.convert("RGBA")
-                    
-                    # Verify alpha channel is not completely transparent (FIXED: added validation)
-                    alpha_channel = pil_rgba.split()[-1]
-                    alpha_arr_check = np.array(alpha_channel)
-                    if not np.any(alpha_arr_check > 0):  # Performance: short-circuits on first non-zero
-                        try:
-                            log(f"[COMPOSE ERROR] Caption image for '{grp_text}' has completely transparent alpha channel!")
-                        except Exception:
-                            pass
-                        continue
-                    
-                    try:
-                        log(f"[COMPOSE]   Alpha channel stats: min={alpha_arr_check.min()}, max={alpha_arr_check.max()}, mean={alpha_arr_check.mean():.1f}")
-                    except Exception:
-                        pass
-                    
-                    # convert to numpy arrays for moviepy ImageClip + mask (FIXED: proper mask handling)
-                    rgb_arr = np.array(pil_rgba.convert("RGB"))
-                    alpha_arr = np.array(pil_rgba.split()[-1]).astype("float32") / 255.0
-                    
-                    # ImageClip is already imported at top of file
-                    img_clip = ImageClip(rgb_arr).set_start(g_start).set_duration(g_dur)
-                    mask_clip = ImageClip(alpha_arr, ismask=True).set_start(g_start).set_duration(g_dur)
-                    img_clip = img_clip.set_mask(mask_clip)
-                    
-                    # Position: use CAPTION_Y_OFFSET for vertical positioning
-                    # Negative offset moves captions up, positive moves down
-                    y_offset = globals().get('CAPTION_Y_OFFSET', 0)
-                    if y_offset == 0:
-                        # Default: bottom center
-                        img_clip = img_clip.set_position(("center", "bottom"))
-                    else:
-                        # Custom position with offset from bottom
-                        # Lambda function to calculate position: (x, y) where y = HEIGHT - caption_height + offset
-                        # offset = -1080 → y = 1080 - h - 1080 = -h (top), offset = 0 → y = 1080 - h (bottom)
-                        img_clip = img_clip.set_position(lambda t: ("center", HEIGHT - img_clip.h + y_offset))
-                    
-                    caption_clips.append(img_clip)
-                    
-                    # Also collect data for FFmpeg export (word-by-word captions)
-                    caption_data_for_ffmpeg.append({
-                        'text': grp_text,
-                        'start': g_start,
-                        'end': g_start + g_dur
-                    })
-                    
-                    try:
-                        y_offset_value = globals().get('CAPTION_Y_OFFSET', 0)
-                        log(f"[COMPOSE]   ✓ Caption clip created successfully")
-                        log(f"[COMPOSE]   Position: Y offset = {y_offset_value}px")
-                        if y_offset_value < 0:
-                            log(f"[COMPOSE]   (captions positioned {abs(y_offset_value)}px from bottom, moving UP)")
-                        elif y_offset_value > 0:
-                            log(f"[COMPOSE]   (captions positioned {y_offset_value}px below bottom, moving DOWN)")
-                        else:
-                            log(f"[COMPOSE]   (captions at default BOTTOM position)")
-                    except Exception:
-                        pass
-                    
-                except Exception as e_img:
-                    try:
-                        log(f"[COMPOSE ERROR] Failed creating clip for group '{grp_text}': {e_img}")
-                        import traceback
-                        log(f"[COMPOSE ERROR] Traceback: {traceback.format_exc()}")
-                    except Exception:
-                        pass
-                    continue
-                    
-        except Exception as e_seg:
-            try:
-                log(f"[COMPOSE ERROR] Failed processing segment {seg_idx}: {e_seg}")
-                import traceback
-                log(f"[COMPOSE ERROR] Traceback: {traceback.format_exc()}")
-            except Exception:
-                pass
+        except Exception:
             continue
     
     try:
         log(f"[COMPOSE] ═══════════════════════════════════════════════")
-        log(f"[COMPOSE] Total caption clips created: {len(caption_clips)}")
+        log(f"[COMPOSE] Total caption segments prepared: {len(caption_data_for_ffmpeg)}")
         log(f"[COMPOSE] ═══════════════════════════════════════════════")
     except Exception:
         pass
@@ -3406,6 +3303,35 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             
             bg_static = video_clip.fl(make_blurred_bg_frame).set_duration(video_clip.duration)
             log(f"[COMPOSE] Video background created: {WIDTH}x{HEIGHT}, blur={blur_radius}, dim={dim_factor}")
+            
+            # Create MoviePy caption clips lazily (only for MoviePy fallback)
+            # Uses the same caption_data_for_ffmpeg list (text/timing data) to build PIL-based clips
+            log(f"[COMPOSE] Creating {len(caption_data_for_ffmpeg)} MoviePy caption clips (PIL rendering)...")
+            for cap_data in caption_data_for_ffmpeg:
+                try:
+                    pil_img = generate_caption_image(cap_data['text'], preferred_font=preferred_font, log=log)
+                    if pil_img is None:
+                        continue
+                    pil_rgba = pil_img.convert("RGBA")
+                    alpha_arr_check = np.array(pil_rgba.split()[-1])
+                    if not np.any(alpha_arr_check > 0):
+                        continue
+                    rgb_arr = np.array(pil_rgba.convert("RGB"))
+                    alpha_arr = alpha_arr_check.astype("float32") / 255.0
+                    g_start = cap_data['start']
+                    g_dur = max(0.25, cap_data['end'] - cap_data['start'])
+                    img_clip = ImageClip(rgb_arr).set_start(g_start).set_duration(g_dur)
+                    mask_clip = ImageClip(alpha_arr, ismask=True).set_start(g_start).set_duration(g_dur)
+                    img_clip = img_clip.set_mask(mask_clip)
+                    y_offset = globals().get('CAPTION_Y_OFFSET', 0)
+                    if y_offset == 0:
+                        img_clip = img_clip.set_position(("center", "bottom"))
+                    else:
+                        img_clip = img_clip.set_position(lambda t: ("center", HEIGHT - img_clip.h + y_offset))
+                    caption_clips.append(img_clip)
+                except Exception:
+                    continue
+            log(f"[COMPOSE] ✓ Created {len(caption_clips)} caption clips")
             
             final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
             try:

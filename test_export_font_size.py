@@ -777,6 +777,91 @@ def test_source_code_cuda_format_handling():
     return True
 
 
+def test_scale_cuda_no_force_original_aspect_ratio():
+    """Verify scale_cuda in bg pre-render doesn't use force_original_aspect_ratio (unsupported)."""
+    print("\nVerifying scale_cuda doesn't use force_original_aspect_ratio...")
+
+    source_path = os.path.join(os.path.dirname(__file__), 'tiktok_full_gui.py')
+    with open(source_path, 'r') as f:
+        content = f.read()
+
+    # Find the _export_with_ffmpeg_filters function
+    export_fn_start = content.find('def _export_with_ffmpeg_filters')
+    next_fn = content.find('\ndef ', export_fn_start + 1)
+    export_body = content[export_fn_start:next_fn] if next_fn != -1 else content[export_fn_start:]
+
+    # scale_cuda should NOT have force_original_aspect_ratio (it's a CPU scale option)
+    if 'scale_cuda=' in export_body and 'force_original_aspect_ratio' not in export_body.split('scale_cuda=')[1].split('\n')[0]:
+        print("✓ scale_cuda does not use force_original_aspect_ratio (correct - unsupported option)")
+    else:
+        # Check if force_original_aspect_ratio appears near scale_cuda
+        lines = export_body.split('\n')
+        for line in lines:
+            if 'scale_cuda=' in line and 'force_original_aspect_ratio' in line:
+                print(f"✗ scale_cuda uses force_original_aspect_ratio (causes black/green lines): {line.strip()}")
+                return False
+        print("✓ scale_cuda does not use force_original_aspect_ratio (correct)")
+
+    # CPU scale path should still have force_original_aspect_ratio (it supports it)
+    if "scale=" in export_body and "force_original_aspect_ratio=increase" in export_body:
+        print("✓ CPU scale filter still uses force_original_aspect_ratio=increase (correct)")
+    else:
+        print("Note: CPU scale path not found or doesn't use force_original_aspect_ratio")
+
+    return True
+
+
+def test_caption_clips_deferred_to_moviepy_fallback():
+    """Verify MoviePy caption clips are NOT created before FFmpeg export (deferred to fallback)."""
+    print("\nVerifying caption clip creation is deferred to MoviePy fallback...")
+
+    source_path = os.path.join(os.path.dirname(__file__), 'tiktok_full_gui.py')
+    with open(source_path, 'r') as f:
+        content = f.read()
+
+    # Find the compose function
+    compose_fn_start = content.find('def compose_final_video_with_static_blurred_bg')
+    next_fn = content.find('\ndef ', compose_fn_start + 1)
+    compose_body = content[compose_fn_start:next_fn] if next_fn != -1 else content[compose_fn_start:]
+
+    # The fast caption data collection loop should NOT call generate_caption_image
+    # before the FFmpeg export attempt
+    ffmpeg_export_pos = compose_body.find('try_ffmpeg_export')
+    if ffmpeg_export_pos == -1:
+        print("✗ Could not find try_ffmpeg_export in compose function")
+        return False
+
+    before_ffmpeg = compose_body[:ffmpeg_export_pos]
+
+    # Before FFmpeg export: should NOT have generate_caption_image (slow PIL rendering)
+    if 'generate_caption_image' not in before_ffmpeg:
+        print("✓ No generate_caption_image() calls before FFmpeg export (fast path)")
+    else:
+        print("✗ generate_caption_image() called before FFmpeg export (slow - should be deferred)")
+        return False
+
+    # Before FFmpeg export: should NOT create ImageClip (MoviePy)
+    if 'ImageClip(' not in before_ffmpeg:
+        print("✓ No ImageClip() creation before FFmpeg export (deferred)")
+    else:
+        print("✗ ImageClip() created before FFmpeg export (slow - should be deferred)")
+        return False
+
+    # After MoviePy fallback: should have generate_caption_image (lazy creation)
+    moviepy_fallback_pos = compose_body.find('Fallback to MoviePy export')
+    if moviepy_fallback_pos != -1:
+        after_fallback = compose_body[moviepy_fallback_pos:]
+        if 'generate_caption_image' in after_fallback:
+            print("✓ generate_caption_image() present in MoviePy fallback (lazy creation)")
+        else:
+            print("✗ generate_caption_image() missing from MoviePy fallback")
+            return False
+    else:
+        print("Note: MoviePy fallback section not found")
+
+    return True
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -799,6 +884,8 @@ if __name__ == "__main__":
         test_source_code_nvenc_detection_robust(),
         test_source_code_gpu_filters_support(),
         test_source_code_cuda_format_handling(),
+        test_scale_cuda_no_force_original_aspect_ratio(),
+        test_caption_clips_deferred_to_moviepy_fallback(),
     ]
 
     print("\n" + "=" * 60)
