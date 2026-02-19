@@ -777,6 +777,11 @@ IS_4K_MODE = False  # Track resolution mode for proper scaling
 CROP_TOP_RATIO = 0.30
 CROP_BOTTOM_RATIO = 0.35
 
+# Minimum foreground height as a fraction of canvas height.
+# Prevents the foreground from being a tiny strip when crop is heavy on landscape videos.
+# If the width-scaled foreground would be shorter than this, it scales up more (zooms in, clips sides).
+MIN_FG_HEIGHT_RATIO = 0.35  # Foreground fills at least 35% of canvas height (672px on 1920px canvas)
+
 VOICE_GAIN = 1.5  # Default: 1.5x louder for better voice clarity
 MUSIC_GAIN = 0.15  # Default: 0.15x quieter for subtle background music
 CAPTION_FONT_PREFERRED = "Bangers"
@@ -3077,9 +3082,20 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         zoom_factor = globals().get('VIDEO_ZOOM_SCALE', 1.0)
         
         # Scale to fill width (left/right borders)
-        scale_w = WIDTH / video_clip.w
-        # Apply user's zoom factor
-        fg_scale = scale_w * zoom_factor
+        width_scale = WIDTH / video_clip.w
+        
+        # Ensure minimum height coverage (same logic as processing_job)
+        base_scale_factor = 1.03
+        estimated_height = video_clip.h * width_scale * base_scale_factor
+        min_fg_height = HEIGHT * MIN_FG_HEIGHT_RATIO
+        if estimated_height < min_fg_height and video_clip.h > 0:
+            height_scale = min_fg_height / video_clip.h
+            fg_base_scale = max(width_scale, height_scale)
+        else:
+            fg_base_scale = width_scale
+        
+        # Apply base scale factor and user's zoom factor
+        fg_scale = fg_base_scale * base_scale_factor * zoom_factor
     except Exception:
         fg_scale = 1.0
     
@@ -3676,8 +3692,22 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         is_4k = globals().get('IS_4K_MODE', False)
         base_scale_factor = 1.03
         
-        # Scale foreground to match canvas width exactly
-        fit_scale = width_scale * base_scale_factor
+        # Ensure the foreground fills a minimum height of the canvas.
+        # Without this, landscape videos with heavy crop (e.g., 65%) result in a tiny
+        # content strip (11% of canvas). With this, the content zooms in to fill at
+        # least MIN_FG_HEIGHT_RATIO of the canvas (sides are clipped by overlay centering).
+        min_fg_height = HEIGHT * MIN_FG_HEIGHT_RATIO
+        estimated_height = crop_h * width_scale * base_scale_factor
+        if estimated_height < min_fg_height and crop_h > 0:
+            # Content would be too thin — scale up to meet minimum height
+            height_scale = min_fg_height / crop_h
+            fg_base_scale = max(width_scale, height_scale)
+            log(f"[SCALE] Content too thin ({int(estimated_height)}px < {int(min_fg_height)}px min), using height-based scale: {height_scale:.3f}")
+        else:
+            fg_base_scale = width_scale
+        
+        # Apply base scale factor (slight overscan to avoid black edges)
+        fit_scale = fg_base_scale * base_scale_factor
         
         # Apply user's zoom factor directly - no capping
         # User zoom of 1.08x means 8% larger than the auto-fit size

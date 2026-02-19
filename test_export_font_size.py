@@ -911,8 +911,8 @@ def test_bg_uses_downscale_blur_upscale():
 
 
 def test_foreground_width_based_scaling():
-    """Test that foreground scaling uses WIDTH/crop_w (not max() which covers entire canvas)."""
-    print("\n--- Test: Foreground uses width-based scaling (TikTok format) ---")
+    """Test that foreground scaling uses WIDTH/crop_w with minimum height enforcement."""
+    print("\n--- Test: Foreground uses width-based scaling with min height ---")
 
     source_path = os.path.join(os.path.dirname(__file__), 'tiktok_full_gui.py')
     with open(source_path, 'r', encoding='utf-8') as f:
@@ -928,10 +928,49 @@ def test_foreground_width_based_scaling():
         "Still using max() which fills entire canvas and hides background"
     print("✓ Does NOT use max() fill scaling (which hides background)")
 
-    # Should use width_scale directly (no max(1.0,...) clamp that blocks downscaling)
-    assert 'fit_scale = width_scale * base_scale_factor' in source, \
-        "Missing direct width_scale usage (no max clamp)"
-    print("✓ Uses width_scale directly for both landscape and portrait videos")
+    # Should have MIN_FG_HEIGHT_RATIO constant
+    assert 'MIN_FG_HEIGHT_RATIO' in source, \
+        "Missing MIN_FG_HEIGHT_RATIO constant for minimum height enforcement"
+    print("✓ Has MIN_FG_HEIGHT_RATIO constant")
+
+    # Should check estimated_height < min_fg_height
+    assert 'estimated_height < min_fg_height' in source or 'est_h < min_h' in source, \
+        "Missing minimum height check"
+    print("✓ Checks minimum foreground height")
+
+    # Verify the math: for a 1920x378 cropped landscape video,
+    # min height should kick in (378 * 0.5625 * 1.03 = 219 < 672)
+    WIDTH, HEIGHT = 1080, 1920
+    MIN_FG_HEIGHT_RATIO = 0.35
+    crop_w, crop_h = 1920, 378  # 65% height cropped
+
+    width_scale = WIDTH / crop_w  # 0.5625
+    base_scale_factor = 1.03
+    min_fg_height = HEIGHT * MIN_FG_HEIGHT_RATIO  # 672
+    estimated_height = crop_h * width_scale * base_scale_factor  # ~219
+
+    assert estimated_height < min_fg_height, \
+        f"Test assumption: {estimated_height:.0f} should be < {min_fg_height:.0f}"
+
+    height_scale = min_fg_height / crop_h  # ~1.778
+    fg_base_scale = max(width_scale, height_scale)  # 1.778
+    fg_scale = fg_base_scale * base_scale_factor  # ~1.831
+
+    result_w = int(round(crop_w * fg_scale))
+    result_h = int(round(crop_h * fg_scale))
+
+    # Foreground should now fill at least 35% of canvas height
+    assert result_h >= min_fg_height * 0.95, \
+        f"Foreground height {result_h} should be >= {min_fg_height*0.95:.0f}"
+    print(f"✓ Heavy crop landscape: fg={result_w}x{result_h}, fills {result_h/HEIGHT*100:.0f}% of canvas height")
+
+    # For portrait video (1080x1920 no crop), width_scale=1.0 should win
+    p_crop_w, p_crop_h = 1080, 1920
+    p_width_scale = WIDTH / p_crop_w  # 1.0
+    p_est_h = p_crop_h * p_width_scale * base_scale_factor  # 1978 > 672
+    assert p_est_h >= min_fg_height, \
+        "Portrait video should NOT trigger min height (already fills canvas)"
+    print(f"✓ Portrait video: estimated height {p_est_h:.0f}px > {min_fg_height:.0f}px, no adjustment needed")
 
     return True
 
