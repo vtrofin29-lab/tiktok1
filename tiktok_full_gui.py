@@ -1393,7 +1393,7 @@ def get_export_settings():
     threads = 4  # Use 4 threads for better CPU utilization (was 0/auto)
     libx264_params = ["-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]  # Changed from slow to ultrafast
     libx264_codec = "libx264"
-    nvenc_params = ["-rc", "vbr_hq", "-cq", "19", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-spatial_aq", "1", "-temporal_aq", "1", "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
+    nvenc_params = ["-rc", "constqp", "-qp", "22", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-multipass", "0", "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
@@ -1410,8 +1410,8 @@ def reencode_with_libx264(input_path, output_path, log=None):
     
     # Use NVENC if available, otherwise use faster CPU preset
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
-        cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "vbr_hq", "-cq", "20", "-b:v", "0", 
-                   "-preset", NVENC_PRESET_SPEED, "-spatial_aq", "1", "-temporal_aq", "1",
+        cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "constqp", "-qp", "22", "-b:v", "0", 
+                   "-preset", NVENC_PRESET_SPEED, "-multipass", "0",
                    "-pix_fmt", "yuv420p", "-profile:v", "high"])
     else:
         cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", 
@@ -1468,7 +1468,7 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
     if use_nvenc and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         codec = PREFERRED_NVENC_CODEC
         # Use fastest preset for pre-render (p1 = maximum speed)
-        vparams = ["-c:v", codec, "-rc", "vbr_hq", "-cq", "22", "-b:v", "0", "-preset", "p1"]
+        vparams = ["-c:v", codec, "-rc", "constqp", "-qp", "22", "-b:v", "0", "-preset", "p1", "-multipass", "0"]
     else:
         codec = "libx264"
         vparams = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22"]  # Changed from veryfast to ultrafast
@@ -1971,12 +1971,11 @@ def _make_ffmpeg_params_for_codec(codec):
     if codec in ("h264_nvenc", "hevc_nvenc"):
         # GPU encoding with NVENC - optimized for maximum speed
         return [
-            "-rc", "vbr_hq",           # Variable bitrate, high quality
-            "-cq", "19",               # Constant quality level (lower = better)
-            "-b:v", "0",               # Let CQ control quality
+            "-rc", "constqp",          # Constant QP for fastest encoding
+            "-qp", "22",               # Quality level (lower = better, 22 is good balance)
+            "-b:v", "0",               # Let QP control quality
             "-preset", NVENC_PRESET_SPEED,  # p1 for max speed (configurable)
-            "-spatial_aq", "1",        # GPU spatial adaptive quantization
-            "-temporal_aq", "1",       # GPU temporal adaptive quantization
+            "-multipass", "0",         # Disable multipass for fastest encoding
             "-pix_fmt", "yuv420p",     # Standard pixel format
             "-profile:v", "high",      # H.264 High profile
             "-movflags", "+faststart"  # Web streaming optimization
@@ -2727,8 +2726,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_cmd.extend(["-i", fg_path, "-an", "-vf", bg_vf])
         
         # Use NVENC for bg pre-render if available, else CPU ultrafast
+        # Background is blurred — use constqp with high QP for fastest encoding
         if use_gpu:
-            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "vbr_hq", "-cq", "26", "-b:v", "0"])
+            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "constqp", "-qp", "30", "-b:v", "0", "-multipass", "0"])
         else:
             bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
         
@@ -2895,12 +2895,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             log_fn(f"[EXPORT] ✓ GPU NVENC encoding: {nvenc_codec}, preset={NVENC_PRESET_SPEED}")
             cmd.extend([
                 "-c:v", nvenc_codec,
-                "-rc", "vbr_hq",
-                "-cq", "19",
+                "-rc", "constqp",
+                "-qp", "22",
                 "-b:v", "0",
                 "-preset", NVENC_PRESET_SPEED,
-                "-spatial_aq", "1",
-                "-temporal_aq", "1",
+                "-multipass", "0",
                 "-pix_fmt", "yuv420p",
                 "-profile:v", "high"
             ])
