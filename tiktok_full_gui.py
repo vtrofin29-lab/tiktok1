@@ -2693,24 +2693,32 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         log_fn(f"[EXPORT] ═══════════════════")
         
         # Build background video filter chain
-        # boxblur/eq have no GPU equivalent, so we use: scale_cuda → hwdownload → boxblur → eq
-        # GPU filters disabled with stream_loop because -hwaccel_output_format cuda
-        # conflicts with -stream_loop (GPU decoder cannot handle looped streams)
+        # Optimization: downscale-blur-upscale trick for much faster blur processing.
+        # Instead of boxblur=12 on 1080x1920 (2M pixels, ~1.25B ops/frame),
+        # downscale 4x → smaller blur → upscale back (~200x fewer operations).
+        # The downscale+upscale naturally adds smoothing that enhances the blur effect.
+        blur_down_w = max(video_width // 4, 2) & ~1   # 1080→270, ensure even
+        blur_down_h = max(video_height // 4, 2) & ~1  # 1920→480, ensure even
+        small_blur = max(2, box_blur_val // 3)         # 12→4, proportionally reduced
         if gpu_filters and not needs_stream_loop:
             bg_vf = (
                 f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h},"
                 f"hwdownload,format=nv12,"
                 f"crop={video_width}:{video_height},"
-                f"boxblur={box_blur_val}:{box_blur_val},"
-                f"eq=brightness={eq_brightness:.2f}"
+                f"scale={blur_down_w}:{blur_down_h},"
+                f"boxblur={small_blur}:{small_blur},"
+                f"eq=brightness={eq_brightness:.2f},"
+                f"scale={video_width}:{video_height}"
             )
-            log_fn("[EXPORT] Pass 1 using GPU scale_cuda → CPU boxblur pipeline")
+            log_fn(f"[EXPORT] Pass 1 using GPU scale_cuda → fast CPU boxblur pipeline (downscale {video_width}→{blur_down_w}, blur={small_blur})")
         else:
             bg_vf = (
                 f"{setpts_filter}scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
-                f"boxblur={box_blur_val}:{box_blur_val},"
-                f"eq=brightness={eq_brightness:.2f}"
+                f"scale={blur_down_w}:{blur_down_h},"
+                f"boxblur={small_blur}:{small_blur},"
+                f"eq=brightness={eq_brightness:.2f},"
+                f"scale={video_width}:{video_height}"
             )
         
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
@@ -2751,7 +2759,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
-        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={box_blur_val}, dim={eq_brightness:.2f}")
+        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={small_blur} (downscaled {video_width}→{blur_down_w}), dim={eq_brightness:.2f}")
         log_fn(f"[EXPORT]   Command: {' '.join(bg_cmd)}")
         bg_timeout = max(300, int((bg_duration_limit or 60) * 5))  # 5x video duration, min 5 min
         bg_result = subprocess.run(bg_cmd, capture_output=True, text=True, timeout=bg_timeout)

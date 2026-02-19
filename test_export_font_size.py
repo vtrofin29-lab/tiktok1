@@ -862,7 +862,52 @@ def test_caption_clips_deferred_to_moviepy_fallback():
     return True
 
 
-if __name__ == "__main__":
+def test_bg_uses_downscale_blur_upscale():
+    """Verify background pre-render uses the downscale-blur-upscale trick for faster processing."""
+    print("\nVerifying background pre-render uses downscale-blur-upscale optimization...")
+
+    source_path = os.path.join(os.path.dirname(__file__), 'tiktok_full_gui.py')
+    with open(source_path, 'r') as f:
+        content = f.read()
+
+    # Find the _export_with_ffmpeg_filters function
+    fn_start = content.find('def _export_with_ffmpeg_filters')
+    next_fn = content.find('\ndef ', fn_start + 1)
+    fn_body = content[fn_start:next_fn] if next_fn != -1 else content[fn_start:]
+
+    # Should have downscale dimensions calculation
+    has_blur_down = 'blur_down_w' in fn_body and 'blur_down_h' in fn_body
+    if has_blur_down:
+        print("✓ blur_down_w/blur_down_h variables found (downscale dimensions)")
+    else:
+        print("✗ Missing blur_down_w/blur_down_h - no downscale optimization")
+        return False
+
+    # Should have small_blur calculation
+    has_small_blur = 'small_blur' in fn_body
+    if has_small_blur:
+        print("✓ small_blur variable found (reduced blur radius for downscaled frame)")
+    else:
+        print("✗ Missing small_blur - blur radius not reduced for downscaled frame")
+        return False
+
+    # The GPU bg_vf should use scale down before boxblur then scale up
+    # Pattern: crop → scale=blur_down → boxblur=small → scale=original
+    gpu_bg_section = fn_body[fn_body.find('if gpu_filters and not needs_stream_loop'):fn_body.find('bg_cmd = [')]
+    if 'boxblur={small_blur}' in gpu_bg_section:
+        print("✓ GPU path uses small_blur (downscaled blur)")
+    else:
+        print("✗ GPU path doesn't use small_blur")
+        return False
+
+    # Should NOT have boxblur={box_blur_val} directly on full resolution
+    if 'boxblur={box_blur_val}' not in gpu_bg_section:
+        print("✓ GPU path no longer does full-resolution blur (optimized)")
+    else:
+        print("✗ GPU path still does full-resolution blur (not optimized)")
+        return False
+
+    return True
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
     print("=" * 60)
@@ -886,6 +931,7 @@ if __name__ == "__main__":
         test_source_code_cuda_format_handling(),
         test_scale_cuda_no_force_original_aspect_ratio(),
         test_caption_clips_deferred_to_moviepy_fallback(),
+        test_bg_uses_downscale_blur_upscale(),
     ]
 
     print("\n" + "=" * 60)
