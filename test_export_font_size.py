@@ -908,6 +908,33 @@ def test_bg_uses_downscale_blur_upscale():
         return False
 
     return True
+
+
+def test_foreground_width_based_scaling():
+    """Test that foreground scaling uses WIDTH/crop_w (not max() which covers entire canvas)."""
+    print("\n--- Test: Foreground uses width-based scaling (TikTok format) ---")
+
+    source_path = os.path.join(os.path.dirname(__file__), 'tiktok_full_gui.py')
+    with open(source_path, 'r', encoding='utf-8') as f:
+        source = f.read()
+
+    # Should use WIDTH / cropped.w for width-based scaling
+    assert 'width_scale = WIDTH / cropped.w' in source, \
+        "Missing width_scale = WIDTH / cropped.w"
+    print("✓ Uses width_scale = WIDTH / cropped.w")
+
+    # Should NOT use max(WIDTH/w, HEIGHT/h) which fills entire canvas
+    assert 'max(WIDTH / cropped.w, HEIGHT / cropped.h)' not in source, \
+        "Still using max() which fills entire canvas and hides background"
+    print("✓ Does NOT use max() fill scaling (which hides background)")
+
+    # Should have max(1.0, width_scale) to prevent shrinking narrow videos
+    assert 'max(1.0, width_scale)' in source, \
+        "Missing max(1.0, width_scale) clamp"
+    print("✓ Has max(1.0, width_scale) clamp for narrow videos")
+
+
+if __name__ == '__main__':
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
     print("=" * 60)
@@ -932,6 +959,7 @@ def test_bg_uses_downscale_blur_upscale():
         test_scale_cuda_no_force_original_aspect_ratio(),
         test_caption_clips_deferred_to_moviepy_fallback(),
         test_bg_uses_downscale_blur_upscale(),
+        test_foreground_width_based_scaling(),
     ]
 
     print("\n" + "=" * 60)

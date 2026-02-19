@@ -3660,29 +3660,29 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         log(f"[CROP] Original: {orig_w}x{orig_h}, Cropped: {crop_w}x{crop_h}")
 
         try:
-            # Use max() to FILL the canvas (no gaps, excess cropped by overlay)
-            # min() would FIT (letterbox, content too small/narrow)
-            fill_scale_to_fit = max(WIDTH / cropped.w, HEIGHT / cropped.h)
+            # TikTok format: scale foreground to fill canvas WIDTH
+            # Foreground fills the width, background visible above/below
+            width_scale = WIDTH / cropped.w
         except Exception:
-            fill_scale_to_fit = 1.0
+            width_scale = 1.0
         
         # Get user's zoom setting
         user_zoom = globals().get('VIDEO_ZOOM_SCALE', 1.0)
         
-        # Calculate scale to fill canvas completely (TikTok format)
-        # fill_scale_to_fit ensures the video covers the entire canvas
-        # The 1.03 base factor adds slight overflow to ensure no edges show
+        # TikTok layout: foreground fills canvas width, blurred bg shows above/below
+        # width_scale ensures the foreground matches the 1080px canvas width
+        # For portrait videos already narrower than canvas, max(1.0,...) prevents shrinking
         is_4k = globals().get('IS_4K_MODE', False)
         base_scale_factor = 1.03
         
-        # Calculate the scale needed to fill the canvas completely
-        fit_scale = max(1.0, fill_scale_to_fit) * base_scale_factor
+        # Scale to fill canvas width (don't shrink below 1.0 for narrow videos)
+        fit_scale = max(1.0, width_scale) * base_scale_factor
         
         # Apply user's zoom factor directly - no capping
         # User zoom of 1.08x means 8% larger than the auto-fit size
         fg_scale = fit_scale * user_zoom
         
-        log(f"[SCALE] fill_scale_to_fit={fill_scale_to_fit:.3f}, fit_scale={fit_scale:.3f}, user_zoom={user_zoom:.2f}, final={fg_scale:.3f}")
+        log(f"[SCALE] width_scale={width_scale:.3f}, fit_scale={fit_scale:.3f}, user_zoom={user_zoom:.2f}, final={fg_scale:.3f}")
         
         scale_w = max(2, int(round(crop_w * fg_scale)) & ~1)  # Ensure even (required for yuv420p)
         scale_h = max(2, int(round(crop_h * fg_scale)) & ~1)
