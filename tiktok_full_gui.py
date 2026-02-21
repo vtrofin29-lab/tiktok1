@@ -1463,10 +1463,10 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
         # GPU path: -hwaccel_output_format cuda keeps decoded frames in CUDA memory.
         # crop is a CPU-only filter, so we must hwdownload first, then crop on CPU,
         # then hwupload_cuda back to GPU for scale_cuda.
-        vf = f"hwdownload,format=nv12,crop={crop_w}:{crop_h}:{crop_x}:{crop_y},hwupload_cuda,scale_cuda={scale_w}:{scale_h},hwdownload,format=nv12"
+        vf = f"hwdownload,format=nv12,crop={crop_w}:{crop_h}:{crop_x}:{crop_y},hwupload_cuda,scale_cuda={scale_w}:{scale_h},hwdownload,format=nv12,setsar=1:1"
         if log: log(f"[ffmpeg] Using GPU-accelerated scale_cuda for pre-render")
     else:
-        vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={scale_w}:{scale_h}:flags=lanczos"
+        vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={scale_w}:{scale_h}:flags=lanczos,setsar=1:1"
     
     cmd.extend(["-vf", vf, "-r", str(int(fps))])
     
@@ -2713,7 +2713,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 f"scale={blur_down_w}:{blur_down_h},"
                 f"boxblur={small_blur}:{small_blur},"
                 f"eq=brightness={eq_brightness:.2f},"
-                f"scale={video_width}:{video_height}"
+                f"scale={video_width}:{video_height},setsar=1:1"
             )
             log_fn(f"[EXPORT] Pass 1 using GPU scale_cuda → fast CPU boxblur pipeline (downscale {video_width}→{blur_down_w}, blur={small_blur})")
         else:
@@ -2723,7 +2723,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 f"scale={blur_down_w}:{blur_down_h},"
                 f"boxblur={small_blur}:{small_blur},"
                 f"eq=brightness={eq_brightness:.2f},"
-                f"scale={video_width}:{video_height}"
+                f"scale={video_width}:{video_height},setsar=1:1"
             )
         
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
@@ -2840,6 +2840,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             if effect_filter_str:
                 filter_parts[-1] += "," + effect_filter_str
                 log_fn(f"[EXPORT] ✓ Video effects added to FFmpeg filter chain")
+        
+        # Force exact output resolution and reset SAR to avoid narrow/stretched video.
+        # Some source videos have non-1:1 SAR that carries through the filter chain,
+        # causing the output to appear narrow even with correct pixel dimensions.
+        filter_parts[-1] += f",scale={video_width}:{video_height},setsar=1:1"
         
         # Label the filter output for mapping
         filter_parts[-1] += "[vout]"

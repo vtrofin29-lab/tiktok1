@@ -975,6 +975,34 @@ def test_foreground_width_based_scaling():
     return True
 
 
+def test_output_forces_1080x1920_and_setsar():
+    """Test that the export filter chain forces exact 1080x1920 output with setsar=1:1.
+    
+    Source videos with non-1:1 SAR (sample aspect ratio) can cause the output to appear
+    narrow or stretched even with correct pixel dimensions. Adding scale=1080:1920,setsar=1:1
+    at the end of the filter chain ensures correct output.
+    """
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    
+    # The final filter chain should force scale and setsar before [vout]
+    assert 'scale={video_width}:{video_height},setsar=1:1' in source, \
+        "Pass 2 filter chain should force scale={video_width}:{video_height},setsar=1:1 before [vout]"
+    
+    # Foreground pre-render should have setsar=1:1
+    assert 'setsar=1:1' in source, \
+        "setsar=1:1 should be used in filter chains"
+    
+    # Count setsar occurrences - should be in fg prerender (2), bg prerender (2), and final (1)
+    setsar_count = source.count('setsar=1:1')
+    assert setsar_count >= 4, \
+        f"Expected setsar=1:1 at least 4 times (fg GPU+CPU, bg GPU+CPU, final), found {setsar_count}"
+    
+    print("✓ Output forces 1080x1920 resolution and setsar=1:1 to prevent narrow video")
+    return True
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -1001,6 +1029,7 @@ if __name__ == '__main__':
         test_caption_clips_deferred_to_moviepy_fallback(),
         test_bg_uses_downscale_blur_upscale(),
         test_foreground_width_based_scaling(),
+        test_output_forces_1080x1920_and_setsar(),
     ]
 
     print("\n" + "=" * 60)
