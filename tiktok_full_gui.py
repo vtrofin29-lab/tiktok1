@@ -6865,25 +6865,40 @@ class App:
             # Crop the frame
             cropped_frame = frame[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
             
-            # Apply zoom scaling
+            # Apply zoom scaling — MUST match export scaling (processing_job)
             zoom = float(self.zoom_var.get())
-            scale_w = WIDTH / crop_w
-            fg_scale = scale_w * zoom
+            width_scale = WIDTH / crop_w
+            base_scale_factor = 1.03
+            
+            # Same MIN_FG_HEIGHT_RATIO logic as export (processing_job lines 3699-3707)
+            min_fg_height = HEIGHT * MIN_FG_HEIGHT_RATIO
+            estimated_height = crop_h * width_scale * base_scale_factor
+            if estimated_height < min_fg_height and crop_h > 0:
+                height_scale = min_fg_height / crop_h
+                fg_base_scale = max(width_scale, height_scale)
+            else:
+                fg_base_scale = width_scale
+            
+            fg_scale = fg_base_scale * base_scale_factor * zoom
             
             # Scale the frame
-            scaled_h = int(crop_h * fg_scale)
-            scaled_w = int(crop_w * fg_scale)
+            scaled_h = max(2, int(crop_h * fg_scale))
+            scaled_w = max(2, int(crop_w * fg_scale))
             
-            from PIL import Image
+            from PIL import Image, ImageFilter, ImageEnhance
             import numpy as np
             
             pil_img = Image.fromarray(cropped_frame)
             pil_img = pil_img.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
             
-            # Create 9:16 canvas (1080x1920 scaled down to 180x320)
-            canvas = Image.new('RGB', (WIDTH, HEIGHT), color=(20, 20, 20))
+            # Create blurred background from the original frame (matches export)
+            bg_img = Image.fromarray(frame)
+            bg_img = bg_img.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+            bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=20))
+            bg_img = ImageEnhance.Brightness(bg_img).enhance(0.55)
+            canvas = bg_img.copy()
             
-            # Center the scaled image on canvas
+            # Center the scaled foreground on canvas (clips if wider/taller)
             paste_x = (WIDTH - scaled_w) // 2
             paste_y = (HEIGHT - scaled_h) // 2
             canvas.paste(pil_img, (paste_x, paste_y))
