@@ -1003,6 +1003,57 @@ def test_output_forces_1080x1920_and_setsar():
     return True
 
 
+def test_4k_mode_sets_width_height():
+    """Verify that process_single_job sets WIDTH/HEIGHT/FONT globals when use_4k=True"""
+    print("\n--- Test: 4K mode sets WIDTH, HEIGHT, CAPTION_FONT_SIZE ---")
+    
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    
+    # When use_4k, WIDTH must be set to 2160 and HEIGHT to 3840
+    assert "globals()['WIDTH'] = 2160" in source, \
+        "process_single_job must set WIDTH=2160 for 4K"
+    print("✓ WIDTH set to 2160 for 4K mode")
+    
+    assert "globals()['HEIGHT'] = 3840" in source, \
+        "process_single_job must set HEIGHT=3840 for 4K"
+    print("✓ HEIGHT set to 3840 for 4K mode")
+    
+    assert "globals()['CAPTION_FONT_SIZE'] = 112" in source, \
+        "process_single_job must set CAPTION_FONT_SIZE=112 for 4K (2x HD)"
+    print("✓ CAPTION_FONT_SIZE set to 112 for 4K mode")
+    
+    # Old values must be saved and restored
+    assert "old_width = globals().get('WIDTH'" in source, \
+        "Old WIDTH must be saved before changing"
+    print("✓ Old WIDTH saved before change")
+    
+    assert "old_height = globals().get('HEIGHT'" in source, \
+        "Old HEIGHT must be saved before changing"
+    print("✓ Old HEIGHT saved before change")
+    
+    assert "globals()['WIDTH'] = old_width" in source, \
+        "WIDTH must be restored after job completes"
+    print("✓ WIDTH restored after job completes")
+    
+    assert "globals()['HEIGHT'] = old_height" in source, \
+        "HEIGHT must be restored after job completes"
+    print("✓ HEIGHT restored after job completes")
+    
+    # HD defaults should also be set explicitly
+    assert "globals()['WIDTH'] = 1080" in source, \
+        "process_single_job must set WIDTH=1080 for HD mode"
+    print("✓ WIDTH set to 1080 for HD mode")
+    
+    assert "globals()['HEIGHT'] = 1920" in source, \
+        "process_single_job must set HEIGHT=1920 for HD mode"
+    print("✓ HEIGHT set to 1920 for HD mode")
+    
+    print("✓ 4K mode properly sets WIDTH, HEIGHT, and CAPTION_FONT_SIZE")
+    return True
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -1030,6 +1081,7 @@ if __name__ == '__main__':
         test_bg_uses_downscale_blur_upscale(),
         test_foreground_width_based_scaling(),
         test_output_forces_1080x1920_and_setsar(),
+        test_4k_mode_sets_width_height(),
     ]
 
     print("\n" + "=" * 60)
