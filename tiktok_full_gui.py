@@ -2197,8 +2197,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         end_cs = int((end_time % 1) * 100)
         end_str = f"{end_h}:{end_m:02d}:{end_s:02d}.{end_cs:02d}"
         
-        # Escape text for ASS (replace newlines with \N)
-        text = segment['text'].replace('\n', '\\N')
+        # Normalize diacritics and escape text for ASS (replace newlines with \N)
+        text = normalize_text(segment['text']).replace('\n', '\\N')
         
         ass_content += f"Dialogue: 0,{start_str},{end_str},Default,,0,0,0,,{text}\n"
     
@@ -2234,8 +2234,8 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
     Returns:
         FFmpeg drawtext filter string
     """
-    # Calculate text wrapping with word-based grouping if specified
-    lines = _calculate_text_lines(caption_text, max_chars=40, words_per_line=words_per_line)
+    # Normalize diacritics and calculate text wrapping with word-based grouping if specified
+    lines = _calculate_text_lines(normalize_text(caption_text), max_chars=40, words_per_line=words_per_line)
     
     # Escape text for FFmpeg
     escaped_lines = [_escape_ffmpeg_text(line) for line in lines]
