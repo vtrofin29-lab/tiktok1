@@ -2257,7 +2257,7 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
         f"bordercolor={stroke_color}",
         f"x=(w-text_w)/2",  # Center horizontally
         f"y={y_position}",   # Bottom positioning with offset
-        f"enable='between(t,{start_time:.3f},{end_time:.3f})'"  # Timing
+        f"enable='gte(t,{start_time:.3f})*lt(t,{end_time:.3f})'"  # Timing (exclusive end to avoid overlap)
     ]
     
     # Add custom font if provided
@@ -3213,11 +3213,13 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         except Exception:
             continue
     
-    # Prevent overlapping captions: clamp each caption's end to next caption's start
+    # Prevent overlapping captions: clamp each caption's end before next caption's start.
+    # Use a small gap (10ms) to ensure no frame shows both captions simultaneously,
+    # even with ASS centisecond truncation or drawtext inclusive-end timing.
     for i in range(len(caption_data_for_ffmpeg) - 1):
         next_start = caption_data_for_ffmpeg[i + 1]['start']
-        if caption_data_for_ffmpeg[i]['end'] > next_start:
-            caption_data_for_ffmpeg[i]['end'] = next_start
+        if caption_data_for_ffmpeg[i]['end'] > next_start - 0.01:
+            caption_data_for_ffmpeg[i]['end'] = max(caption_data_for_ffmpeg[i]['start'], next_start - 0.01)
     
     try:
         log(f"[COMPOSE] ═══════════════════════════════════════════════")

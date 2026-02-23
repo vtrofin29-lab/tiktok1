@@ -122,7 +122,7 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
         f"bordercolor={stroke_color}",
         f"x=(w-text_w)/2",
         f"y={y_position}",
-        f"enable='between(t,{start_time:.3f},{end_time:.3f})'"
+        f"enable='gte(t,{start_time:.3f})*lt(t,{end_time:.3f})'"
     ]
     if font_path and os.path.exists(font_path):
         filter_parts.insert(1, f"fontfile='{font_path}'")
@@ -1055,12 +1055,17 @@ def test_captions_no_overlap():
         "Missing caption overlap prevention post-processing"
     print("✓ Caption overlap prevention code exists")
     
-    assert "caption_data_for_ffmpeg[i]['end'] > next_start" in source or \
-           "caption_data_for_ffmpeg[i]['end'] = next_start" in source, \
-        "Missing end-time clamping to next caption's start"
-    print("✓ End-time clamping logic found")
+    # Verify 10ms gap enforcement exists
+    assert "next_start - 0.01" in source, \
+        "Missing 10ms gap enforcement between captions"
+    print("✓ 10ms gap enforcement code found")
     
-    # Behavioral test: simulate the clamping logic
+    # Verify drawtext uses exclusive-end timing (gte*lt instead of between)
+    assert "gte(t," in source and "lt(t," in source, \
+        "Missing exclusive-end timing in drawtext filter (should use gte*lt, not between)"
+    print("✓ Drawtext uses exclusive-end timing (gte*lt)")
+    
+    # Behavioral test: simulate the 10ms gap clamping logic
     captions = [
         {'text': 'I', 'start': 0.0, 'end': 0.25},
         {'text': 'am', 'start': 0.08, 'end': 0.33},
@@ -1068,13 +1073,17 @@ def test_captions_no_overlap():
     ]
     for i in range(len(captions) - 1):
         next_start = captions[i + 1]['start']
-        if captions[i]['end'] > next_start:
-            captions[i]['end'] = next_start
+        if captions[i]['end'] > next_start - 0.01:
+            captions[i]['end'] = max(captions[i]['start'], next_start - 0.01)
     
-    assert captions[0]['end'] == 0.08, f"Expected 0.08, got {captions[0]['end']}"
-    assert captions[1]['end'] == 0.20, f"Expected 0.20, got {captions[1]['end']}"
+    assert captions[0]['end'] == 0.07, f"Expected 0.07, got {captions[0]['end']}"
+    assert captions[1]['end'] == 0.19, f"Expected 0.19, got {captions[1]['end']}"
     assert captions[2]['end'] == 0.45, "Last caption should keep original end"
-    print("✓ Behavioral test: overlapping end times correctly clamped")
+    # Verify no overlap: each caption ends before the next starts
+    for i in range(len(captions) - 1):
+        assert captions[i]['end'] < captions[i+1]['start'], \
+            f"Caption {i} end ({captions[i]['end']}) must be < caption {i+1} start ({captions[i+1]['start']})"
+    print("✓ Behavioral test: 10ms gap between captions, no overlap possible")
     
     return True
 
