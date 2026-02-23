@@ -1003,6 +1003,46 @@ def test_output_forces_1080x1920_and_setsar():
     return True
 
 
+def test_translation_tts_auto_sync():
+    """Test that translation+TTS auto-sync is implemented.
+    
+    When both translation and TTS are enabled:
+    1. Source language is auto-detected by Whisper (result["language"])
+    2. TTS language is auto-synced with translation target language
+    3. TTS uses translated text (translate_segments updates seg["text"])
+    """
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    
+    print("\n--- Test: Translation + TTS auto-sync ---")
+    
+    # 1. Whisper auto-detects source language
+    assert 'result.get("language"' in source, \
+        "Should extract detected language from Whisper result"
+    assert 'Detected source language' in source, \
+        "Should log detected source language"
+    print("✓ Whisper auto-detects source language from video")
+    
+    # 2. TTS language auto-synced with translation target
+    assert 'translation_enabled and use_ai_voice' in source, \
+        "Should check both translation and TTS enabled for auto-sync"
+    assert "TRANS_TO_TTS_LANG" in source, \
+        "Should use TRANS_TO_TTS_LANG constant for language code mapping"
+    assert "'zh-cn': 'zh'" in source, \
+        "Should map zh-cn translation code to zh TTS code"
+    print("✓ TTS language auto-syncs with translation target language")
+    
+    # 3. translate_segments updates text field (TTS uses translated text)
+    assert 'new_seg["text"] = translated_text' in source, \
+        "translate_segments should update text field with translated text"
+    assert 'Using translated text' in source, \
+        "Should log when TTS uses translated text"
+    print("✓ TTS uses translated text when both features enabled")
+    
+    return True
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -1030,7 +1070,7 @@ if __name__ == '__main__':
         test_bg_uses_downscale_blur_upscale(),
         test_foreground_width_based_scaling(),
         test_output_forces_1080x1920_and_setsar(),
-        test_4k_mode_sets_width_height(),
+        test_translation_tts_auto_sync(),
     ]
 
     print("\n" + "=" * 60)

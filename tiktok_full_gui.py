@@ -899,6 +899,8 @@ TARGET_LANGUAGE = 'none'  # 'none', 'en', 'es', 'fr', 'ro', etc.
 USE_AI_VOICE_REPLACEMENT = False
 TTS_LANGUAGE = 'en'
 TTS_VOICE_ID = 'auto'  # 'auto' or specific voice ID
+# Mapping from translation language codes to TTS language codes (they differ for some languages)
+TRANS_TO_TTS_LANG = {'zh-cn': 'zh', 'zh-tw': 'zh'}
 # Premium TTS API keys (for better quality voices)
 # Supported: 'elevenlabs', 'openai', 'azure'
 TTS_ENGINE = 'gtts'  # Options: 'gtts' (free, basic), 'elevenlabs', 'openai', 'azure'
@@ -1680,10 +1682,15 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     log_fn("[whisper] Transcription finished.")
     segments = result["segments"]
     
+    # Log auto-detected source language from Whisper
+    detected_lang = result.get("language", "unknown")
+    log_fn(f"[whisper] Detected source language: {detected_lang}")
+    
     # Apply translation if requested
     # Translation is enabled when translate_to is specified and not 'none'
     if translate_to and translate_to != 'none':
-        log_fn(f"[TRANSCRIBE] Translating to {translate_to}...")
+        log_fn(f"[TRANSCRIBE] Auto-detected source language: {detected_lang}")
+        log_fn(f"[TRANSCRIBE] Translating from {detected_lang} → {translate_to}...")
         segments = translate_segments(segments, target_language=translate_to, log=log_fn)
     
     return segments
@@ -3605,6 +3612,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     if tts_language is None:
         tts_language = globals().get('TTS_LANGUAGE', 'en')
     
+    # Auto-sync TTS language with translation target language
+    # When both translation and TTS are enabled, TTS should speak in the translated language
+    if translation_enabled and use_ai_voice and target_language and target_language != 'none':
+        tts_lang_synced = TRANS_TO_TTS_LANG.get(target_language, target_language)
+        tts_language = tts_lang_synced
+    
     # Set 4K mode if requested
     # NOTE: Using global state for IS_4K_MODE. This is safe because:
     # 1. Jobs are processed sequentially (one at a time) via queue_worker
@@ -3841,7 +3854,9 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 log("━"*60)
                 log("[AI VOICE] 🎵 GENERATING AI VOICE REPLACEMENT")
                 log(f"[AI VOICE] Segments to synthesize: {len(caption_segments)}")
-                log(f"[AI VOICE] Target language: {tts_language}")
+                log(f"[AI VOICE] TTS language: {tts_language}")
+                if translation_enabled and target_language and target_language != 'none':
+                    log(f"[AI VOICE] ✓ Using translated text ({target_language}) for TTS")
                 log("━"*60)
                 log("")
                 
@@ -5087,10 +5102,16 @@ class App:
             print(f"Translation toggle error: {e}")
     
     def on_language_selected(self, event=None):
-        """Callback when target language is selected"""
+        """Callback when target language is selected. Auto-syncs TTS language when TTS is enabled."""
         try:
             lang = self.target_language_var.get()
             globals()['TARGET_LANGUAGE'] = lang
+            # Auto-sync TTS language with translation target when TTS is enabled
+            if hasattr(self, 'use_ai_voice_var') and self.use_ai_voice_var.get() and lang != 'none':
+                tts_lang = TRANS_TO_TTS_LANG.get(lang, lang)
+                if hasattr(self, 'tts_language_var'):
+                    self.tts_language_var.set(tts_lang)
+                    globals()['TTS_LANGUAGE'] = tts_lang
         except Exception as e:
             print(f"Language selection error: {e}")
     
