@@ -3213,6 +3213,12 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         except Exception:
             continue
     
+    # Prevent overlapping captions: clamp each caption's end to next caption's start
+    for i in range(len(caption_data_for_ffmpeg) - 1):
+        next_start = caption_data_for_ffmpeg[i + 1]['start']
+        if caption_data_for_ffmpeg[i]['end'] > next_start:
+            caption_data_for_ffmpeg[i]['end'] = next_start
+    
     try:
         log(f"[COMPOSE] ═══════════════════════════════════════════════")
         log(f"[COMPOSE] Total caption segments prepared: {len(caption_data_for_ffmpeg)}")

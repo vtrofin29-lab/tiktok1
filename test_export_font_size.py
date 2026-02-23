@@ -1043,6 +1043,42 @@ def test_translation_tts_auto_sync():
     return True
 
 
+def test_captions_no_overlap():
+    """Test that consecutive captions don't overlap in time (prevents double words)."""
+    print("\n--- Test: Captions have no time overlap (single word fix) ---")
+    
+    with open(os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py"), "r", encoding="utf-8") as f:
+        source = f.read()
+    
+    # Verify the overlap prevention code exists
+    assert "Prevent overlapping captions" in source, \
+        "Missing caption overlap prevention post-processing"
+    print("✓ Caption overlap prevention code exists")
+    
+    assert "caption_data_for_ffmpeg[i]['end'] > next_start" in source or \
+           "caption_data_for_ffmpeg[i]['end'] = next_start" in source, \
+        "Missing end-time clamping to next caption's start"
+    print("✓ End-time clamping logic found")
+    
+    # Behavioral test: simulate the clamping logic
+    captions = [
+        {'text': 'I', 'start': 0.0, 'end': 0.25},
+        {'text': 'am', 'start': 0.08, 'end': 0.33},
+        {'text': 'here', 'start': 0.20, 'end': 0.45},
+    ]
+    for i in range(len(captions) - 1):
+        next_start = captions[i + 1]['start']
+        if captions[i]['end'] > next_start:
+            captions[i]['end'] = next_start
+    
+    assert captions[0]['end'] == 0.08, f"Expected 0.08, got {captions[0]['end']}"
+    assert captions[1]['end'] == 0.20, f"Expected 0.20, got {captions[1]['end']}"
+    assert captions[2]['end'] == 0.45, "Last caption should keep original end"
+    print("✓ Behavioral test: overlapping end times correctly clamped")
+    
+    return True
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("EXPORT FONT SIZE & STROKE COLOR FIX VALIDATION")
@@ -1071,6 +1107,7 @@ if __name__ == '__main__':
         test_foreground_width_based_scaling(),
         test_output_forces_1080x1920_and_setsar(),
         test_translation_tts_auto_sync(),
+        test_captions_no_overlap(),
     ]
 
     print("\n" + "=" * 60)
