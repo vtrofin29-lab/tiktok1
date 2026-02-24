@@ -2754,7 +2754,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 bg_cmd.extend(["-hwaccel_output_format", "cuda"])
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
-        bg_cmd.extend(["-i", fg_path, "-an", "-vf", bg_vf])
+        bg_cmd.extend(["-i", bg_path, "-an", "-vf", bg_vf])
         
         # Use NVENC for bg pre-render if available, else CPU ultrafast
         # Background is blurred — use constqp with high QP for fastest encoding
@@ -3061,7 +3061,7 @@ def apply_video_effects(frame, effect_settings):
         return np.array(img)
     return img
 
-def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None):
+def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None):
     """
     Compose final video with blurred background and caption overlays.
     
@@ -3283,9 +3283,18 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 log(f"[EXPORT] No pre-rendered foreground - saving to: {fg_video_path}")
                 fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
             
+            # Determine background source path
+            # Use original (uncropped) video for background blur - NOT the pre-rendered foreground.
+            # The foreground is already cropped/scaled; using it as bg would show wrong crop and bad blur.
+            bg_source_path = original_video_path if original_video_path and os.path.exists(original_video_path) else fg_video_path
+            if bg_source_path != fg_video_path:
+                log(f"[EXPORT] Using original video for background blur: {os.path.basename(bg_source_path)}")
+            else:
+                log(f"[EXPORT] ⚠️ No original video path available, using foreground as background source")
+            
             # Export with FFmpeg filters
             ffmpeg_export_successful = _export_with_ffmpeg_filters(
-                bg_path=fg_video_path,  # Same video used for blurred background
+                bg_path=bg_source_path,
                 fg_path=fg_video_path,
                 caption_segments=captions_for_ffmpeg,
                 audio_path=audio_temp_path,
@@ -3551,7 +3560,7 @@ def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bott
     log(f"Crop done. Cropped size: {cropped_video.size}, duration: {cropped_video.duration:.2f}s")
     return cropped_video
 
-def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None):
+def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None):
     """Helper to temporarily override global CAPTION_FONT_PREFERRED for the duration of compose."""
     old = globals().get('CAPTION_FONT_PREFERRED')
     try:
@@ -3562,7 +3571,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, preferred_font=preferred_font, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, preferred_font=preferred_font, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration, original_video_path=original_video_path)
     finally:
         try:
             if preferred_font and old is not None:
@@ -4021,7 +4030,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         elif synced_video and hasattr(synced_video, 'duration') and synced_video.duration:
             target_duration = synced_video.duration
         
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration)
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration, original_video_path=video_path)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
