@@ -2442,8 +2442,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Resolve blur_radius and dim_factor defaults
         if blur_radius is None:
             blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
-        if dim_factor is None:
-            dim_factor = globals().get('DIM_FACTOR', 1.0)
+        # Always use global DIM_FACTOR — ignore stale values from saved presets/jobs
+        dim_factor = globals().get('DIM_FACTOR', 1.0)
         if bg_scale_extra is None:
             bg_scale_extra = globals().get('STATIC_BG_SCALE_EXTRA', 1.08)
         
@@ -3641,8 +3641,9 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
     if bg_scale_extra is None:
         bg_scale_extra = globals().get('BG_SCALE_EXTRA', 1.08)
-    if dim_factor is None:
-        dim_factor = globals().get('DIM_FACTOR', 1.0)
+    # Always use global DIM_FACTOR — ignore stale values from saved presets/jobs
+    # (there is no UI control for dim_factor, so saved values are always stale)
+    dim_factor = globals().get('DIM_FACTOR', 1.0)
     
     # Determine if AI voice should be used - prefer parameter over global
     if use_ai_voice is None:
