@@ -826,9 +826,9 @@ def test_caption_clips_deferred_to_moviepy_fallback():
 
     # The fast caption data collection loop should NOT call generate_caption_image
     # before the FFmpeg export attempt
-    ffmpeg_export_pos = compose_body.find('try_ffmpeg_export')
+    ffmpeg_export_pos = compose_body.find('MAX_FFMPEG_RETRIES')
     if ffmpeg_export_pos == -1:
-        print("✗ Could not find try_ffmpeg_export in compose function")
+        print("✗ Could not find MAX_FFMPEG_RETRIES in compose function")
         return False
 
     before_ffmpeg = compose_body[:ffmpeg_export_pos]
@@ -848,7 +848,7 @@ def test_caption_clips_deferred_to_moviepy_fallback():
         return False
 
     # After MoviePy fallback: should have generate_caption_image (lazy creation)
-    moviepy_fallback_pos = compose_body.find('Fallback to MoviePy export')
+    moviepy_fallback_pos = compose_body.find('MoviePy fallback')
     if moviepy_fallback_pos != -1:
         after_fallback = compose_body[moviepy_fallback_pos:]
         if 'generate_caption_image' in after_fallback:

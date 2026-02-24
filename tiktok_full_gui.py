@@ -3231,8 +3231,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     except Exception:
         pass
     
-    # Try fast FFmpeg export first (2-3x faster than MoviePy)
-    try_ffmpeg_export = True  # Set to False to force MoviePy
+    # FFmpeg-only export pipeline (faster than MoviePy)
     ffmpeg_export_successful = False
     
     # Determine which caption data to use for FFmpeg
@@ -3243,10 +3242,15 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     if len(captions_for_ffmpeg) > MAX_DRAWTEXT_CAPTIONS:
         log(f"[EXPORT] Many captions detected ({len(captions_for_ffmpeg)}) - will use ASS subtitle file for efficient FFmpeg rendering")
     
-    if try_ffmpeg_export:
+    MAX_FFMPEG_RETRIES = 2
+    last_ffmpeg_error = None
+    for ffmpeg_attempt in range(MAX_FFMPEG_RETRIES):
         try:
             import tempfile
-            log("[EXPORT] Attempting fast FFmpeg filter-based export...")
+            if ffmpeg_attempt == 0:
+                log("[EXPORT] Starting FFmpeg export...")
+            else:
+                log(f"[EXPORT] Retrying FFmpeg export (attempt {ffmpeg_attempt + 1}/{MAX_FFMPEG_RETRIES})...")
             if not caption_segments:
                 log("[EXPORT] Note: No captions to render (video will have no text overlay)")
             
@@ -3266,13 +3270,12 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 fg_video_path = fg.filename
                 log(f"[EXPORT] Using foreground from clip: {fg_video_path}")
             else:
-                # Need to save foreground video first (slow path - shows MoviePy progress)
+                # Need to save foreground video first
                 fg_video_path = os.path.join(temp_dir, "foreground.mp4")
-                log(f"[EXPORT] ⚠️ No pre-rendered foreground - saving via MoviePy: {fg_video_path}")
-                log(f"[EXPORT] (This may show a progress bar - consider using pre-render)")
+                log(f"[EXPORT] No pre-rendered foreground - saving to: {fg_video_path}")
                 fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
             
-            # Try FFmpeg export with video background (blurred video from same source)
+            # Export with FFmpeg filters
             ffmpeg_export_successful = _export_with_ffmpeg_filters(
                 bg_path=fg_video_path,  # Same video used for blurred background
                 fg_path=fg_video_path,
@@ -3294,8 +3297,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             )
             
             if ffmpeg_export_successful:
-                log("[EXPORT] ✅ Fast FFmpeg export completed successfully!")
-                log("[EXPORT] Skipping MoviePy export (not needed)")
+                log("[EXPORT] ✅ FFmpeg export completed successfully!")
                 # Clean up temp files
                 try:
                     import shutil
@@ -3304,16 +3306,23 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     pass
                 return True
             else:
-                log("[EXPORT] ⚠️ FFmpeg export failed, falling back to MoviePy...")
+                last_ffmpeg_error = "FFmpeg returned non-zero exit code (check log above for stderr details)"
+                log(f"[EXPORT] ⚠️ FFmpeg export failed (attempt {ffmpeg_attempt + 1}/{MAX_FFMPEG_RETRIES}) - see FFmpeg stderr output above")
                 
         except Exception as e:
-            log(f"[EXPORT] ⚠️ FFmpeg export exception: {e}")
-            log("[EXPORT] Falling back to MoviePy export...")
+            last_ffmpeg_error = str(e)
+            log(f"[EXPORT] ⚠️ FFmpeg export exception (attempt {ffmpeg_attempt + 1}/{MAX_FFMPEG_RETRIES}): {e}")
             import traceback
             log(f"[EXPORT] Traceback: {traceback.format_exc()}")
     
-    # Fallback to MoviePy export (original code)
+    # FFmpeg failed after all retries - raise error (do NOT fall back to MoviePy)
     if not ffmpeg_export_successful:
+        error_msg = f"FFmpeg export failed after {MAX_FFMPEG_RETRIES} attempts. Last error: {last_ffmpeg_error}"
+        log(f"[EXPORT] ❌ {error_msg}")
+        raise RuntimeError(error_msg)
+    
+    # MoviePy fallback (disabled - kept as emergency backup, only reachable if code above is modified)
+    if False:
         try:
             log("[EXPORT] Using MoviePy export (fallback or FFmpeg disabled)...")
             # Verify audio clip before compositing
