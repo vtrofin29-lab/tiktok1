@@ -6254,7 +6254,7 @@ class App:
             # Load effects settings
             globals()['STATIC_BG_BLUR_RADIUS'] = job.get("blur_radius", 25)
             globals()['BG_SCALE_EXTRA'] = job.get("bg_scale_extra", 1.08)
-            globals()['DIM_FACTOR'] = job.get("dim_factor", 1.0)
+            # DIM_FACTOR: no longer loaded from saved jobs (always use global default 1.0)
             
             # Load AI and translation settings
             self.use_ai_voice_var.set(job.get("use_ai_voice", False))
@@ -7248,7 +7248,7 @@ class App:
             # Apply background effects
             globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
             globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
-            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 1.0)
+            # DIM_FACTOR: no longer loaded from presets (always use global default 1.0)
             
             # Update UI elements that show values
             self._update_color_canvases()
@@ -7342,7 +7342,7 @@ class App:
             # Apply background effects
             globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
             globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
-            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 1.0)
+            # DIM_FACTOR: no longer loaded from presets (always use global default 1.0)
             
             # Update UI elements that show values
             self._update_color_canvases()
