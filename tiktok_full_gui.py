@@ -2403,7 +2403,7 @@ def _build_ffmpeg_effect_filters(effect_settings, log_fn=None):
     return ""
 
 
-def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None, blur_radius=None, dim_factor=None, bg_scale_extra=None):
+def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None, blur_radius=None, dim_factor=None, bg_scale_extra=None, crop_top_ratio=None, crop_bottom_ratio=None):
     """
     Fast export using pure FFmpeg complex filters.
     2-3x faster than MoviePy's Python frame processing.
@@ -2446,6 +2446,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         dim_factor = globals().get('DIM_FACTOR', 1.0)
         if bg_scale_extra is None:
             bg_scale_extra = globals().get('STATIC_BG_SCALE_EXTRA', 1.08)
+        # Resolve crop ratios for background — same crop as foreground
+        if crop_top_ratio is None:
+            crop_top_ratio = globals().get('CROP_TOP_RATIO', 0.30)
+        if crop_bottom_ratio is None:
+            crop_bottom_ratio = globals().get('CROP_BOTTOM_RATIO', 0.35)
         
         # Use passed parameters, fall back to globals, then defaults
         try:
@@ -2714,19 +2719,31 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         log_fn(f"[EXPORT] ═══════════════════")
         
         # Build background video filter chain
+        # Background uses the SAME crop as foreground, then zooms to fill the canvas.
+        # This makes the blurred background match the foreground content area.
+        #
         # Optimization: downscale-blur-upscale trick for much faster blur processing.
         # Instead of boxblur=12 on 1080x1920 (2M pixels, ~1.25B ops/frame),
         # downscale 4x → smaller blur → upscale back (~200x fewer operations).
-        # The downscale+upscale naturally adds smoothing that enhances the blur effect.
         blur_down_w = max(video_width // 4, 2) & ~1   # 1080→270, ensure even
         blur_down_h = max(video_height // 4, 2) & ~1  # 1920→480, ensure even
         small_blur = max(2, box_blur_val // 3)         # 12→4, proportionally reduced
         # Add eq brightness filter: handles both dimming and NV12 brightness compensation
         eq_part = f"eq=brightness={eq_brightness:.2f}," if abs(eq_brightness) > 0.001 else ""
+        # Build user crop filter for background (same crop as foreground)
+        keep_ratio = 1.0 - crop_top_ratio - crop_bottom_ratio
+        bg_crop_part = ""
+        if keep_ratio < 0.99:
+            bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
+            log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
+        # GPU path: scale_cuda needed first (input is on GPU), then hwdownload to CPU.
+        # Crop uses iw/ih (relative), so it works correctly after any initial scale.
         if gpu_filters and not needs_stream_loop:
             bg_vf = (
                 f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h},"
                 f"hwdownload,format=nv12,"
+                f"{bg_crop_part}"
+                f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
                 f"scale={blur_down_w}:{blur_down_h},"
                 f"boxblur={small_blur}:{small_blur},"
@@ -2736,7 +2753,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             log_fn(f"[EXPORT] Pass 1 using GPU scale_cuda → fast CPU boxblur pipeline (downscale {video_width}→{blur_down_w}, blur={small_blur})")
         else:
             bg_vf = (
-                f"{setpts_filter}scale={bg_target_w}:{bg_target_h}:force_original_aspect_ratio=increase,"
+                f"{setpts_filter}{bg_crop_part}"
+                f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
                 f"scale={blur_down_w}:{blur_down_h},"
                 f"boxblur={small_blur}:{small_blur},"
@@ -3061,7 +3079,7 @@ def apply_video_effects(frame, effect_settings):
         return np.array(img)
     return img
 
-def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None):
+def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None, crop_top_ratio=None, crop_bottom_ratio=None):
     """
     Compose final video with blurred background and caption overlays.
     
@@ -3313,7 +3331,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 font_size=globals().get('CAPTION_FONT_SIZE'),
                 blur_radius=blur_radius,
                 dim_factor=dim_factor,
-                bg_scale_extra=bg_scale_extra
+                bg_scale_extra=bg_scale_extra,
+                crop_top_ratio=crop_top_ratio,
+                crop_bottom_ratio=crop_bottom_ratio
             )
             
             if ffmpeg_export_successful:
@@ -3560,7 +3580,7 @@ def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bott
     log(f"Crop done. Cropped size: {cropped_video.size}, duration: {cropped_video.duration:.2f}s")
     return cropped_video
 
-def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None):
+def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None, crop_top_ratio=None, crop_bottom_ratio=None):
     """Helper to temporarily override global CAPTION_FONT_PREFERRED for the duration of compose."""
     old = globals().get('CAPTION_FONT_PREFERRED')
     try:
@@ -3571,7 +3591,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, preferred_font=preferred_font, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration, original_video_path=original_video_path)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, preferred_font=preferred_font, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration, original_video_path=original_video_path, crop_top_ratio=crop_top_ratio, crop_bottom_ratio=crop_bottom_ratio)
     finally:
         try:
             if preferred_font and old is not None:
@@ -4031,7 +4051,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         elif synced_video and hasattr(synced_video, 'duration') and synced_video.duration:
             target_duration = synced_video.duration
         
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration, original_video_path=video_path)
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration, original_video_path=video_path, crop_top_ratio=custom_top_ratio, crop_bottom_ratio=custom_bottom_ratio)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
@@ -6962,9 +6982,25 @@ class App:
             pil_img = Image.fromarray(cropped_frame)
             pil_img = pil_img.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
             
-            # Create blurred background from the original frame (matches export)
-            bg_img = Image.fromarray(frame)
-            bg_img = bg_img.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
+            # Create blurred background from the CROPPED frame (matches export)
+            # Background uses same crop as foreground, then zooms to fill canvas
+            bg_img = Image.fromarray(cropped_frame)
+            # Scale to FILL canvas (cover entire area, may crop edges)
+            bg_ar = bg_img.width / bg_img.height
+            canvas_ar = WIDTH / HEIGHT
+            if bg_ar > canvas_ar:
+                # Wider than canvas: scale to height, crop width
+                fill_h = HEIGHT
+                fill_w = int(HEIGHT * bg_ar)
+            else:
+                # Taller than canvas: scale to width, crop height
+                fill_w = WIDTH
+                fill_h = int(WIDTH / bg_ar)
+            bg_img = bg_img.resize((fill_w, fill_h), Image.Resampling.LANCZOS)
+            # Center-crop to exact canvas size
+            cx = (fill_w - WIDTH) // 2
+            cy = (fill_h - HEIGHT) // 2
+            bg_img = bg_img.crop((cx, cy, cx + WIDTH, cy + HEIGHT))
             bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=20))
             # Apply brightness: match export's NV12 brightness compensation
             effective_brightness = DIM_FACTOR * (1.0 + BG_BRIGHTNESS_BOOST)
