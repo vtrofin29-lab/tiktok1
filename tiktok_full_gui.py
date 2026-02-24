@@ -915,6 +915,7 @@ MUSIC_LOOP_ALLOWED = True
 STATIC_BG_BLUR_RADIUS = 25
 BG_SCALE_EXTRA = 1.08
 DIM_FACTOR = 1.0  # 1.0 = no dimming (full brightness)
+BG_BRIGHTNESS_BOOST = 0.08  # +8% brightness compensation for NV12/format conversion color loss
 
 USE_GPU_IF_AVAILABLE = True
 PREFERRED_NVENC_CODEC = "h264_nvenc"
@@ -2617,10 +2618,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Build video effect filters (to match MoviePy effects)
         effect_filter_str = _build_ffmpeg_effect_filters(effect_settings, log_fn)
         
-        # Get blur/dim settings for video background
-        blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
-        bg_scale_extra = globals().get('BG_SCALE_EXTRA', 1.08)
-        dim_factor = globals().get('DIM_FACTOR', 1.0)
+        # Use blur/dim/scale settings from function parameters (already set by caller).
+        # Do NOT re-read globals here — that would override the values passed by
+        # process_single_job, making per-job/preset dim_factor useless.
         
         # Build complete filter chain
         # Use the foreground video itself as the blurred background (instead of a static image)
@@ -2664,7 +2664,10 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         box_blur_val = max(5, blur_radius // 2)
         # brightness adjustment: dim_factor 1.0 means no dimming (full brightness)
         # FFmpeg eq filter brightness is additive (-1.0 to 1.0), so: brightness = dim_factor - 1.0
-        eq_brightness = dim_factor - 1.0
+        # Note: NV12 format conversion and downscale-blur-upscale can lose ~8% brightness,
+        # so we add a small compensation boost (BG_BRIGHTNESS_BOOST)
+        eq_brightness = dim_factor - 1.0 + BG_BRIGHTNESS_BOOST
+        log_fn(f"[EXPORT]   Background: blur={blur_radius}, dim_factor={dim_factor:.2f}, eq_brightness={eq_brightness:+.2f}")
         
         # Ensure target dimensions are even (required for yuv420p pixel format)
         bg_target_w = int(video_width * bg_scale_extra) & ~1  # Ensure even
@@ -2710,7 +2713,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         blur_down_w = max(video_width // 4, 2) & ~1   # 1080→270, ensure even
         blur_down_h = max(video_height // 4, 2) & ~1  # 1920→480, ensure even
         small_blur = max(2, box_blur_val // 3)         # 12→4, proportionally reduced
-        # Only add eq brightness filter if actually dimming (skip when dim_factor=1.0)
+        # Add eq brightness filter: handles both dimming and NV12 brightness compensation
         eq_part = f"eq=brightness={eq_brightness:.2f}," if abs(eq_brightness) > 0.001 else ""
         if gpu_filters and not needs_stream_loop:
             bg_vf = (
@@ -3342,8 +3345,11 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 img = img.resize((new_w, new_h), Image.LANCZOS)
                 img = img.crop((left_bg, top_bg, left_bg + WIDTH, top_bg + HEIGHT))
                 img = img.filter(ImageFilter.GaussianBlur(blur_radius))
-                if dim_factor < 0.999:
-                    img = ImageEnhance.Brightness(img).enhance(dim_factor)
+                # Apply brightness: dim_factor < 1.0 darkens, > 1.0 brightens
+                # Add brightness compensation for color loss during processing
+                effective_brightness = dim_factor * (1.0 + BG_BRIGHTNESS_BOOST)
+                if abs(effective_brightness - 1.0) > 0.01:
+                    img = ImageEnhance.Brightness(img).enhance(effective_brightness)
                 return np.array(img)
             
             bg_static = video_clip.fl(make_blurred_bg_frame).set_duration(video_clip.duration)
@@ -6930,8 +6936,10 @@ class App:
             bg_img = Image.fromarray(frame)
             bg_img = bg_img.resize((WIDTH, HEIGHT), Image.Resampling.LANCZOS)
             bg_img = bg_img.filter(ImageFilter.GaussianBlur(radius=20))
-            if DIM_FACTOR < 0.999:
-                bg_img = ImageEnhance.Brightness(bg_img).enhance(DIM_FACTOR)
+            # Apply brightness: match export's NV12 brightness compensation
+            effective_brightness = DIM_FACTOR * (1.0 + BG_BRIGHTNESS_BOOST)
+            if abs(effective_brightness - 1.0) > 0.01:
+                bg_img = ImageEnhance.Brightness(bg_img).enhance(effective_brightness)
             canvas = bg_img.copy()
             
             # Center the scaled foreground on canvas (clips if wider/taller)
