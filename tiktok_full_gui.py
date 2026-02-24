@@ -2403,7 +2403,7 @@ def _build_ffmpeg_effect_filters(effect_settings, log_fn=None):
     return ""
 
 
-def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None):
+def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None, blur_radius=None, dim_factor=None):
     """
     Fast export using pure FFmpeg complex filters.
     2-3x faster than MoviePy's Python frame processing.
@@ -2438,6 +2438,12 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             log_fn("[EXPORT] Mirror/flip: enabled")
         if target_duration:
             log_fn(f"[EXPORT] Target duration: {target_duration:.2f}s")
+        
+        # Resolve blur_radius and dim_factor defaults
+        if blur_radius is None:
+            blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
+        if dim_factor is None:
+            dim_factor = globals().get('DIM_FACTOR', 1.0)
         
         # Use passed parameters, fall back to globals, then defaults
         try:
@@ -3293,7 +3299,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 text_color_rgba=globals().get('CAPTION_TEXT_COLOR'),
                 stroke_color_rgba=globals().get('CAPTION_STROKE_COLOR'),
                 stroke_width=globals().get('CAPTION_STROKE_WIDTH'),
-                font_size=globals().get('CAPTION_FONT_SIZE')
+                font_size=globals().get('CAPTION_FONT_SIZE'),
+                blur_radius=blur_radius,
+                dim_factor=dim_factor
             )
             
             if ffmpeg_export_successful:
