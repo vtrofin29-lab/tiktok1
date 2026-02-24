@@ -914,7 +914,7 @@ MUSIC_LOOP_ALLOWED = True
 
 STATIC_BG_BLUR_RADIUS = 25
 BG_SCALE_EXTRA = 1.08
-DIM_FACTOR = 0.75
+DIM_FACTOR = 0.90
 
 USE_GPU_IF_AVAILABLE = True
 PREFERRED_NVENC_CODEC = "h264_nvenc"
@@ -2620,7 +2620,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Get blur/dim settings for video background
         blur_radius = globals().get('STATIC_BG_BLUR_RADIUS', 25)
         bg_scale_extra = globals().get('BG_SCALE_EXTRA', 1.08)
-        dim_factor = globals().get('DIM_FACTOR', 0.75)
+        dim_factor = globals().get('DIM_FACTOR', 0.90)
         
         # Build complete filter chain
         # Use the foreground video itself as the blurred background (instead of a static image)
@@ -2662,7 +2662,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # FFmpeg boxblur approximates Gaussian blur; halving the radius gives similar visual results.
         # Minimum of 5 ensures visible blur even with small radius settings.
         box_blur_val = max(5, blur_radius // 2)
-        # brightness adjustment: dim_factor 0.75 means reduce to 75% brightness
+        # brightness adjustment: dim_factor 0.90 means reduce to 90% brightness
         # FFmpeg eq filter brightness is additive (-1.0 to 1.0), so: brightness = dim_factor - 1.0
         eq_brightness = dim_factor - 1.0
         
@@ -3604,7 +3604,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     if bg_scale_extra is None:
         bg_scale_extra = globals().get('BG_SCALE_EXTRA', 1.08)
     if dim_factor is None:
-        dim_factor = globals().get('DIM_FACTOR', 0.75)
+        dim_factor = globals().get('DIM_FACTOR', 0.90)
     
     # Determine if AI voice should be used - prefer parameter over global
     if use_ai_voice is None:
@@ -6059,8 +6059,8 @@ class App:
         # Add effects info if different from defaults
         blur = job.get("blur_radius", 25)
         bg_scale = job.get("bg_scale_extra", 1.08)
-        dim = job.get("dim_factor", 0.75)
-        if blur != 25 or bg_scale != 1.08 or dim != 0.75:
+        dim = job.get("dim_factor", 0.90)
+        if blur != 25 or bg_scale != 1.08 or dim != 0.90:
             info_parts.append(f"effects:blur={blur}/scale={bg_scale:.2f}/dim={dim:.2f}")
         
         # Video effects (CapCut-style)
@@ -6124,7 +6124,7 @@ class App:
                 "use_4k": self.use_4k_var.get(),
                 "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
                 "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
-                "dim_factor": globals().get('DIM_FACTOR', 0.75),
+                "dim_factor": globals().get('DIM_FACTOR', 0.90),
                 # AI and caption settings
                 "use_ai_voice": self.use_ai_voice_var.get(),
                 "translation_enabled": self.translation_enabled_var.get(),
@@ -6216,7 +6216,7 @@ class App:
             # Load effects settings
             globals()['STATIC_BG_BLUR_RADIUS'] = job.get("blur_radius", 25)
             globals()['BG_SCALE_EXTRA'] = job.get("bg_scale_extra", 1.08)
-            globals()['DIM_FACTOR'] = job.get("dim_factor", 0.75)
+            globals()['DIM_FACTOR'] = job.get("dim_factor", 0.90)
             
             # Load AI and translation settings
             self.use_ai_voice_var.set(job.get("use_ai_voice", False))
@@ -6338,7 +6338,7 @@ class App:
                    "use_4k": self.use_4k_var.get(),
                    "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
                    "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
-                   "dim_factor": globals().get('DIM_FACTOR', 0.75),
+                   "dim_factor": globals().get('DIM_FACTOR', 0.90),
                    # AI and caption settings
                    "use_ai_voice": self.use_ai_voice_var.get(),
                    "translation_enabled": self.translation_enabled_var.get(),
@@ -7110,7 +7110,7 @@ class App:
                 # Background effects
                 "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
                 "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
-                "dim_factor": globals().get('DIM_FACTOR', 0.75),
+                "dim_factor": globals().get('DIM_FACTOR', 0.90),
             }
             
             # Save to file
@@ -7207,7 +7207,7 @@ class App:
             # Apply background effects
             globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
             globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
-            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.75)
+            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.90)
             
             # Update UI elements that show values
             self._update_color_canvases()
@@ -7301,7 +7301,7 @@ class App:
             # Apply background effects
             globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
             globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
-            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.75)
+            globals()['DIM_FACTOR'] = preset_data.get("dim_factor", 0.90)
             
             # Update UI elements that show values
             self._update_color_canvases()
@@ -7380,7 +7380,7 @@ class App:
             # Reset background effects
             globals()['STATIC_BG_BLUR_RADIUS'] = 25
             globals()['BG_SCALE_EXTRA'] = 1.08
-            globals()['DIM_FACTOR'] = 0.75
+            globals()['DIM_FACTOR'] = 0.90
             
             # Update UI
             self._update_color_canvases()
