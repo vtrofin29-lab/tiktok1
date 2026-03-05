@@ -4968,6 +4968,16 @@ class App:
         path = filedialog.asksaveasfilename(title="Output file", defaultextension=".mp4", filetypes=[("MP4 file", "*.mp4")])
         if path: self.output_var.set(path)
 
+    def log_to_console(self, msg):
+        """Append a message to the log widget."""
+        try:
+            self.log_widget.config(state='normal')
+            self.log_widget.insert('end', str(msg) + "\n")
+            self.log_widget.see('end')
+            self.log_widget.config(state='disabled')
+        except Exception:
+            pass
+
     def _format_job_info(self, job):
         """Format job information for display, showing all relevant settings."""
         info_parts = []
