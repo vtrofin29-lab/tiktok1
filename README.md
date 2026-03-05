@@ -45,14 +45,51 @@ A comprehensive TikTok video editor with automatic transcription, translation, a
 pip install -r requirements.txt
 ```
 
+Or simply run the installer script:
+```bash
+python install_requirements.py
+```
+
 Required packages:
 - `Pillow>=10.0.0` - Image processing
 - `numpy>=1.24.0` - Numerical operations
-- `moviepy` - Video editing
-- `whisper` - Speech recognition
-- `googletrans==4.0.0rc1` - Translation (new)
-- `requests>=2.28.0` - HTTP requests for APIs (new)
-- `gtts>=2.3.0` - Text-to-Speech (new)
+- `moviepy>=1.0.3` - Video editing and compositing
+- `openai-whisper>=20230918` - AI speech-to-text transcription
+- `torch>=2.0.0` - GPU acceleration for Whisper (see GPU note below)
+- `googletrans==4.0.0rc1` - Translation
+- `requests>=2.28.0` - HTTP requests for APIs
+- `gtts>=2.3.0` - Text-to-Speech
+- `pydub>=0.25.1` - Audio processing
+
+Optional packages:
+- `fonttools>=4.40.0` - Auto-detect TikTok fonts on your system
+- `opencv-python>=4.8.0` - Video preview thumbnails
+
+#### PyTorch GPU Support
+
+**Install PyTorch BEFORE** running `pip install -r requirements.txt`:
+
+```bash
+# RTX 5070/5080/5090 (Blackwell) — REQUIRES nightly with CUDA 13.0:
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130
+
+# RTX 4060/4070/4080/4090 (Ada Lovelace) — stable with CUDA 12.1:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# RTX 3060/3070/3080/3090 (Ampere) — stable with CUDA 11.8:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# CPU-only (slower, but works without GPU):
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+> **⚠️ RTX 50-series users:** You MUST use the nightly `cu130` build. Stable PyTorch releases
+> do not yet support Blackwell architecture (sm_120). See `RTX_5070_INSTALARE_PYTORCH_RO.md`
+> for a detailed Romanian guide.
+
+#### System Requirements
+- **FFmpeg** must be installed and available in PATH (for video encoding)
+- **NVIDIA GPU** (optional) - enables NVENC hardware encoding and faster Whisper
 
 ## Usage
 
