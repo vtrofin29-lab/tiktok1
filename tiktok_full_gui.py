@@ -5380,7 +5380,7 @@ class App:
                                     highlightbackground=app_ref.BORDER_COLOR,
                                     highlightcolor=app_ref.ACCENT_BLUE,
                                     highlightthickness=1,
-                                    relief='flat', bd=0, sliderrelief='raised')
+                                    relief='flat', bd=0, sliderrelief='flat')
                         except Exception:
                             pass
                 except Exception:
