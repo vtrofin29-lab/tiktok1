@@ -5210,34 +5210,62 @@ class App:
             style.configure('TFrame', background=self.BG_DARK)
             style.configure('TLabel', background=self.BG_DARK, foreground=self.TEXT_PRIMARY,
                           font=('Segoe UI', 9))
+
+            # --- Base TButton: visible border + hover highlight ---
             style.configure('TButton', background=self.BG_ELEVATED, foreground=self.TEXT_PRIMARY,
-                          borderwidth=1, focuscolor=self.ACCENT_BLUE,
+                          borderwidth=1, bordercolor=self.BORDER_COLOR,
+                          focuscolor=self.ACCENT_BLUE, relief='solid',
                           font=('Segoe UI', 9), padding=(10, 4))
             style.map('TButton',
                       background=[('active', self.HOVER_BG), ('pressed', self.BG_TERTIARY)],
-                      foreground=[('disabled', self.TEXT_MUTED)])
+                      foreground=[('disabled', self.TEXT_MUTED)],
+                      bordercolor=[('active', self.ACCENT_BLUE), ('focus', self.ACCENT_BLUE)])
+
+            # --- TEntry: visible border + focus glow ---
             style.configure('TEntry', fieldbackground=self.BG_TERTIARY, foreground=self.TEXT_PRIMARY,
-                          borderwidth=1, padding=4, insertcolor=self.TEXT_PRIMARY)
+                          borderwidth=1, bordercolor=self.BORDER_COLOR, lightcolor=self.BORDER_COLOR,
+                          darkcolor=self.BORDER_COLOR, padding=4, insertcolor=self.TEXT_PRIMARY)
             style.map('TEntry',
                       fieldbackground=[('focus', '#1c2333'), ('readonly', self.BG_SECONDARY)],
-                      bordercolor=[('focus', self.ACCENT_BLUE)])
+                      bordercolor=[('focus', self.ACCENT_BLUE)],
+                      lightcolor=[('focus', self.ACCENT_BLUE)],
+                      darkcolor=[('focus', self.ACCENT_BLUE)])
+
             style.configure('TCheckbutton', background=self.BG_DARK, foreground=self.TEXT_PRIMARY,
                           font=('Segoe UI', 9), indicatormargin=4)
             style.map('TCheckbutton',
                       background=[('active', self.BG_DARK)],
                       indicatorcolor=[('selected', self.ACCENT_BLUE), ('!selected', self.BG_TERTIARY)])
             style.configure('TMenubutton', background=self.BG_ELEVATED, foreground=self.TEXT_PRIMARY,
-                          borderwidth=1, padding=(8, 3))
+                          borderwidth=1, bordercolor=self.BORDER_COLOR, padding=(8, 3))
+            style.map('TMenubutton',
+                      bordercolor=[('active', self.ACCENT_BLUE)])
             style.configure('Horizontal.TProgressbar', troughcolor=self.BG_SECONDARY,
                           background=self.PROGRESS_BG, borderwidth=0)
+
+            # --- TCombobox: visible border + focus glow ---
             style.configure('TCombobox', fieldbackground=self.BG_TERTIARY, foreground=self.TEXT_PRIMARY,
                           selectbackground=self.SELECT_BG, selectforeground=self.TEXT_PRIMARY,
-                          padding=4, arrowcolor=self.TEXT_SECONDARY)
+                          borderwidth=1, bordercolor=self.BORDER_COLOR, lightcolor=self.BORDER_COLOR,
+                          darkcolor=self.BORDER_COLOR, padding=4, arrowcolor=self.TEXT_SECONDARY)
             style.map('TCombobox',
                       fieldbackground=[('readonly', self.BG_TERTIARY)],
-                      selectbackground=[('readonly', self.SELECT_BG)])
+                      selectbackground=[('readonly', self.SELECT_BG)],
+                      bordercolor=[('focus', self.ACCENT_BLUE), ('active', self.ACCENT_BLUE)],
+                      lightcolor=[('focus', self.ACCENT_BLUE)],
+                      darkcolor=[('focus', self.ACCENT_BLUE)],
+                      arrowcolor=[('active', self.ACCENT_BLUE)])
+
+            # --- TSpinbox: visible border + focus glow ---
             style.configure('TSpinbox', fieldbackground=self.BG_TERTIARY, foreground=self.TEXT_PRIMARY,
-                          arrowcolor=self.TEXT_SECONDARY, padding=3)
+                          borderwidth=1, bordercolor=self.BORDER_COLOR, lightcolor=self.BORDER_COLOR,
+                          darkcolor=self.BORDER_COLOR, arrowcolor=self.TEXT_SECONDARY, padding=3)
+            style.map('TSpinbox',
+                      bordercolor=[('focus', self.ACCENT_BLUE), ('active', self.ACCENT_BLUE)],
+                      lightcolor=[('focus', self.ACCENT_BLUE)],
+                      darkcolor=[('focus', self.ACCENT_BLUE)],
+                      arrowcolor=[('active', self.ACCENT_BLUE)])
+
             style.configure('TSeparator', background=self.BORDER_COLOR)
             style.configure('TScrollbar', background=self.BG_SECONDARY, troughcolor=self.BG_DARK,
                           borderwidth=0, arrowcolor=self.TEXT_MUTED)
@@ -5249,21 +5277,27 @@ class App:
             style.configure('TLabelframe.Label', background=self.BG_DARK, foreground=self.ACCENT_BLUE,
                           font=('Segoe UI', 10, 'bold'))
 
-            # --- Accent button styles ---
+            # --- Accent button styles (with border) ---
             style.configure('Accent.TButton', background=self.ACCENT_BLUE, foreground='#ffffff',
-                          borderwidth=0, font=('Segoe UI', 9, 'bold'), padding=(12, 5))
+                          borderwidth=1, bordercolor='#4090e0', relief='solid',
+                          font=('Segoe UI', 9, 'bold'), padding=(12, 5))
             style.map('Accent.TButton',
-                      background=[('active', '#4090e0'), ('pressed', '#3070c0')])
+                      background=[('active', '#4090e0'), ('pressed', '#3070c0')],
+                      bordercolor=[('active', '#58a6ff'), ('pressed', '#3070c0')])
 
             style.configure('Success.TButton', background=self.ACCENT_GREEN, foreground='#ffffff',
-                          borderwidth=0, font=('Segoe UI', 9, 'bold'), padding=(12, 5))
+                          borderwidth=1, bordercolor='#2ea043', relief='solid',
+                          font=('Segoe UI', 9, 'bold'), padding=(12, 5))
             style.map('Success.TButton',
-                      background=[('active', '#2ea043'), ('pressed', '#238636')])
+                      background=[('active', '#2ea043'), ('pressed', '#238636')],
+                      bordercolor=[('active', '#3fb950'), ('pressed', '#238636')])
 
             style.configure('Danger.TButton', background=self.ACCENT_RED, foreground='#ffffff',
-                          borderwidth=0, font=('Segoe UI', 9, 'bold'), padding=(12, 5))
+                          borderwidth=1, bordercolor='#da3633', relief='solid',
+                          font=('Segoe UI', 9, 'bold'), padding=(12, 5))
             style.map('Danger.TButton',
-                      background=[('active', '#da3633'), ('pressed', '#b62324')])
+                      background=[('active', '#da3633'), ('pressed', '#b62324')],
+                      bordercolor=[('active', '#f85149'), ('pressed', '#b62324')])
 
             # --- Section header labels ---
             style.configure('SectionHeader.TLabel', background=self.BG_DARK,
@@ -5274,6 +5308,16 @@ class App:
                           foreground=self.TEXT_MUTED, font=('Segoe UI', 8))
             style.configure('Emoji.TLabel', background=self.BG_DARK,
                           foreground=self.TEXT_PRIMARY, font=('Segoe UI', 11))
+
+            # --- Bordered secondary button (Browse, Save, Load, etc.) ---
+            style.configure('Bordered.TButton', background=self.BG_ELEVATED,
+                          foreground=self.TEXT_PRIMARY, borderwidth=1,
+                          bordercolor=self.BORDER_LIGHT, relief='solid',
+                          font=('Segoe UI', 9), padding=(10, 4))
+            style.map('Bordered.TButton',
+                      background=[('active', self.HOVER_BG), ('pressed', self.BG_TERTIARY)],
+                      foreground=[('disabled', self.TEXT_MUTED)],
+                      bordercolor=[('active', self.ACCENT_BLUE), ('focus', self.ACCENT_BLUE)])
 
         except Exception:
             pass
@@ -5302,7 +5346,8 @@ class App:
                                 selectforeground='#ffffff',
                                 highlightbackground=app_ref.BORDER_COLOR,
                                 highlightcolor=app_ref.ACCENT_BLUE,
-                                relief='flat', bd=1)
+                                highlightthickness=1,
+                                relief='solid', bd=1)
                     elif isinstance(w, _tk.Canvas):
                         # Don't override preview/color canvases that have specific bg
                         cur_bg = str(w.cget('bg'))
@@ -5321,7 +5366,8 @@ class App:
                         try:
                             w.config(bg=app_ref.BG_TERTIARY, fg=app_ref.TEXT_PRIMARY,
                                     insertbackground=app_ref.TEXT_PRIMARY,
-                                    relief='flat', bd=1,
+                                    relief='solid', bd=1,
+                                    highlightthickness=1,
                                     highlightbackground=app_ref.BORDER_COLOR,
                                     highlightcolor=app_ref.ACCENT_BLUE)
                         except Exception:
@@ -5331,9 +5377,10 @@ class App:
                             w.config(bg=app_ref.BG_DARK, fg=app_ref.TEXT_PRIMARY,
                                     troughcolor=app_ref.BG_TERTIARY,
                                     activebackground=app_ref.ACCENT_BLUE,
-                                    highlightbackground=app_ref.BG_DARK,
-                                    highlightcolor=app_ref.BG_DARK,
-                                    relief='flat', bd=0, sliderrelief='flat')
+                                    highlightbackground=app_ref.BORDER_COLOR,
+                                    highlightcolor=app_ref.ACCENT_BLUE,
+                                    highlightthickness=1,
+                                    relief='flat', bd=0, sliderrelief='raised')
                         except Exception:
                             pass
                 except Exception:
@@ -5457,28 +5504,28 @@ class App:
         self.video_var = tk.StringVar(value="")
         self.video_entry = ttk.Entry(left_frame, textvariable=self.video_var)
         self.video_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
-        ttk.Button(left_frame, text="Browse…", command=self.browse_video).grid(row=row, column=2, padx=6)
+        ttk.Button(left_frame, text="Browse…", style='Bordered.TButton', command=self.browse_video).grid(row=row, column=2, padx=6)
         row += 1
 
         ttk.Label(left_frame, text="Voice:").grid(row=row, column=0, sticky="w")
         self.voice_var = tk.StringVar(value="")
         self.voice_entry = ttk.Entry(left_frame, textvariable=self.voice_var)
         self.voice_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
-        ttk.Button(left_frame, text="Browse…", command=self.browse_voice).grid(row=row, column=2, padx=6)
+        ttk.Button(left_frame, text="Browse…", style='Bordered.TButton', command=self.browse_voice).grid(row=row, column=2, padx=6)
         row += 1
 
         ttk.Label(left_frame, text="Music:").grid(row=row, column=0, sticky="w")
         self.music_var = tk.StringVar(value="")
         self.music_entry = ttk.Entry(left_frame, textvariable=self.music_var)
         self.music_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
-        ttk.Button(left_frame, text="Browse…", command=self.browse_music).grid(row=row, column=2, padx=6)
+        ttk.Button(left_frame, text="Browse…", style='Bordered.TButton', command=self.browse_music).grid(row=row, column=2, padx=6)
         row += 1
 
         ttk.Label(left_frame, text="Output:").grid(row=row, column=0, sticky="w")
         self.output_var = tk.StringVar(value="final_tiktok.mp4")
         self.output_entry = ttk.Entry(left_frame, textvariable=self.output_var)
         self.output_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
-        ttk.Button(left_frame, text="Choose…", command=self.choose_output).grid(row=row, column=2, padx=6)
+        ttk.Button(left_frame, text="Choose…", style='Bordered.TButton', command=self.choose_output).grid(row=row, column=2, padx=6)
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
@@ -5612,7 +5659,7 @@ class App:
         row += 1
         
         # Button to save API key
-        ttk.Button(left_frame, text="Save API Key", command=self.on_save_api_key).grid(row=row, column=1, sticky="w", padx=(6,0))
+        ttk.Button(left_frame, text="Save API Key", style='Accent.TButton', command=self.on_save_api_key).grid(row=row, column=1, sticky="w", padx=(6,0))
         row += 1
         
         # Custom Voice Management Section
@@ -5638,7 +5685,7 @@ class App:
         self.custom_voice_lang_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
         row += 1
         
-        ttk.Button(left_frame, text="Save Custom Voice", command=self.on_save_custom_voice).grid(row=row, column=1, sticky="w", padx=(6,0))
+        ttk.Button(left_frame, text="Save Custom Voice", style='Accent.TButton', command=self.on_save_custom_voice).grid(row=row, column=1, sticky="w", padx=(6,0))
         row += 1
         
         # Silence Removal Threshold Section
@@ -5868,8 +5915,8 @@ class App:
         except Exception:
             pass
         btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6,0))
-        ttk.Button(btns, text="Save crop settings", command=self.on_save_crop).pack(side="left", padx=4)
-        ttk.Button(btns, text="Load crop settings", command=self.on_load_crop).pack(side="left", padx=4)
+        ttk.Button(btns, text="Save crop settings", style='Bordered.TButton', command=self.on_save_crop).pack(side="left", padx=4)
+        ttk.Button(btns, text="Load crop settings", style='Bordered.TButton', command=self.on_load_crop).pack(side="left", padx=4)
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
@@ -5886,8 +5933,8 @@ class App:
             pass
         preset_btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(4,0))
         ttk.Button(preset_btns, text="Save Preset", style='Accent.TButton', command=self.save_preset).pack(side="left", padx=4)
-        ttk.Button(preset_btns, text="Load Preset", command=self.load_preset).pack(side="left", padx=4)
-        ttk.Button(preset_btns, text="Reset to Defaults", command=self.reset_to_defaults).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="Load Preset", style='Bordered.TButton', command=self.load_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="Reset to Defaults", style='Bordered.TButton', command=self.reset_to_defaults).pack(side="left", padx=4)
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
@@ -5938,7 +5985,7 @@ class App:
         bottom_controls.grid(row=row, column=0, columnspan=3, sticky="we")
         self.run_single_btn = ttk.Button(bottom_controls, text="▶ Run (Single)", style='Success.TButton', command=self.on_run_single)
         self.run_single_btn.pack(side="left", padx=4)
-        ttk.Button(bottom_controls, text="Toggle Fullscreen", command=self.toggle_fullscreen).pack(side="left", padx=4)
+        ttk.Button(bottom_controls, text="Toggle Fullscreen", style='Bordered.TButton', command=self.toggle_fullscreen).pack(side="left", padx=4)
         ttk.Button(bottom_controls, text="Quit", style='Danger.TButton', command=root.quit).pack(side="left", padx=4)
 
         # preview
@@ -5977,11 +6024,11 @@ class App:
             ttk.Label(color_frame, text='Text color:').grid(row=0, column=0, sticky='w')
             self.text_color_canvas = tk.Canvas(color_frame, width=28, height=28, bg=self.BORDER_COLOR, highlightthickness=1, highlightbackground=self.BORDER_COLOR, bd=0)
             self.text_color_canvas.grid(row=0, column=1, padx=(6,12))
-            ttk.Button(color_frame, text='Custom...', command=self.on_pick_text_color).grid(row=0, column=2, padx=(0,6))
+            ttk.Button(color_frame, text='Custom...', style='Bordered.TButton', command=self.on_pick_text_color).grid(row=0, column=2, padx=(0,6))
             ttk.Label(color_frame, text='Stroke color:').grid(row=1, column=0, sticky='w', pady=(6,0))
             self.stroke_color_canvas = tk.Canvas(color_frame, width=28, height=28, bg=self.BORDER_COLOR, highlightthickness=1, highlightbackground=self.BORDER_COLOR, bd=0)
             self.stroke_color_canvas.grid(row=1, column=1, padx=(6,12), pady=(6,0))
-            ttk.Button(color_frame, text='Custom...', command=self.on_pick_stroke_color).grid(row=1, column=2, padx=(0,6), pady=(6,0))
+            ttk.Button(color_frame, text='Custom...', style='Bordered.TButton', command=self.on_pick_stroke_color).grid(row=1, column=2, padx=(0,6), pady=(6,0))
             # quick preset swatches below
             swatch_frame = ttk.Frame(self.font_panel)
             swatch_frame.pack(fill='x', pady=(4,6))
@@ -6046,7 +6093,7 @@ class App:
             self.caption_preview_canvas = tk.Canvas(self.font_panel, width=320, height=120,
                                                     bg=self.BG_SECONDARY, highlightthickness=0)
             self.caption_preview_canvas.pack(pady=(4,6))
-            ttk.Button(self.font_panel, text='Preview template', command=self.on_preview_template).pack(pady=(0,6))
+            ttk.Button(self.font_panel, text='Preview template', style='Bordered.TButton', command=self.on_preview_template).pack(pady=(0,6))
         except Exception:
             pass
 
@@ -6084,9 +6131,9 @@ class App:
         except Exception:
             pass
         btn_frame.pack(fill='x', pady=(4,0))
-        self.save_font_btn = ttk.Button(btn_frame, text='Save font for video', command=self.on_save_font_clicked)
+        self.save_font_btn = ttk.Button(btn_frame, text='Save font for video', style='Accent.TButton', command=self.on_save_font_clicked)
         self.save_font_btn.pack(side='left', padx=(0,4))
-        self.load_font_btn = ttk.Button(btn_frame, text='Load saved font', command=self.on_load_font_clicked)
+        self.load_font_btn = ttk.Button(btn_frame, text='Load saved font', style='Bordered.TButton', command=self.on_load_font_clicked)
         self.load_font_btn.pack(side='left')
         self.saved_font_label = ttk.Label(self.font_panel, text='Saved: None', anchor='w')
         self.saved_font_label.pack(fill='x', pady=(4,0))
