@@ -115,7 +115,7 @@ def test_blur_overlay_even_coordinates():
             # Both x and y positions must be made even with & ~1
             # Count how many & ~1 appear in the blur overlay section
             blur_section_start = src.find("blur_overlay_enabled")
-            blur_section = src[blur_section_start:blur_section_start + 1500]
+            blur_section = src[blur_section_start:blur_section_start + 3000]
             even_count = blur_section.count("& ~1")
             assert even_count >= 4, (
                 f"All 4 blur coords (x,y,w,h) must use & ~1 for even alignment, found {even_count}"
@@ -126,22 +126,32 @@ def test_blur_overlay_even_coordinates():
 
 
 def test_blur_overlay_prescale_before_blur():
-    """Blur overlay must scale to video_width×video_height before applying blur coordinates."""
+    """Blur overlay must convert to yuv420p and transform coordinates using fg offset."""
     source = _load_source()
     tree = ast.parse(source)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "_export_with_ffmpeg_filters":
             src = ast.get_source_segment(source, node)
-            # Must add format=yuv420p and scale BEFORE the split/crop/blur chain
+            # Must add format=yuv420p BEFORE the split/crop/blur chain
             blur_section_start = src.find("blur_overlay_enabled")
-            blur_section = src[blur_section_start:blur_section_start + 2000]
+            blur_section = src[blur_section_start:blur_section_start + 3000]
             # format=yuv420p must appear before split
             fmt_pos = blur_section.find("format=yuv420p")
             split_pos = blur_section.find("split")
             assert fmt_pos != -1, "Must use format=yuv420p before blur overlay"
             assert fmt_pos < split_pos, "format=yuv420p must come before split in blur chain"
-            print("✓ Blur overlay pre-scales and converts to yuv420p before blur")
+            # Must probe foreground dimensions for coordinate transformation
+            assert "ffprobe" in blur_section, "Must probe foreground video dimensions"
+            # Must calculate foreground offset in composited frame
+            assert "fg_y_off" in blur_section or "fg_y_offset" in blur_section, (
+                "Must calculate foreground Y offset in composited frame"
+            )
+            # Must use crop_top_ratio for Y coordinate transformation
+            assert "crop_top_ratio" in blur_section, (
+                "Must account for crop_top_ratio in blur Y coordinate"
+            )
+            print("✓ Blur overlay converts to yuv420p and transforms coordinates correctly")
             return
     raise AssertionError("Could not find _export_with_ffmpeg_filters function")
 

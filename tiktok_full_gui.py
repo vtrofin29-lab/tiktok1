@@ -2853,24 +2853,54 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # --- Blur overlay (cover-up region) ---
         # If blur overlay is enabled in effect_settings, split the composited stream,
         # crop+blur a region, and overlay it back to cover that area.
+        # The user sets blur coordinates in the preview which shows the ORIGINAL video
+        # frame. In the export, the foreground is cropped+scaled and centered on the
+        # canvas, so we must transform the coordinates accordingly.
         blur_ov = effect_settings or {}
         if blur_ov.get('blur_overlay_enabled', False):
-            # Scale to final resolution BEFORE blur overlay so that percentage-based
-            # coordinates (relative to video_width × video_height) are correct.
-            # At this point the frame may be larger due to bg_scale_extra.
-            # Also convert to yuv420p to prevent green chroma artifacts.
-            filter_parts[-1] += f",format=yuv420p,scale={video_width}:{video_height},setsar=1:1"
+            # Convert to yuv420p to prevent green chroma artifacts from boxblur
+            filter_parts[-1] += ",format=yuv420p"
+            
+            # Probe foreground video dimensions to calculate its offset in the
+            # composited frame. The foreground is centered via overlay=x=(W-w)/2:y=(H-h)/2.
+            fg_w, fg_h = video_width, video_height  # fallback
+            try:
+                dim_cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                           "-show_entries", "stream=width,height",
+                           "-of", "csv=p=0:s=x", fg_path]
+                dim_result = subprocess.run(dim_cmd, capture_output=True, text=True, timeout=30)
+                if dim_result.returncode == 0 and 'x' in dim_result.stdout.strip():
+                    parts = dim_result.stdout.strip().split('x')
+                    fg_w = int(parts[0])
+                    fg_h = int(parts[1])
+                    log_fn(f"[EXPORT] Blur overlay: probed foreground {fg_w}x{fg_h}")
+            except Exception as e:
+                log_fn(f"[EXPORT] Blur overlay: could not probe fg dimensions ({e}), using canvas size")
+            
+            # Foreground offset in the composited frame (centered overlay)
+            fg_x_off = max(0, (video_width - fg_w) // 2)
+            fg_y_off = max(0, (video_height - fg_h) // 2)
+            
+            # keep_ratio is the fraction of the original video height that remains
+            # after top/bottom crop. Used to map original-video Y% → foreground Y%.
+            keep_ratio = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
             
             bx_pct = float(blur_ov.get('blur_overlay_x', 10))
             by_pct = float(blur_ov.get('blur_overlay_y', 10))
             bw_pct = float(blur_ov.get('blur_overlay_w', 20))
             bh_pct = float(blur_ov.get('blur_overlay_h', 15))
             b_intensity = int(blur_ov.get('blur_overlay_intensity', 20))
-            # Convert percentages to pixel values — ensure ALL coords are even for yuv420p
-            bx_px = max(0, int(video_width * bx_pct / 100.0)) & ~1
-            by_px = max(0, int(video_height * by_pct / 100.0)) & ~1
-            bw_px = max(2, int(video_width * bw_pct / 100.0)) & ~1
-            bh_px = max(2, int(video_height * bh_pct / 100.0)) & ~1
+            
+            # Transform coordinates from original-video-relative to composited-frame.
+            # X: no crop in X direction, so simply offset by foreground position.
+            # Y: the top crop_top_ratio of the original is removed, and the visible
+            #    area (keep_ratio) maps to fg_h. So original Y% must be adjusted:
+            #    canvas_y = fg_y_off + (by_pct/100 - crop_top_ratio) / keep_ratio * fg_h
+            bx_px = max(0, fg_x_off + int(fg_w * bx_pct / 100.0)) & ~1
+            by_px = max(0, fg_y_off + int(fg_h * (by_pct / 100.0 - crop_top_ratio) / keep_ratio)) & ~1
+            bw_px = max(2, int(fg_w * bw_pct / 100.0)) & ~1
+            bh_px = max(2, int(fg_h * bh_pct / (100.0 * keep_ratio))) & ~1
+            
             # Clamp to fit within frame
             if bx_px + bw_px > video_width:
                 bw_px = (video_width - bx_px) & ~1
@@ -2882,7 +2912,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             filter_parts.append(f"[_bo_pre]split[_bo_main][_bo_copy]")
             filter_parts.append(f"[_bo_copy]crop={bw_px}:{bh_px}:{bx_px}:{by_px},boxblur={b_blur}:2[_bo_blurred]")
             filter_parts.append(f"[_bo_main][_bo_blurred]overlay={bx_px}:{by_px}")
-            log_fn(f"[EXPORT] ✓ Blur overlay: pos=({bx_px},{by_px}) size={bw_px}x{bh_px} blur={b_blur}")
+            log_fn(f"[EXPORT] ✓ Blur overlay: pos=({bx_px},{by_px}) size={bw_px}x{bh_px} blur={b_blur} fg={fg_w}x{fg_h} offset=({fg_x_off},{fg_y_off})")
 
         if not use_gpu_overlay:
             if use_subtitle_file and ass_subtitle_path:
