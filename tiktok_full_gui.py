@@ -1734,6 +1734,47 @@ def make_unique_output_path(requested_path, log=None):
     return candidate
 
 # ----------------- Whisper robust loading & transcription -----------------
+# Global Whisper model cache — loads the ~3GB model ONCE, reuses for all transcriptions.
+# Without caching, each transcribe_captions() call loads a fresh model on GPU.
+# In multi-job pipelines, this quickly exhausts GPU memory (3GB × N simultaneous loads)
+# and causes 100% GPU usage from memory thrashing without actual speed benefit.
+_whisper_model_cache = {}  # {model_name: (model, device)}
+_whisper_transcription_lock = threading.Lock()  # Serialize GPU transcription (Whisper isn't thread-safe)
+
+def _get_cached_whisper_model(model_name="large", tries=3, log=None):
+    """Load Whisper model once and cache it. Thread-safe via _whisper_transcription_lock."""
+    global _whisper_model_cache
+    if model_name in _whisper_model_cache:
+        model, device = _whisper_model_cache[model_name]
+        if log:
+            log(f"[whisper] ✓ Using cached model '{model_name}' on {device.upper()} (no reload needed)")
+        return model, device
+    if log:
+        log(f"[whisper] Loading model '{model_name}' for the first time (will be cached for reuse)...")
+    model, device = _load_whisper_model_with_retries(model_name, tries=tries, log=log)
+    _whisper_model_cache[model_name] = (model, device)
+    return model, device
+
+def _release_whisper_model(log=None):
+    """Release cached Whisper model and free GPU memory for FFmpeg NVENC export."""
+    global _whisper_model_cache
+    with _whisper_transcription_lock:
+        if _whisper_model_cache:
+            if log:
+                log(f"[whisper] 🧹 Releasing cached Whisper model(s) to free GPU memory for export...")
+            _whisper_model_cache.clear()
+            gc.collect()
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    if log:
+                        log(f"[whisper] ✓ GPU memory freed (torch.cuda.empty_cache)")
+            except Exception:
+                pass
+        else:
+            if log:
+                log(f"[whisper] No cached model to release")
+
 def _find_and_remove_corrupted_whisper_models(model_name, log=None):
     removed = []
     possible_roots = [
@@ -1858,6 +1899,10 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     """
     Transcribe audio to text captions using Whisper, with optional translation.
     
+    Uses a global model cache to avoid re-loading the ~3GB Whisper model on GPU
+    for every call. Serializes GPU transcription via _whisper_transcription_lock
+    to prevent concurrent GPU usage that causes 100% GPU with no speed benefit.
+    
     Args:
         voice_path: Path to audio file
         log: Optional logging function
@@ -1873,35 +1918,42 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
             pass
     log_fn = _default_log if log is None else log
     
-    # Use Whisper for transcription
-    # Using 'large' (not large-v3) for accurate word-level timestamps needed for caption sync
-    # Medium/small models are faster but timestamps not accurate enough, causing caption-voice mismatch
-    try:
-        model, device = _load_whisper_model_with_retries("large", tries=3, log=log_fn)
-    except Exception as e_large:
-        log_fn(f"[whisper] Failed to load 'large' model after retries: {e_large}")
-        log_fn("[whisper] Falling back to 'medium' model (faster but less accurate timestamps).")
+    # Serialize GPU transcription — only one Whisper transcription at a time.
+    # Without this lock, the interleaved voice pipeline can run multiple transcriptions
+    # concurrently (submitter + completion workers), each trying to use GPU simultaneously.
+    # This causes GPU memory thrashing and 100% usage without actual speed benefit.
+    with _whisper_transcription_lock:
+        # Use cached Whisper model (loaded once, reused for all transcriptions)
+        # Using 'large' (not large-v3) for accurate word-level timestamps needed for caption sync
+        # Medium/small models are faster but timestamps not accurate enough, causing caption-voice mismatch
         try:
-            model, device = _load_whisper_model_with_retries("medium", tries=2, log=log_fn)
-        except Exception as e_medium:
-            log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
-            raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
+            model, device = _get_cached_whisper_model("large", tries=3, log=log_fn)
+        except Exception as e_large:
+            log_fn(f"[whisper] Failed to load 'large' model after retries: {e_large}")
+            log_fn("[whisper] Falling back to 'medium' model (faster but less accurate timestamps).")
+            try:
+                model, device = _get_cached_whisper_model("medium", tries=2, log=log_fn)
+            except Exception as e_medium:
+                log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
+                raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
+        
+        # Show appropriate message based on actual device being used
+        if device == "cuda":
+            log_fn("[whisper] Transcribing audio with word-level timestamps (GPU accelerated)...")
+        else:
+            log_fn("[whisper] Transcribing audio with word-level timestamps (CPU mode)...")
+        
+        # Enable word_timestamps for precise caption synchronization
+        # Use FP16 on GPU for faster inference (2x speedup with minimal quality loss)
+        # Only enable FP16 if actually running on GPU
+        use_fp16 = (device == "cuda")
+        if use_fp16:
+            log_fn("[whisper] Using FP16 precision on GPU for faster transcription (2x speedup)")
+        
+        result = model.transcribe(voice_path, word_timestamps=True, fp16=use_fp16)
+        log_fn("[whisper] Transcription finished.")
     
-    # Show appropriate message based on actual device being used
-    if device == "cuda":
-        log_fn("[whisper] Transcribing audio with word-level timestamps (5-8 minutes on GPU)...")
-    else:
-        log_fn("[whisper] Transcribing audio with word-level timestamps (15-20 minutes on CPU)...")
-    
-    # Enable word_timestamps for precise caption synchronization
-    # Use FP16 on GPU for faster inference (2x speedup with minimal quality loss)
-    # Only enable FP16 if actually running on GPU
-    use_fp16 = (device == "cuda")
-    if use_fp16:
-        log_fn("[whisper] Using FP16 precision on GPU for faster transcription (2x speedup)")
-    
-    result = model.transcribe(voice_path, word_timestamps=True, fp16=use_fp16)
-    log_fn("[whisper] Transcription finished.")
+    # Post-processing outside the lock (doesn't need GPU)
     segments = result["segments"]
     
     # Log auto-detected source language from Whisper
@@ -4932,6 +4984,9 @@ def _run_video_job(job, job_index, total_jobs, q, pre_generated_voice=None):
     def log(s):
         q.put(str(s))
     log(f"\n===== START JOB {job_index}/{total_jobs} =====")
+    # Release Whisper model before export to free GPU memory for NVENC encoding.
+    # The model will be re-cached automatically if transcription is needed again.
+    _release_whisper_model(log=log)
     effect_settings = _extract_effect_settings(job)
     process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"),
                        custom_top_ratio=job.get("custom_top_ratio"),
@@ -4968,6 +5023,8 @@ def queue_worker(jobs, q):
         # No AI voice jobs or single job — use simple sequential processing
         for i, job in enumerate(jobs, start=1):
             _run_video_job(job, i, len(jobs), q)
+        # Final cleanup: release Whisper model to free GPU memory
+        _release_whisper_model(log=log)
         log("[QUEUE_DONE]")
         return
     
@@ -5093,6 +5150,9 @@ def queue_worker(jobs, q):
         t.join(timeout=10.0)
         if t.is_alive():
             log(f"[QUEUE] ⚠️ Completion thread still running after timeout")
+    
+    # Final cleanup: release Whisper model to free GPU memory
+    _release_whisper_model(log=log)
     
     log("")
     log("━"*60)
