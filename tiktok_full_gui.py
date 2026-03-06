@@ -5309,7 +5309,23 @@ class App:
             style.configure('Emoji.TLabel', background=self.BG_DARK,
                           foreground=self.TEXT_PRIMARY, font=('Segoe UI', 11))
 
-            # --- Bordered secondary button (Browse, Save, Load, etc.) ---
+            # --- Warning button (orange – reset / caution actions) ---
+            style.configure('Warning.TButton', background=self.ACCENT_ORANGE, foreground='#ffffff',
+                          borderwidth=1, bordercolor='#b88a1e', relief='solid',
+                          font=('Segoe UI', 9, 'bold'), padding=(12, 5))
+            style.map('Warning.TButton',
+                      background=[('active', '#b88a1e'), ('pressed', '#9e7519')],
+                      bordercolor=[('active', '#d29922'), ('pressed', '#9e7519')])
+
+            # --- Info button (purple – toggle / info actions) ---
+            style.configure('Info.TButton', background=self.ACCENT_PURPLE, foreground='#ffffff',
+                          borderwidth=1, bordercolor='#a371e0', relief='solid',
+                          font=('Segoe UI', 9, 'bold'), padding=(12, 5))
+            style.map('Info.TButton',
+                      background=[('active', '#a371e0'), ('pressed', '#8957c0')],
+                      bordercolor=[('active', '#bc8cff'), ('pressed', '#8957c0')])
+
+            # --- Bordered secondary button (Browse, Choose, Custom, etc.) ---
             style.configure('Bordered.TButton', background=self.BG_ELEVATED,
                           foreground=self.TEXT_PRIMARY, borderwidth=1,
                           bordercolor=self.BORDER_LIGHT, relief='solid',
@@ -5915,8 +5931,8 @@ class App:
         except Exception:
             pass
         btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6,0))
-        ttk.Button(btns, text="Save crop settings", style='Bordered.TButton', command=self.on_save_crop).pack(side="left", padx=4)
-        ttk.Button(btns, text="Load crop settings", style='Bordered.TButton', command=self.on_load_crop).pack(side="left", padx=4)
+        ttk.Button(btns, text="Save crop settings", style='Accent.TButton', command=self.on_save_crop).pack(side="left", padx=4)
+        ttk.Button(btns, text="Load crop settings", style='Accent.TButton', command=self.on_load_crop).pack(side="left", padx=4)
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
@@ -5933,8 +5949,8 @@ class App:
             pass
         preset_btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(4,0))
         ttk.Button(preset_btns, text="Save Preset", style='Accent.TButton', command=self.save_preset).pack(side="left", padx=4)
-        ttk.Button(preset_btns, text="Load Preset", style='Bordered.TButton', command=self.load_preset).pack(side="left", padx=4)
-        ttk.Button(preset_btns, text="Reset to Defaults", style='Bordered.TButton', command=self.reset_to_defaults).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="Load Preset", style='Accent.TButton', command=self.load_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="Reset to Defaults", style='Warning.TButton', command=self.reset_to_defaults).pack(side="left", padx=4)
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
@@ -5985,7 +6001,7 @@ class App:
         bottom_controls.grid(row=row, column=0, columnspan=3, sticky="we")
         self.run_single_btn = ttk.Button(bottom_controls, text="▶ Run (Single)", style='Success.TButton', command=self.on_run_single)
         self.run_single_btn.pack(side="left", padx=4)
-        ttk.Button(bottom_controls, text="Toggle Fullscreen", style='Bordered.TButton', command=self.toggle_fullscreen).pack(side="left", padx=4)
+        ttk.Button(bottom_controls, text="Toggle Fullscreen", style='Info.TButton', command=self.toggle_fullscreen).pack(side="left", padx=4)
         ttk.Button(bottom_controls, text="Quit", style='Danger.TButton', command=root.quit).pack(side="left", padx=4)
 
         # preview
@@ -6093,7 +6109,7 @@ class App:
             self.caption_preview_canvas = tk.Canvas(self.font_panel, width=320, height=120,
                                                     bg=self.BG_SECONDARY, highlightthickness=0)
             self.caption_preview_canvas.pack(pady=(4,6))
-            ttk.Button(self.font_panel, text='Preview template', style='Bordered.TButton', command=self.on_preview_template).pack(pady=(0,6))
+            ttk.Button(self.font_panel, text='Preview template', style='Accent.TButton', command=self.on_preview_template).pack(pady=(0,6))
         except Exception:
             pass
 
@@ -6133,7 +6149,7 @@ class App:
         btn_frame.pack(fill='x', pady=(4,0))
         self.save_font_btn = ttk.Button(btn_frame, text='Save font for video', style='Accent.TButton', command=self.on_save_font_clicked)
         self.save_font_btn.pack(side='left', padx=(0,4))
-        self.load_font_btn = ttk.Button(btn_frame, text='Load saved font', style='Bordered.TButton', command=self.on_load_font_clicked)
+        self.load_font_btn = ttk.Button(btn_frame, text='Load saved font', style='Accent.TButton', command=self.on_load_font_clicked)
         self.load_font_btn.pack(side='left')
         self.saved_font_label = ttk.Label(self.font_panel, text='Saved: None', anchor='w')
         self.saved_font_label.pack(fill='x', pady=(4,0))
