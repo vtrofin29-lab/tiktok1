@@ -3107,6 +3107,52 @@ def apply_video_effects(frame, effect_settings):
         return np.array(img)
     return img
 
+
+def apply_blur_overlay_to_preview(img, effect_settings):
+    """
+    Apply blur overlay (cover-up region) to a PIL Image for real-time preview.
+    
+    Crops the specified region, applies GaussianBlur, and pastes it back.
+    This gives a real-time preview of the blur overlay on the mini canvas.
+    
+    Args:
+        img: PIL Image
+        effect_settings: dict with blur_overlay_enabled, blur_overlay_x/y/w/h (percentages),
+                         and blur_overlay_intensity
+    Returns:
+        Modified PIL Image with blur overlay applied (or original if not enabled)
+    """
+    if not effect_settings or not effect_settings.get('blur_overlay_enabled', False):
+        return img
+    
+    try:
+        w, h = img.size
+        x_pct = float(effect_settings.get('blur_overlay_x', 10)) / 100.0
+        y_pct = float(effect_settings.get('blur_overlay_y', 10)) / 100.0
+        w_pct = float(effect_settings.get('blur_overlay_w', 20)) / 100.0
+        h_pct = float(effect_settings.get('blur_overlay_h', 15)) / 100.0
+        intensity = int(effect_settings.get('blur_overlay_intensity', 20))
+        
+        # Convert percentages to pixel coordinates
+        x1 = max(0, int(round(w * x_pct)))
+        y1 = max(0, int(round(h * y_pct)))
+        x2 = min(w, int(round(w * (x_pct + w_pct))))
+        y2 = min(h, int(round(h * (y_pct + h_pct))))
+        
+        # Ensure valid region
+        if x2 <= x1 or y2 <= y1:
+            return img
+        
+        # Crop the region, blur it, paste it back
+        img = img.copy()
+        region = img.crop((x1, y1, x2, y2))
+        blurred = region.filter(ImageFilter.GaussianBlur(radius=intensity))
+        img.paste(blurred, (x1, y1))
+        return img
+    except Exception:
+        return img
+
+
 def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None, crop_top_ratio=None, crop_bottom_ratio=None, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None):
     """
     Compose final video with blurred background and caption overlays.
@@ -6775,6 +6821,10 @@ class App:
                     effect_settings.get('effect_vintage', False)]):
                 img = apply_video_effects(img, effect_settings)
             
+            # Apply blur overlay to preview (real-time visualization)
+            if effect_settings.get('blur_overlay_enabled', False):
+                img = apply_blur_overlay_to_preview(img, effect_settings)
+            
             self.mini_base_img = img
             self.mini_scale = scale
             top_pct = float(self.top_percent_var.get())/100.0
@@ -6888,6 +6938,10 @@ class App:
                             effect_settings.get('effect_brightness', False),
                             effect_settings.get('effect_vintage', False)]):
                         img = apply_video_effects(img, effect_settings)
+                    
+                    # Apply blur overlay to preview (real-time visualization)
+                    if effect_settings.get('blur_overlay_enabled', False):
+                        img = apply_blur_overlay_to_preview(img, effect_settings)
                     
                     top_pct = float(self.top_percent_var.get())/100.0
                     bottom_pct = float(self.bottom_percent_var.get())/100.0

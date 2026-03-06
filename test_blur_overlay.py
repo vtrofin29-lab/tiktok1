@@ -211,3 +211,128 @@ def test_on_job_double_click_loads_blur_overlay():
                     print("✓ on_job_double_click loads blur overlay settings")
                     return
     raise AssertionError("Could not find App.on_job_double_click")
+
+
+def test_apply_blur_overlay_to_preview_exists():
+    """apply_blur_overlay_to_preview function must exist."""
+    source = _load_source()
+    tree = ast.parse(source)
+    
+    found = False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "apply_blur_overlay_to_preview":
+            found = True
+            src = ast.get_source_segment(source, node)
+            assert "blur_overlay_enabled" in src, "Must check blur_overlay_enabled"
+            assert "GaussianBlur" in src, "Must use GaussianBlur for blur effect"
+            assert "crop" in src.lower(), "Must crop a region for blur"
+            assert "paste" in src.lower(), "Must paste blurred region back"
+            break
+    assert found, "apply_blur_overlay_to_preview function must exist"
+    print("✓ apply_blur_overlay_to_preview exists and has correct implementation")
+
+
+def test_mini_preview_applies_blur_overlay():
+    """Both mini preview paths must call apply_blur_overlay_to_preview."""
+    source = _load_source()
+    tree = ast.parse(source)
+    
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "App":
+            found_extract = False
+            found_persistent = False
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef):
+                    src = ast.get_source_segment(source, item)
+                    if item.name == "_mini_extract_and_update":
+                        assert "apply_blur_overlay_to_preview" in src, (
+                            "_mini_extract_and_update must call apply_blur_overlay_to_preview"
+                        )
+                        found_extract = True
+                    if item.name == "_mini_persistent_worker":
+                        assert "apply_blur_overlay_to_preview" in src, (
+                            "_mini_persistent_worker must call apply_blur_overlay_to_preview"
+                        )
+                        found_persistent = True
+            assert found_extract, "Could not find _mini_extract_and_update"
+            assert found_persistent, "Could not find _mini_persistent_worker"
+            print("✓ Both mini preview paths apply blur overlay to preview")
+            return
+    raise AssertionError("Could not find App class")
+
+
+def test_apply_blur_overlay_returns_original_when_disabled():
+    """apply_blur_overlay_to_preview must return original image when disabled."""
+    from PIL import Image, ImageFilter
+    # Extract the function from source without importing the full module (avoids tkinter)
+    source = _load_source()
+    import re
+    # Extract the function body
+    match = re.search(
+        r'^(def apply_blur_overlay_to_preview\(.*?\n(?:(?:    .*|)\n)*)',
+        source, re.MULTILINE
+    )
+    assert match, "Could not find apply_blur_overlay_to_preview function in source"
+    func_source = match.group(1)
+    # Execute the function in a namespace with PIL available
+    ns = {'ImageFilter': ImageFilter}
+    exec(func_source, ns)
+    apply_blur_overlay_to_preview = ns['apply_blur_overlay_to_preview']
+    
+    img = Image.new('RGB', (100, 100), color='red')
+    # Disabled
+    result = apply_blur_overlay_to_preview(img, {'blur_overlay_enabled': False})
+    assert result is img, "Must return original image when disabled"
+    # None settings
+    result = apply_blur_overlay_to_preview(img, None)
+    assert result is img, "Must return original image when settings is None"
+    # Empty settings
+    result = apply_blur_overlay_to_preview(img, {})
+    assert result is img, "Must return original image when settings is empty"
+    print("✓ apply_blur_overlay_to_preview returns original when disabled")
+
+
+def test_apply_blur_overlay_modifies_image_when_enabled():
+    """apply_blur_overlay_to_preview must actually blur a region when enabled."""
+    from PIL import Image, ImageDraw, ImageFilter
+    import numpy as np
+    # Extract the function from source without importing the full module (avoids tkinter)
+    source = _load_source()
+    import re
+    match = re.search(
+        r'^(def apply_blur_overlay_to_preview\(.*?\n(?:(?:    .*|)\n)*)',
+        source, re.MULTILINE
+    )
+    assert match, "Could not find apply_blur_overlay_to_preview function in source"
+    func_source = match.group(1)
+    ns = {'ImageFilter': ImageFilter}
+    exec(func_source, ns)
+    apply_blur_overlay_to_preview = ns['apply_blur_overlay_to_preview']
+    
+    # Create a checkerboard image with sharp edges so blur changes pixels
+    img = Image.new('RGB', (200, 200), color='white')
+    draw = ImageDraw.Draw(img)
+    # Draw alternating black/white stripes in the blur region
+    for i in range(20, 60, 4):
+        draw.rectangle([i, 20, i+1, 59], fill='black')
+    
+    settings = {
+        'blur_overlay_enabled': True,
+        'blur_overlay_x': 10.0,   # 10% = pixel 20
+        'blur_overlay_y': 10.0,   # 10% = pixel 20
+        'blur_overlay_w': 20.0,   # 20% = 40px
+        'blur_overlay_h': 20.0,   # 20% = 40px
+        'blur_overlay_intensity': 10,
+    }
+    result = apply_blur_overlay_to_preview(img, settings)
+    assert result is not img, "Must return a new image (copy)"
+    # The blurred region should differ from original
+    orig_arr = np.array(img)
+    res_arr = np.array(result)
+    # The blur region pixels should have changed (sharp stripes get smoothed)
+    region_orig = orig_arr[20:60, 20:60]
+    region_result = res_arr[20:60, 20:60]
+    assert not np.array_equal(region_orig, region_result), "Blurred region must differ from original"
+    # Pixels outside the region should be unchanged
+    assert np.array_equal(orig_arr[0:19, 0:19], res_arr[0:19, 0:19]), "Pixels outside blur region must be unchanged"
+    print("✓ apply_blur_overlay_to_preview correctly blurs the region")
