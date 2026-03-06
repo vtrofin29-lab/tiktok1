@@ -1783,7 +1783,9 @@ def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
         else:
             if log:
                 log(f"[whisper] CUDA not available in PyTorch - will use CPU (slower)")
-                log(f"[whisper] For GPU support, install PyTorch with CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu118")
+                log(f"[whisper] For GPU support, install PyTorch with CUDA:")
+                log(f"[whisper]   RTX 5070/5080/5090: pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130")
+                log(f"[whisper]   RTX 4060-4090:      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
     except Exception as e:
         if log:
             log(f"[whisper] GPU detection failed ({str(e)}) - will use CPU")
@@ -1821,7 +1823,10 @@ def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
                         log("[whisper] ")
                         log("[whisper] SOLUTION: Reinstall PyTorch with proper GPU support:")
                         log("[whisper]   pip uninstall torch torchvision torchaudio")
-                        log("[whisper]   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+                        log("[whisper]   RTX 5070/5080/5090 (Blackwell):")
+                        log("[whisper]     pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130")
+                        log("[whisper]   RTX 4060/4070/4080/4090 (Ada Lovelace):")
+                        log("[whisper]     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
                         log("[whisper] ")
                         log("[whisper] Or as temporary workaround, using CPU (slower)...")
                         log("[whisper] ========================================")
@@ -2982,14 +2987,18 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         # GPU hardware decoding for background pre-render.
-        # Disabled when stream_loop is needed: -hwaccel cuda conflicts with
-        # -stream_loop because the GPU decoder cannot handle looped input streams.
-        if use_gpu and USE_HARDWARE_DECODING and not needs_stream_loop:
-            bg_cmd.extend(["-hwaccel", "cuda"])
-            if gpu_filters:
-                bg_cmd.extend(["-hwaccel_output_format", "cuda"])
+        # Only use -hwaccel cuda when GPU filters (scale_cuda) are active so decoded
+        # frames stay in VRAM. For CPU-only filter chains (boxblur etc.) GPU decoding
+        # forces a costly GPU→CPU transfer for every frame, pegging GPU at 100% without
+        # actual speed benefit. Let CPU decode when filters are CPU-based.
+        if use_gpu and USE_HARDWARE_DECODING and gpu_filters and not needs_stream_loop:
+            bg_cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
+        # Add filter threading for CPU filter path (scale, crop, boxblur)
+        if not gpu_filters:
+            cpu_threads = min(os.cpu_count() or 4, 8)
+            bg_cmd.extend(["-filter_threads", str(cpu_threads)])
         bg_cmd.extend(["-i", bg_path, "-an", "-vf", bg_vf])
         
         # Use NVENC for bg pre-render if available, else CPU ultrafast
@@ -3201,15 +3210,32 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # [2:a] = audio
         cmd = ["ffmpeg", "-y"]
         
-        # GPU hardware decoding: safe with two pre-rendered inputs (no stream_loop needed)
-        if use_gpu and USE_HARDWARE_DECODING:
-            cmd.extend(["-hwaccel", "cuda"])
-            log_fn("[EXPORT] ✓ GPU hardware decoding enabled")
+        # GPU hardware decoding: only use when GPU overlay is active (full GPU pipeline).
+        # When the filter chain is CPU-based (overlay + captions), GPU decoding forces
+        # GPU→CPU transfer for BOTH video inputs on every frame. This pegs the GPU at
+        # 100% with PCI-e transfers without actually speeding up the export. Letting the
+        # CPU decode avoids this overhead — GPU is reserved for NVENC encoding only.
+        if use_gpu and USE_HARDWARE_DECODING and use_gpu_overlay:
+            cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
+            log_fn("[EXPORT] ✓ GPU hardware decoding + GPU overlay (full GPU pipeline)")
+        elif use_gpu:
+            log_fn("[EXPORT] ✓ GPU NVENC encoding (CPU decode → CPU filters → GPU encode)")
         
         cmd.extend([
             "-i", bg_prerendered_path,    # [0:v] Pre-rendered blurred background
             "-i", fg_path,                # [1:v] Foreground video
             "-i", audio_path,             # [2:a] Audio
+        ])
+        
+        # Use multiple threads for CPU filter processing (overlay, captions, effects).
+        # This lets FFmpeg parallelize the filter_complex graph across CPU cores,
+        # reducing the bottleneck that starves the GPU NVENC encoder of frames.
+        if not use_gpu_overlay:
+            cpu_threads = min(os.cpu_count() or 4, 8)
+            cmd.extend(["-filter_threads", str(cpu_threads), "-filter_complex_threads", str(cpu_threads)])
+            log_fn(f"[EXPORT] ✓ CPU filter threading: {cpu_threads} threads")
+        
+        cmd.extend([
             "-filter_complex", filter_chain,
             "-map", "[vout]",
             "-map", "2:a",                # Audio from input 2
