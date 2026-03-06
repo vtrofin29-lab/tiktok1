@@ -2855,15 +2855,21 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # crop+blur a region, and overlay it back to cover that area.
         blur_ov = effect_settings or {}
         if blur_ov.get('blur_overlay_enabled', False):
+            # Scale to final resolution BEFORE blur overlay so that percentage-based
+            # coordinates (relative to video_width × video_height) are correct.
+            # At this point the frame may be larger due to bg_scale_extra.
+            # Also convert to yuv420p to prevent green chroma artifacts.
+            filter_parts[-1] += f",format=yuv420p,scale={video_width}:{video_height},setsar=1:1"
+            
             bx_pct = float(blur_ov.get('blur_overlay_x', 10))
             by_pct = float(blur_ov.get('blur_overlay_y', 10))
             bw_pct = float(blur_ov.get('blur_overlay_w', 20))
             bh_pct = float(blur_ov.get('blur_overlay_h', 15))
             b_intensity = int(blur_ov.get('blur_overlay_intensity', 20))
-            # Convert percentages to pixel values based on video dimensions
-            bx_px = max(0, int(video_width * bx_pct / 100.0))
-            by_px = max(0, int(video_height * by_pct / 100.0))
-            bw_px = max(2, int(video_width * bw_pct / 100.0)) & ~1  # ensure even
+            # Convert percentages to pixel values — ensure ALL coords are even for yuv420p
+            bx_px = max(0, int(video_width * bx_pct / 100.0)) & ~1
+            by_px = max(0, int(video_height * by_pct / 100.0)) & ~1
+            bw_px = max(2, int(video_width * bw_pct / 100.0)) & ~1
             bh_px = max(2, int(video_height * bh_pct / 100.0)) & ~1
             # Clamp to fit within frame
             if bx_px + bw_px > video_width:
@@ -2874,7 +2880,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Label the current composited stream and split it
             filter_parts[-1] += "[_bo_pre]"
             filter_parts.append(f"[_bo_pre]split[_bo_main][_bo_copy]")
-            filter_parts.append(f"[_bo_copy]crop={bw_px}:{bh_px}:{bx_px}:{by_px},boxblur={b_blur}:{b_blur}[_bo_blurred]")
+            filter_parts.append(f"[_bo_copy]crop={bw_px}:{bh_px}:{bx_px}:{by_px},boxblur={b_blur}:2[_bo_blurred]")
             filter_parts.append(f"[_bo_main][_bo_blurred]overlay={bx_px}:{by_px}")
             log_fn(f"[EXPORT] ✓ Blur overlay: pos=({bx_px},{by_px}) size={bw_px}x{bh_px} blur={b_blur}")
 

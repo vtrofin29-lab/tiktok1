@@ -104,6 +104,69 @@ def test_export_function_has_blur_overlay_filter():
     raise AssertionError("Could not find _export_with_ffmpeg_filters function")
 
 
+def test_blur_overlay_even_coordinates():
+    """Blur overlay x/y must be forced even for yuv420p compatibility (prevents green artifacts)."""
+    source = _load_source()
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_export_with_ffmpeg_filters":
+            src = ast.get_source_segment(source, node)
+            # Both x and y positions must be made even with & ~1
+            # Count how many & ~1 appear in the blur overlay section
+            blur_section_start = src.find("blur_overlay_enabled")
+            blur_section = src[blur_section_start:blur_section_start + 1500]
+            even_count = blur_section.count("& ~1")
+            assert even_count >= 4, (
+                f"All 4 blur coords (x,y,w,h) must use & ~1 for even alignment, found {even_count}"
+            )
+            print("✓ All blur overlay coordinates are forced even for yuv420p")
+            return
+    raise AssertionError("Could not find _export_with_ffmpeg_filters function")
+
+
+def test_blur_overlay_prescale_before_blur():
+    """Blur overlay must scale to video_width×video_height before applying blur coordinates."""
+    source = _load_source()
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_export_with_ffmpeg_filters":
+            src = ast.get_source_segment(source, node)
+            # Must add format=yuv420p and scale BEFORE the split/crop/blur chain
+            blur_section_start = src.find("blur_overlay_enabled")
+            blur_section = src[blur_section_start:blur_section_start + 2000]
+            # format=yuv420p must appear before split
+            fmt_pos = blur_section.find("format=yuv420p")
+            split_pos = blur_section.find("split")
+            assert fmt_pos != -1, "Must use format=yuv420p before blur overlay"
+            assert fmt_pos < split_pos, "format=yuv420p must come before split in blur chain"
+            print("✓ Blur overlay pre-scales and converts to yuv420p before blur")
+            return
+    raise AssertionError("Could not find _export_with_ffmpeg_filters function")
+
+
+def test_blur_overlay_boxblur_fixed_power():
+    """boxblur must use fixed power (2) not the intensity value to prevent green artifacts."""
+    source = _load_source()
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_export_with_ffmpeg_filters":
+            src = ast.get_source_segment(source, node)
+            # boxblur should use :2 as the power, not :{b_blur}
+            assert "boxblur={b_blur}:2" in src, (
+                "boxblur must use fixed power of 2 (not intensity as power)"
+            )
+            # Must NOT have boxblur={b_blur}:{b_blur} (old broken pattern)
+            assert "boxblur={b_blur}:{b_blur}" not in src, (
+                "boxblur must NOT use intensity as both radius and power"
+            )
+            print("✓ boxblur uses fixed power=2, not intensity as power")
+            return
+    raise AssertionError("Could not find _export_with_ffmpeg_filters function")
+
+
 def test_get_current_effect_settings_includes_blur_overlay():
     """_get_current_effect_settings must include blur overlay fields."""
     source = _load_source()
