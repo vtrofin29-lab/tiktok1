@@ -261,23 +261,28 @@ def test_mini_preview_applies_blur_overlay():
     raise AssertionError("Could not find App class")
 
 
-def test_apply_blur_overlay_returns_original_when_disabled():
-    """apply_blur_overlay_to_preview must return original image when disabled."""
-    from PIL import Image, ImageFilter
-    # Extract the function from source without importing the full module (avoids tkinter)
-    source = _load_source()
+def _extract_blur_overlay_func():
+    """Extract apply_blur_overlay_to_preview from source and return callable.
+    
+    Uses regex extraction + exec to avoid importing the full module (which needs tkinter).
+    """
+    from PIL import ImageFilter
     import re
-    # Extract the function body
+    source = _load_source()
     match = re.search(
         r'^(def apply_blur_overlay_to_preview\(.*?\n(?:(?:    .*|)\n)*)',
         source, re.MULTILINE
     )
     assert match, "Could not find apply_blur_overlay_to_preview function in source"
-    func_source = match.group(1)
-    # Execute the function in a namespace with PIL available
     ns = {'ImageFilter': ImageFilter}
-    exec(func_source, ns)
-    apply_blur_overlay_to_preview = ns['apply_blur_overlay_to_preview']
+    exec(match.group(1), ns)
+    return ns['apply_blur_overlay_to_preview']
+
+
+def test_apply_blur_overlay_returns_original_when_disabled():
+    """apply_blur_overlay_to_preview must return original image when disabled."""
+    from PIL import Image
+    apply_blur_overlay_to_preview = _extract_blur_overlay_func()
     
     img = Image.new('RGB', (100, 100), color='red')
     # Disabled
@@ -294,20 +299,9 @@ def test_apply_blur_overlay_returns_original_when_disabled():
 
 def test_apply_blur_overlay_modifies_image_when_enabled():
     """apply_blur_overlay_to_preview must actually blur a region when enabled."""
-    from PIL import Image, ImageDraw, ImageFilter
+    from PIL import Image, ImageDraw
     import numpy as np
-    # Extract the function from source without importing the full module (avoids tkinter)
-    source = _load_source()
-    import re
-    match = re.search(
-        r'^(def apply_blur_overlay_to_preview\(.*?\n(?:(?:    .*|)\n)*)',
-        source, re.MULTILINE
-    )
-    assert match, "Could not find apply_blur_overlay_to_preview function in source"
-    func_source = match.group(1)
-    ns = {'ImageFilter': ImageFilter}
-    exec(func_source, ns)
-    apply_blur_overlay_to_preview = ns['apply_blur_overlay_to_preview']
+    apply_blur_overlay_to_preview = _extract_blur_overlay_func()
     
     # Create a checkerboard image with sharp edges so blur changes pixels
     img = Image.new('RGB', (200, 200), color='white')
