@@ -6265,7 +6265,7 @@ class App:
             bw = job.get("blur_overlay_w", 20)
             bh = job.get("blur_overlay_h", 15)
             bi = job.get("blur_overlay_intensity", 20)
-            info_parts.append(f"blur_box:{bx:.0f},{by:.0f} {bw:.0f}x{bh:.0f}% blur={bi}")
+            info_parts.append(f"blur_box:({bx:.0f}%,{by:.0f}%) {bw:.0f}x{bh:.0f}% intensity={bi}")
         
         return " [" + ", ".join(info_parts) + "]" if info_parts else ""
 
