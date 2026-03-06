@@ -4333,7 +4333,8 @@ def _prepare_voice_for_job(job, job_index, total_jobs, q):
         actual_voice_path = voice_path
         if not actual_voice_path or not os.path.exists(actual_voice_path):
             log(f"[VOICE PREP {job_index}/{total_jobs}] Extracting audio from video...")
-            temp_voice_path = tempfile.mktemp(suffix='.mp3', prefix=f'voice_prep_{job_index}_')
+            fd, temp_voice_path = tempfile.mkstemp(suffix='.mp3', prefix=f'voice_prep_{job_index}_')
+            os.close(fd)
             try:
                 video_clip_for_audio = VideoFileClip(video_path)
                 if video_clip_for_audio.audio is None:
