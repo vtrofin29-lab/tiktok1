@@ -491,6 +491,224 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
             log(f"[GenAI Pro ERROR] Exception: {e}")
         return None
 
+
+def _submit_genaipro_task(text, language='en', api_key=None, log=None):
+    """
+    Submit a TTS task to GenAI Pro API WITHOUT waiting for completion.
+    Returns (task_id, headers) on success, or (None, None) on failure.
+    """
+    if not REQUESTS_AVAILABLE:
+        if log:
+            log("[GenAI Pro Submit] requests library not available")
+        return None, None
+    if not api_key:
+        if log:
+            log("[GenAI Pro Submit] No API key provided")
+        return None, None
+    if not text or not text.strip():
+        return None, None
+
+    try:
+        import requests
+
+        global TTS_VOICE_ID
+        if TTS_VOICE_ID and TTS_VOICE_ID != 'auto':
+            voice_id = TTS_VOICE_ID
+        else:
+            voice_map = {
+                'en': 'uju3wxzG5OhpWcoi3SMy',
+                'es': 'uju3wxzG5OhpWcoi3SMy',
+                'fr': 'uju3wxzG5OhpWcoi3SMy',
+                'de': 'uju3wxzG5OhpWcoi3SMy',
+                'it': 'uju3wxzG5OhpWcoi3SMy',
+                'pt': 'uju3wxzG5OhpWcoi3SMy',
+                'ro': 'uju3wxzG5OhpWcoi3SMy',
+                'ru': 'uju3wxzG5OhpWcoi3SMy',
+                'zh': 'uju3wxzG5OhpWcoi3SMy',
+                'ja': 'uju3wxzG5OhpWcoi3SMy',
+                'ko': 'uju3wxzG5OhpWcoi3SMy',
+            }
+            voice_id = voice_map.get(language, 'uju3wxzG5OhpWcoi3SMy')
+
+        headers = {
+            'Authorization': f'Bearer {api_key}',
+            'Content-Type': 'application/json'
+        }
+
+        task_payload = {
+            'input': text,
+            'voice_id': voice_id,
+            'model_id': 'eleven_turbo_v2_5',
+            'speed': 1.0,
+            'style': 0.0,
+            'use_speaker_boost': False,
+            'similarity': 0.75,
+            'stability': 0.5
+        }
+
+        if log:
+            log(f"[GenAI Pro Submit] Submitting TTS task ({len(text)} chars)...")
+
+        response = requests.post(
+            'https://genaipro.vn/api/v1/labs/task',
+            headers=headers,
+            json=task_payload,
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            if log:
+                log(f"[GenAI Pro Submit ERROR] {response.status_code} - {response.text}")
+            return None, None
+
+        task_data = response.json()
+        task_id = task_data.get('task_id') or task_data.get('id')
+
+        if not task_id:
+            if log:
+                log(f"[GenAI Pro Submit ERROR] No task_id in response: {task_data}")
+            return None, None
+
+        if log:
+            log(f"[GenAI Pro Submit] ✓ Task submitted: {task_id}")
+
+        return task_id, headers
+
+    except Exception as e:
+        if log:
+            log(f"[GenAI Pro Submit ERROR] {e}")
+        return None, None
+
+
+def _poll_and_download_genaipro(task_id, headers, output_path=None, log=None):
+    """
+    Poll GenAI Pro for a specific task's completion and download the audio.
+    Returns path to audio file or None.
+    """
+    if not REQUESTS_AVAILABLE:
+        return None
+
+    try:
+        import requests
+        import time
+
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='genaipro_poll_')
+            os.close(fd)
+
+        poll_interval = 2
+        if log:
+            log(f"[GenAI Pro Poll] Waiting for task {task_id[:12] if len(task_id) > 12 else task_id}...")
+
+        i = 0
+        while True:
+            time.sleep(poll_interval)
+
+            elapsed_seconds = (i + 1) * poll_interval
+            if i == 0 or elapsed_seconds % 10 == 0:
+                elapsed_mins = elapsed_seconds // 60
+                elapsed_secs = elapsed_seconds % 60
+                if log:
+                    tag = task_id[:8] if len(task_id) > 8 else task_id
+                    log(f"[GenAI Pro Poll] ⏳ {tag}... {elapsed_mins}m {elapsed_secs}s elapsed")
+
+            if elapsed_seconds > 0 and elapsed_seconds % 1800 == 0 and log:
+                log(f"[GenAI Pro Poll] ℹ️ Still waiting after {elapsed_seconds // 60} min")
+
+            status_response = requests.get(
+                'https://genaipro.vn/api/v1/labs/task',
+                headers=headers,
+                timeout=10
+            )
+
+            if status_response.status_code != 200:
+                if log:
+                    log(f"[GenAI Pro Poll] Status check failed: {status_response.status_code}")
+                i += 1
+                continue
+
+            tasks = status_response.json()
+
+            # Find our task in the response
+            our_task = None
+            if isinstance(tasks, list):
+                for task in tasks:
+                    tid = task.get('task_id') or task.get('id')
+                    if tid == task_id:
+                        our_task = task
+                        break
+            elif isinstance(tasks, dict):
+                tid = tasks.get('task_id') or tasks.get('id')
+                if tid == task_id:
+                    our_task = tasks
+                elif 'tasks' in tasks and isinstance(tasks['tasks'], list):
+                    for task in tasks['tasks']:
+                        tid = task.get('task_id') or task.get('id')
+                        if tid == task_id:
+                            our_task = task
+                            break
+                elif 'data' in tasks and isinstance(tasks['data'], list):
+                    for task in tasks['data']:
+                        tid = task.get('task_id') or task.get('id')
+                        if tid == task_id:
+                            our_task = task
+                            break
+
+            if our_task:
+                status = our_task.get('status', '').lower()
+                result = our_task.get('result', '')
+
+                is_complete = (status in ['completed', 'done', 'success', 'succeeded', 'finished'] or
+                               (result and result != ''))
+
+                if is_complete:
+                    if log:
+                        elapsed_seconds = (i + 1) * poll_interval
+                        log(f"[GenAI Pro Poll] ✓ Task complete! ({elapsed_seconds}s)")
+
+                    audio_url = (our_task.get('result') or our_task.get('output_url') or
+                                our_task.get('audio_url') or our_task.get('result_url') or
+                                our_task.get('file_url') or our_task.get('url'))
+
+                    if not audio_url:
+                        if log:
+                            log(f"[GenAI Pro Poll ERROR] No audio URL in completed task")
+                        return None
+
+                    if log:
+                        log(f"[GenAI Pro Poll] 📥 Downloading audio...")
+
+                    audio_response = requests.get(audio_url, timeout=30)
+
+                    if audio_response.status_code == 200:
+                        with open(output_path, 'wb') as f:
+                            f.write(audio_response.content)
+                        if log:
+                            log(f"[GenAI Pro Poll] ✅ Audio downloaded: {output_path}")
+                        return output_path
+                    else:
+                        if log:
+                            log(f"[GenAI Pro Poll ERROR] Download failed: {audio_response.status_code}")
+                        return None
+
+                elif status in ['failed', 'error', 'cancelled', 'canceled']:
+                    if log:
+                        log(f"[GenAI Pro Poll ERROR] ❌ Task failed: {status}")
+                    return None
+            else:
+                if i == 0 and log:
+                    log(f"[GenAI Pro Poll] Task not found in status check yet...")
+                elif i % 30 == 0 and log and i > 0:
+                    log(f"[GenAI Pro Poll] Still waiting for task...")
+
+            i += 1
+
+    except Exception as e:
+        if log:
+            log(f"[GenAI Pro Poll ERROR] {e}")
+        return None
+
+
 def remove_silence_from_audio(audio_path, output_path=None, log=None, min_silence_ms=300):
     """
     Remove long silences from audio file while keeping natural speech pauses.
@@ -4427,6 +4645,240 @@ def _prepare_voice_for_job(job, job_index, total_jobs, q):
                 pass
 
 
+def _submit_voice_for_job(job, job_index, total_jobs, q):
+    """
+    Phase 1 of non-blocking voice pipeline: Extract audio, transcribe, submit TTS.
+    Does NOT wait for TTS completion — returns immediately after API submission.
+    
+    Returns a submission dict with task info, or None if not needed/failed.
+    The dict contains:
+        - needs_polling: True if GenAI Pro task was submitted (needs polling later)
+        - task_id, headers: GenAI Pro task info (only if needs_polling)
+        - tts_audio_path: Path to already-generated TTS audio (only if NOT needs_polling, e.g. gTTS)
+        - caption_segments: Transcribed caption segments
+        - tts_language: Language used for TTS
+        - silence_threshold_ms: Silence threshold for post-processing
+    """
+    def log(s):
+        q.put(str(s))
+
+    use_ai_voice = job.get("use_ai_voice", False)
+    if not use_ai_voice:
+        log(f"[VOICE SUBMIT {job_index}/{total_jobs}] AI voice not enabled — skipping")
+        return None
+
+    video_path = job["video"]
+    voice_path = job.get("voice", "")
+
+    target_language = job.get("target_language", 'none')
+    translation_enabled = job.get("translation_enabled", False)
+    tts_language = job.get("tts_language", 'en')
+    silence_threshold_ms = job.get("silence_threshold_ms", 300)
+
+    if translation_enabled and use_ai_voice and target_language and target_language != 'none':
+        tts_lang_synced = TRANS_TO_TTS_LANG.get(target_language, target_language)
+        tts_language = tts_lang_synced
+
+    log(f"")
+    log(f"[VOICE SUBMIT {job_index}/{total_jobs}] 🎤 Preparing: {os.path.basename(video_path)}")
+
+    temp_voice_path = None
+    try:
+        # Step 1: Extract voice from video if not provided
+        actual_voice_path = voice_path
+        if not actual_voice_path or not os.path.exists(actual_voice_path):
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] Extracting audio from video...")
+            fd, temp_voice_path = tempfile.mkstemp(suffix='.mp3', prefix=f'voice_submit_{job_index}_')
+            os.close(fd)
+            try:
+                video_clip_for_audio = VideoFileClip(video_path)
+                if video_clip_for_audio.audio is None:
+                    log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ⚠️ Video has no audio track!")
+                    video_clip_for_audio.close()
+                    return None
+                video_clip_for_audio.audio.write_audiofile(temp_voice_path, logger=None)
+                actual_voice_path = temp_voice_path
+                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ✓ Extracted audio")
+                video_clip_for_audio.close()
+            except Exception as e:
+                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ Audio extraction failed: {e}")
+                return None
+
+        # Step 2: Transcribe original audio
+        log(f"[VOICE SUBMIT {job_index}/{total_jobs}] 📝 Transcribing audio...")
+        caption_segments = transcribe_captions(
+            actual_voice_path,
+            log,
+            translate_to=target_language if translation_enabled else None
+        )
+
+        if not caption_segments:
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ⚠️ No transcription results")
+            return None
+
+        log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ✓ Got {len(caption_segments)} segments")
+
+        # Step 3: Submit TTS (non-blocking for GenAI Pro)
+        full_text = " ".join([seg.get("text", "") for seg in caption_segments])
+
+        # Try GenAI Pro API key
+        api_key = None
+        try:
+            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    api_key = config.get("api_key", "").strip()
+        except Exception:
+            pass
+
+        if api_key:
+            # Submit to GenAI Pro (fast HTTP POST, no waiting for result)
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] 🚀 Submitting to GenAI Pro...")
+            task_id, headers = _submit_genaipro_task(full_text, tts_language, api_key, log)
+            if task_id:
+                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ✅ Submitted! Task: {task_id[:12]}... → moving to next job")
+                return {
+                    'needs_polling': True,
+                    'task_id': task_id,
+                    'headers': headers,
+                    'api_key': api_key,
+                    'caption_segments': caption_segments,
+                    'tts_language': tts_language,
+                    'silence_threshold_ms': silence_threshold_ms,
+                    'full_text': full_text,
+                }
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ⚠️ GenAI Pro failed, trying gTTS...")
+
+        # Fallback: gTTS (synchronous but fast)
+        if TTS_AVAILABLE:
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] Generating voice with gTTS...")
+            fd, tts_path = tempfile.mkstemp(suffix='.mp3', prefix=f'tts_submit_{job_index}_')
+            os.close(fd)
+            try:
+                tts_obj = gTTS(text=full_text, lang=tts_language, slow=False)
+                tts_obj.save(tts_path)
+                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ✅ gTTS voice generated")
+                return {
+                    'needs_polling': False,
+                    'tts_audio_path': tts_path,
+                    'caption_segments': caption_segments,
+                    'tts_language': tts_language,
+                    'silence_threshold_ms': silence_threshold_ms,
+                }
+            except Exception as e:
+                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ gTTS failed: {e}")
+
+        log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ All TTS methods failed")
+        return None
+
+    except Exception as e:
+        log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ Submission failed: {e}")
+        import traceback
+        log(traceback.format_exc())
+        return None
+    finally:
+        if temp_voice_path and os.path.exists(temp_voice_path):
+            try:
+                os.remove(temp_voice_path)
+            except Exception:
+                pass
+
+
+def _complete_voice_for_job(submission, job_index, total_jobs, q):
+    """
+    Phase 2 of non-blocking voice pipeline: Poll for TTS completion (if GenAI Pro),
+    remove silences, re-transcribe for perfect caption sync.
+    
+    Returns voice data dict (same format as _prepare_voice_for_job) or None.
+    """
+    def log(s):
+        q.put(str(s))
+
+    if not submission:
+        return None
+
+    try:
+        silence_threshold_ms = submission.get('silence_threshold_ms', 300)
+
+        # Step 1: Get TTS audio path
+        if submission.get('needs_polling'):
+            # Poll GenAI Pro for completion (this is the waiting part)
+            log(f"[VOICE COMPLETE {job_index}/{total_jobs}] ⏳ Waiting for GenAI Pro...")
+            tts_audio_path = _poll_and_download_genaipro(
+                submission['task_id'],
+                submission['headers'],
+                output_path=None,
+                log=log
+            )
+            if not tts_audio_path:
+                log(f"[VOICE COMPLETE {job_index}/{total_jobs}] ❌ GenAI Pro failed")
+                # Try gTTS fallback
+                full_text = submission.get('full_text', '')
+                if not full_text:
+                    full_text = " ".join([seg.get("text", "") for seg in submission.get('caption_segments', [])])
+                if full_text and TTS_AVAILABLE:
+                    log(f"[VOICE COMPLETE {job_index}/{total_jobs}] Trying gTTS fallback...")
+                    fd, tts_audio_path = tempfile.mkstemp(suffix='.mp3', prefix=f'tts_fallback_{job_index}_')
+                    os.close(fd)
+                    try:
+                        tts_obj = gTTS(text=full_text, lang=submission.get('tts_language', 'en'), slow=False)
+                        tts_obj.save(tts_audio_path)
+                    except Exception:
+                        tts_audio_path = None
+                if not tts_audio_path:
+                    return None
+        else:
+            tts_audio_path = submission.get('tts_audio_path')
+
+        if not tts_audio_path:
+            return None
+
+        log(f"[VOICE COMPLETE {job_index}/{total_jobs}] ✓ TTS audio ready")
+
+        # Step 2: Remove silences
+        log(f"[VOICE COMPLETE {job_index}/{total_jobs}] 🔇 Removing silences (threshold: {silence_threshold_ms}ms)...")
+        compressed_tts_path, silence_map = remove_silence_from_audio(
+            tts_audio_path,
+            output_path=None,
+            log=log,
+            min_silence_ms=silence_threshold_ms
+        )
+
+        # Step 3: Re-transcribe from silence-removed TTS for perfect caption sync
+        log(f"[VOICE COMPLETE {job_index}/{total_jobs}] 📝 Re-transcribing compressed audio...")
+        final_caption_segments = transcribe_captions(
+            compressed_tts_path,
+            log,
+            translate_to=None
+        )
+
+        # Step 4: Get duration and extend last caption
+        from moviepy.editor import AudioFileClip as _AudioFileClip
+        tts_clip_probe = _AudioFileClip(compressed_tts_path)
+        tts_duration = tts_clip_probe.duration
+        tts_clip_probe.close()
+
+        if final_caption_segments:
+            last_caption_end = final_caption_segments[-1].get('end', 0)
+            if last_caption_end < tts_duration:
+                final_caption_segments[-1]['end'] = tts_duration
+
+        log(f"[VOICE COMPLETE {job_index}/{total_jobs}] ✅ Voice ready! Duration: {tts_duration:.2f}s, Captions: {len(final_caption_segments)}")
+
+        return {
+            'compressed_tts_path': compressed_tts_path,
+            'caption_segments': final_caption_segments,
+            'tts_duration': tts_duration,
+            'original_tts_path': tts_audio_path,
+        }
+    except Exception as e:
+        log(f"[VOICE COMPLETE {job_index}/{total_jobs}] ❌ Completion failed: {e}")
+        import traceback
+        log(traceback.format_exc())
+        return None
+
+
 def _extract_effect_settings(job):
     """Extract effect_settings dict from a job dict."""
     return {
@@ -4483,7 +4935,7 @@ def queue_worker(jobs, q):
         q.put(str(s))
     log(f"[QUEUE] Starting queue with {len(jobs)} job(s).")
     
-    # Check if any jobs use AI voice — if so, use parallel voice pipeline
+    # Check if any jobs use AI voice — if so, use non-blocking voice pipeline
     any_ai_voice = any(job.get("use_ai_voice", False) for job in jobs)
     
     if not any_ai_voice or len(jobs) <= 1:
@@ -4493,47 +4945,69 @@ def queue_worker(jobs, q):
         log("[QUEUE_DONE]")
         return
     
-    # === PARALLEL VOICE PIPELINE ===
-    # Phase 1: Generate ALL voices in parallel
-    # Phase 2: Process videos one at a time, as soon as their voice is ready
-    
-    log("")
-    log("━"*60)
-    log("[QUEUE] 🚀 PARALLEL VOICE PIPELINE")
-    log(f"[QUEUE] Generating voices for {len(jobs)} jobs in parallel...")
-    log("[QUEUE] Videos will be processed as soon as their voice is ready")
-    log("━"*60)
-    log("")
+    # === NON-BLOCKING VOICE PIPELINE ===
+    # Phase 1: Submit ALL voices quickly (transcribe + submit TTS, don't wait for result)
+    # Phase 2: Poll for completions in parallel, process videos as-ready
     
     total = len(jobs)
-    # voice_results[i] will hold the voice data (or None) for job i
+    
+    log("")
+    log("━"*60)
+    log("[QUEUE] 🚀 NON-BLOCKING VOICE PIPELINE")
+    log(f"[QUEUE] Phase 1: Submit all {total} voices (transcribe → submit to GenAI)")
+    log(f"[QUEUE] Phase 2: Process videos as each voice becomes ready")
+    log("━"*60)
+    log("")
+    
+    # ═══ PHASE 1: Submit all voices sequentially (fast per job) ═══
+    log("[QUEUE] ═══ PHASE 1: SUBMITTING ALL VOICES ═══")
+    submissions = []
+    for idx in range(total):
+        job = jobs[idx]
+        log(f"\n[QUEUE] 📤 Submitting voice for job {idx+1}/{total}...")
+        sub = _submit_voice_for_job(job, idx + 1, total, q)
+        submissions.append(sub)
+    
+    submitted_count = sum(1 for s in submissions if s is not None)
+    polling_count = sum(1 for s in submissions if s and s.get('needs_polling'))
+    log(f"\n[QUEUE] ═══ ALL VOICES SUBMITTED! ═══")
+    log(f"[QUEUE] {submitted_count}/{total} with AI voice, {polling_count} awaiting GenAI Pro")
+    log("")
+    
+    # ═══ PHASE 2: Complete voices in parallel + process videos as-ready ═══
+    log("[QUEUE] ═══ PHASE 2: COMPLETING VOICES & PROCESSING VIDEOS ═══")
+    
     voice_results = [None] * total
-    # voice_done[i] is set when voice generation for job i is complete
     voice_done_events = [threading.Event() for _ in range(total)]
-    # any_voice_ready is set when ANY voice finishes — avoids polling
     any_voice_ready = threading.Event()
     
-    def _voice_worker(idx):
-        """Worker thread that generates voice for a single job."""
+    def _completion_worker(idx):
+        """Thread: poll for TTS completion + post-process (silence removal + re-transcribe)."""
         try:
-            result = _prepare_voice_for_job(jobs[idx], idx + 1, total, q)
-            voice_results[idx] = result
+            if submissions[idx] is None:
+                voice_results[idx] = None
+            else:
+                voice_results[idx] = _complete_voice_for_job(submissions[idx], idx + 1, total, q)
         except Exception as e:
-            q.put(f"[VOICE PREP {idx+1}/{total}] ❌ Unexpected error: {e}")
+            q.put(f"[VOICE COMPLETE {idx+1}/{total}] ❌ Unexpected error: {e}")
             voice_results[idx] = None
         finally:
             voice_done_events[idx].set()
-            any_voice_ready.set()  # Signal that at least one voice is ready
+            any_voice_ready.set()
     
-    # Start all voice generation threads in parallel (non-daemon for clean shutdown)
-    voice_threads = []
+    # Start completion threads for all AI voice jobs (these poll GenAI in parallel)
+    completion_threads = []
     for idx in range(total):
-        t = threading.Thread(target=_voice_worker, args=(idx,))
-        voice_threads.append(t)
-        t.start()
+        if not jobs[idx].get("use_ai_voice", False) or submissions[idx] is None:
+            # No AI voice or submission failed — mark as immediately ready
+            voice_done_events[idx].set()
+            any_voice_ready.set()
+        else:
+            t = threading.Thread(target=_completion_worker, args=(idx,))
+            completion_threads.append(t)
+            t.start()
     
-    # Phase 2: Process videos one at a time, picking whichever voice is ready first
-    # Track which jobs have been processed
+    # Process videos one at a time, picking whichever voice is ready first
     processed = [False] * total
     processed_count = 0
     
@@ -4566,9 +5040,9 @@ def queue_worker(jobs, q):
         voice_data = voice_results[ready_idx]
         
         if voice_data:
-            log(f"\n[QUEUE] 🎬 Voice for job {ready_idx + 1} is ready — starting video processing!")
+            log(f"\n[QUEUE] 🎬 Voice for job {ready_idx + 1} is ready — starting video!")
         else:
-            log(f"\n[QUEUE] 🎬 Job {ready_idx + 1} voice prep done (no AI voice or failed) — starting video processing")
+            log(f"\n[QUEUE] 🎬 Job {ready_idx + 1} ready — starting video (no pre-gen voice)")
         
         _run_video_job(job, ready_idx + 1, total, q, pre_generated_voice=voice_data)
         
@@ -4576,16 +5050,15 @@ def queue_worker(jobs, q):
         processed_count += 1
         log(f"[QUEUE] ✓ Completed {processed_count}/{total} jobs")
     
-    # Wait for all voice threads to finish (they should all be done since we
-    # processed every job, which required every voice to be ready first)
-    for t in voice_threads:
+    # Wait for all completion threads to finish
+    for t in completion_threads:
         t.join(timeout=10.0)
         if t.is_alive():
-            log(f"[QUEUE] ⚠️ Voice thread still running after timeout — may indicate stuck TTS generation")
+            log(f"[QUEUE] ⚠️ Completion thread still running after timeout")
     
     log("")
     log("━"*60)
-    log("[QUEUE] ✅ ALL JOBS COMPLETE (parallel voice pipeline)")
+    log("[QUEUE] ✅ ALL JOBS COMPLETE (non-blocking voice pipeline)")
     log("━"*60)
     log("")
     log("[QUEUE_DONE]")
