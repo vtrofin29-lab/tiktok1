@@ -1742,8 +1742,10 @@ _whisper_model_cache = {}  # {model_name: (model, device)}
 _whisper_transcription_lock = threading.Lock()  # Serialize GPU transcription (Whisper isn't thread-safe)
 
 def _get_cached_whisper_model(model_name="large", tries=3, log=None):
-    """Load Whisper model once and cache it. Thread-safe via _whisper_transcription_lock."""
+    """Load Whisper model once and cache it. Thread-safe: called within _whisper_transcription_lock."""
     global _whisper_model_cache
+    # Note: This function is always called within _whisper_transcription_lock (from transcribe_captions).
+    # The lock ensures only one thread can check/update the cache at a time.
     if model_name in _whisper_model_cache:
         model, device = _whisper_model_cache[model_name]
         if log:
@@ -4985,7 +4987,9 @@ def _run_video_job(job, job_index, total_jobs, q, pre_generated_voice=None):
         q.put(str(s))
     log(f"\n===== START JOB {job_index}/{total_jobs} =====")
     # Release Whisper model before export to free GPU memory for NVENC encoding.
-    # The model will be re-cached automatically if transcription is needed again.
+    # When pre_generated_voice is provided (multi-job pipeline), no transcription is needed
+    # and this frees ~3GB of GPU memory for FFmpeg NVENC. If process_single_job needs
+    # inline transcription (single job fallback), the model will be re-cached automatically.
     _release_whisper_model(log=log)
     effect_settings = _extract_effect_settings(job)
     process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"),
