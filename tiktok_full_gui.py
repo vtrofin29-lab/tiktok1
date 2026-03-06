@@ -3079,7 +3079,7 @@ def apply_video_effects(frame, effect_settings):
         return np.array(img)
     return img
 
-def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None, crop_top_ratio=None, crop_bottom_ratio=None):
+def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_segments, output_path, preferred_font=None, log=None, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None, crop_top_ratio=None, crop_bottom_ratio=None, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None):
     """
     Compose final video with blurred background and caption overlays.
     
@@ -3325,10 +3325,10 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 target_duration=target_duration,
                 preferred_font=preferred_font,
                 words_per_caption=words_per_caption,
-                text_color_rgba=globals().get('CAPTION_TEXT_COLOR'),
-                stroke_color_rgba=globals().get('CAPTION_STROKE_COLOR'),
-                stroke_width=globals().get('CAPTION_STROKE_WIDTH'),
-                font_size=globals().get('CAPTION_FONT_SIZE'),
+                text_color_rgba=caption_text_color if caption_text_color is not None else globals().get('CAPTION_TEXT_COLOR'),
+                stroke_color_rgba=caption_stroke_color if caption_stroke_color is not None else globals().get('CAPTION_STROKE_COLOR'),
+                stroke_width=caption_stroke_width if caption_stroke_width is not None else globals().get('CAPTION_STROKE_WIDTH'),
+                font_size=caption_font_size if caption_font_size is not None else globals().get('CAPTION_FONT_SIZE'),
                 blur_radius=blur_radius,
                 dim_factor=dim_factor,
                 bg_scale_extra=bg_scale_extra,
@@ -3580,7 +3580,7 @@ def crop_precise_top_bottom_return_cropped(video_clip, log, top_ratio=None, bott
     log(f"Crop done. Cropped size: {cropped_video.size}, duration: {cropped_video.duration:.2f}s")
     return cropped_video
 
-def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None, crop_top_ratio=None, crop_bottom_ratio=None):
+def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segments, output_path, log, blur_radius=STATIC_BG_BLUR_RADIUS, bg_scale_extra=BG_SCALE_EXTRA, dim_factor=DIM_FACTOR, words_per_caption=2, effect_settings=None, pre_rendered_fg_path=None, mirror_video=False, target_duration=None, original_video_path=None, crop_top_ratio=None, crop_bottom_ratio=None, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None):
     """Helper to temporarily override global CAPTION_FONT_PREFERRED for the duration of compose."""
     old = globals().get('CAPTION_FONT_PREFERRED')
     try:
@@ -3591,7 +3591,7 @@ def _compose_with_pref_font(preferred_font, video_clip, audio_clip, caption_segm
             except Exception:
                 pass
         # call compose with keyword args to avoid positional mismatch
-        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, preferred_font=preferred_font, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration, original_video_path=original_video_path, crop_top_ratio=crop_top_ratio, crop_bottom_ratio=crop_bottom_ratio)
+        return compose_final_video_with_static_blurred_bg(video_clip=video_clip, audio_clip=audio_clip, caption_segments=caption_segments, output_path=output_path, preferred_font=preferred_font, log=log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=pre_rendered_fg_path, mirror_video=mirror_video, target_duration=target_duration, original_video_path=original_video_path, crop_top_ratio=crop_top_ratio, crop_bottom_ratio=crop_bottom_ratio, caption_text_color=caption_text_color, caption_stroke_color=caption_stroke_color, caption_stroke_width=caption_stroke_width, caption_font_size=caption_font_size)
     finally:
         try:
             if preferred_font and old is not None:
@@ -3645,7 +3645,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -4051,7 +4051,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         elif synced_video and hasattr(synced_video, 'duration') and synced_video.duration:
             target_duration = synced_video.duration
         
-        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration, original_video_path=video_path, crop_top_ratio=custom_top_ratio, crop_bottom_ratio=custom_bottom_ratio)
+        ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration, original_video_path=video_path, crop_top_ratio=custom_top_ratio, crop_bottom_ratio=custom_bottom_ratio, caption_text_color=caption_text_color, caption_stroke_color=caption_stroke_color, caption_stroke_width=caption_stroke_width, caption_font_size=caption_font_size)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
@@ -4155,7 +4155,11 @@ def queue_worker(jobs, q):
                            target_language=job.get("target_language", 'none'),
                            translation_enabled=job.get("translation_enabled", False),
                            tts_language=job.get("tts_language", 'en'),
-                           silence_threshold_ms=job.get("silence_threshold_ms", 300))
+                           silence_threshold_ms=job.get("silence_threshold_ms", 300),
+                           caption_text_color=job.get("caption_text_color"),
+                           caption_stroke_color=job.get("caption_stroke_color"),
+                           caption_stroke_width=job.get("caption_stroke_width"),
+                           caption_font_size=job.get("caption_font_size"))
         log(f"===== END JOB {i} =====\n")
     log("[QUEUE_DONE]")
 
@@ -6119,6 +6123,11 @@ class App:
         if text_color != (255, 255, 255, 255):
             info_parts.append(f"color:RGB({text_color[0]},{text_color[1]},{text_color[2]})")
         
+        # Font size (show if not default 56)
+        font_size = job.get("caption_font_size", 56)
+        if font_size != 56:
+            info_parts.append(f"size:{font_size}px")
+        
         # Stroke/border settings (show if not default)
         stroke_color = job.get("caption_stroke_color", (0, 0, 0, 150))
         stroke_width = job.get("caption_stroke_width", 3)
@@ -6200,10 +6209,11 @@ class App:
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
                 "silence_threshold_ms": self.silence_threshold_var.get(),
-                # Font and border settings
+                # Font and border settings (per-job caption styling)
                 "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
                 "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
                 "caption_stroke_width": globals().get('CAPTION_STROKE_WIDTH', 3),
+                "caption_font_size": globals().get('CAPTION_FONT_SIZE', 56),
                 # Video effects (CapCut-style)
                 "effect_sharpness": self.effect_sharpness_var.get(),
                 "effect_sharpness_intensity": self.effect_sharpness_intensity_var.get(),
