@@ -2850,6 +2850,34 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Combine: bg + fg overlay
             filter_parts = [fg_prep, "[0:v][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
         
+        # --- Blur overlay (cover-up region) ---
+        # If blur overlay is enabled in effect_settings, split the composited stream,
+        # crop+blur a region, and overlay it back to cover that area.
+        blur_ov = effect_settings or {}
+        if blur_ov.get('blur_overlay_enabled', False):
+            bx_pct = float(blur_ov.get('blur_overlay_x', 10))
+            by_pct = float(blur_ov.get('blur_overlay_y', 10))
+            bw_pct = float(blur_ov.get('blur_overlay_w', 20))
+            bh_pct = float(blur_ov.get('blur_overlay_h', 15))
+            b_intensity = int(blur_ov.get('blur_overlay_intensity', 20))
+            # Convert percentages to pixel values based on video dimensions
+            bx_px = max(0, int(video_width * bx_pct / 100.0))
+            by_px = max(0, int(video_height * by_pct / 100.0))
+            bw_px = max(2, int(video_width * bw_pct / 100.0)) & ~1  # ensure even
+            bh_px = max(2, int(video_height * bh_pct / 100.0)) & ~1
+            # Clamp to fit within frame
+            if bx_px + bw_px > video_width:
+                bw_px = (video_width - bx_px) & ~1
+            if by_px + bh_px > video_height:
+                bh_px = (video_height - by_px) & ~1
+            b_blur = max(2, b_intensity)
+            # Label the current composited stream and split it
+            filter_parts[-1] += "[_bo_pre]"
+            filter_parts.append(f"[_bo_pre]split[_bo_main][_bo_copy]")
+            filter_parts.append(f"[_bo_copy]crop={bw_px}:{bh_px}:{bx_px}:{by_px},boxblur={b_blur}:{b_blur}[_bo_blurred]")
+            filter_parts.append(f"[_bo_main][_bo_blurred]overlay={bx_px}:{by_px}")
+            log_fn(f"[EXPORT] ✓ Blur overlay: pos=({bx_px},{by_px}) size={bw_px}x{bh_px} blur={b_blur}")
+
         if not use_gpu_overlay:
             if use_subtitle_file and ass_subtitle_path:
                 # Use ass subtitle filter (burns subtitles into video)
@@ -4139,7 +4167,13 @@ def queue_worker(jobs, q):
             'effect_brightness': job.get("effect_brightness", False),
             'effect_brightness_intensity': job.get("effect_brightness_intensity", 1.15),
             'effect_vintage': job.get("effect_vintage", False),
-            'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
+            'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3),
+            'blur_overlay_enabled': job.get("blur_overlay_enabled", False),
+            'blur_overlay_x': job.get("blur_overlay_x", 10.0),
+            'blur_overlay_y': job.get("blur_overlay_y", 10.0),
+            'blur_overlay_w': job.get("blur_overlay_w", 20.0),
+            'blur_overlay_h': job.get("blur_overlay_h", 15.0),
+            'blur_overlay_intensity': job.get("blur_overlay_intensity", 20)
         }
         process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"),
                            custom_top_ratio=job.get("custom_top_ratio"),
@@ -4651,6 +4685,74 @@ class App:
         self.vintage_label = ttk.Label(left_frame, text=f"{self.effect_vintage_intensity_var.get():.2f}")
         self.vintage_label.grid(row=row, column=2, sticky='w', padx=(4,0))
         self.effect_vintage_intensity_var.trace('w', lambda *args: self.vintage_label.config(text=f"{self.effect_vintage_intensity_var.get():.2f}"))
+        row += 1
+
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        row += 1
+
+        # --- Blur Overlay (cover-up) ---
+        ttk.Label(left_frame, text="Blur Overlay", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        self.blur_overlay_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(left_frame, text="Enable Blur Overlay", variable=self.blur_overlay_enabled_var,
+                       command=self._mini_update_worker_async).grid(row=row, column=0, columnspan=2, sticky="w")
+        ttk.Label(left_frame, text="🔲").grid(row=row, column=2, sticky="w")
+        row += 1
+
+        ttk.Label(left_frame, text="X (%):").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.blur_overlay_x_var = tk.DoubleVar(value=10.0)
+        blur_x_scale = tk.Scale(left_frame, from_=0, to=100, resolution=0.5, orient='horizontal',
+                                length=120, showvalue=0, variable=self.blur_overlay_x_var,
+                                command=lambda v: self._mini_update_worker_async())
+        blur_x_scale.grid(row=row, column=1, padx=(6,0))
+        self.blur_overlay_x_label = ttk.Label(left_frame, text=f"{self.blur_overlay_x_var.get():.1f}%")
+        self.blur_overlay_x_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.blur_overlay_x_var.trace('w', lambda *args: self.blur_overlay_x_label.config(text=f"{self.blur_overlay_x_var.get():.1f}%"))
+        row += 1
+
+        ttk.Label(left_frame, text="Y (%):").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.blur_overlay_y_var = tk.DoubleVar(value=10.0)
+        blur_y_scale = tk.Scale(left_frame, from_=0, to=100, resolution=0.5, orient='horizontal',
+                                length=120, showvalue=0, variable=self.blur_overlay_y_var,
+                                command=lambda v: self._mini_update_worker_async())
+        blur_y_scale.grid(row=row, column=1, padx=(6,0))
+        self.blur_overlay_y_label = ttk.Label(left_frame, text=f"{self.blur_overlay_y_var.get():.1f}%")
+        self.blur_overlay_y_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.blur_overlay_y_var.trace('w', lambda *args: self.blur_overlay_y_label.config(text=f"{self.blur_overlay_y_var.get():.1f}%"))
+        row += 1
+
+        ttk.Label(left_frame, text="W (%):").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.blur_overlay_w_var = tk.DoubleVar(value=20.0)
+        blur_w_scale = tk.Scale(left_frame, from_=1, to=100, resolution=0.5, orient='horizontal',
+                                length=120, showvalue=0, variable=self.blur_overlay_w_var,
+                                command=lambda v: self._mini_update_worker_async())
+        blur_w_scale.grid(row=row, column=1, padx=(6,0))
+        self.blur_overlay_w_label = ttk.Label(left_frame, text=f"{self.blur_overlay_w_var.get():.1f}%")
+        self.blur_overlay_w_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.blur_overlay_w_var.trace('w', lambda *args: self.blur_overlay_w_label.config(text=f"{self.blur_overlay_w_var.get():.1f}%"))
+        row += 1
+
+        ttk.Label(left_frame, text="H (%):").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.blur_overlay_h_var = tk.DoubleVar(value=15.0)
+        blur_h_scale = tk.Scale(left_frame, from_=1, to=100, resolution=0.5, orient='horizontal',
+                                length=120, showvalue=0, variable=self.blur_overlay_h_var,
+                                command=lambda v: self._mini_update_worker_async())
+        blur_h_scale.grid(row=row, column=1, padx=(6,0))
+        self.blur_overlay_h_label = ttk.Label(left_frame, text=f"{self.blur_overlay_h_var.get():.1f}%")
+        self.blur_overlay_h_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.blur_overlay_h_var.trace('w', lambda *args: self.blur_overlay_h_label.config(text=f"{self.blur_overlay_h_var.get():.1f}%"))
+        row += 1
+
+        ttk.Label(left_frame, text="Blur:").grid(row=row, column=0, sticky="e", padx=(20,0))
+        self.blur_overlay_intensity_var = tk.IntVar(value=20)
+        blur_intensity_scale = tk.Scale(left_frame, from_=2, to=80, resolution=1, orient='horizontal',
+                                        length=120, showvalue=0, variable=self.blur_overlay_intensity_var,
+                                        command=lambda v: self._mini_update_worker_async())
+        blur_intensity_scale.grid(row=row, column=1, padx=(6,0))
+        self.blur_overlay_intensity_label = ttk.Label(left_frame, text=f"{self.blur_overlay_intensity_var.get()}")
+        self.blur_overlay_intensity_label.grid(row=row, column=2, sticky='w', padx=(4,0))
+        self.blur_overlay_intensity_var.trace('w', lambda *args: self.blur_overlay_intensity_label.config(text=f"{self.blur_overlay_intensity_var.get()}"))
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
@@ -6156,6 +6258,15 @@ class App:
         if effects_active:
             info_parts.append(f"fx:{','.join(effects_active)}")
         
+        # Blur overlay
+        if job.get("blur_overlay_enabled"):
+            bx = job.get("blur_overlay_x", 10)
+            by = job.get("blur_overlay_y", 10)
+            bw = job.get("blur_overlay_w", 20)
+            bh = job.get("blur_overlay_h", 15)
+            bi = job.get("blur_overlay_intensity", 20)
+            info_parts.append(f"blur_box:{bx:.0f},{by:.0f} {bw:.0f}x{bh:.0f}% blur={bi}")
+        
         return " [" + ", ".join(info_parts) + "]" if info_parts else ""
 
     def add_job(self):
@@ -6224,7 +6335,14 @@ class App:
                 "effect_brightness": self.effect_brightness_var.get(),
                 "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
                 "effect_vintage": self.effect_vintage_var.get(),
-                "effect_vintage_intensity": self.effect_vintage_intensity_var.get()
+                "effect_vintage_intensity": self.effect_vintage_intensity_var.get(),
+                # Blur overlay (cover-up region)
+                "blur_overlay_enabled": self.blur_overlay_enabled_var.get(),
+                "blur_overlay_x": self.blur_overlay_x_var.get(),
+                "blur_overlay_y": self.blur_overlay_y_var.get(),
+                "blur_overlay_w": self.blur_overlay_w_var.get(),
+                "blur_overlay_h": self.blur_overlay_h_var.get(),
+                "blur_overlay_intensity": self.blur_overlay_intensity_var.get()
             }
             self.jobs.append(job)
             # Show complete job info in the display using helper
@@ -6320,6 +6438,15 @@ class App:
             if hasattr(self, 'effect_vintage_var'):
                 self.effect_vintage_var.set(job.get("effect_vintage", False))
                 self.effect_vintage_intensity_var.set(job.get("effect_vintage_intensity", 0.3))
+            
+            # Load blur overlay settings
+            if hasattr(self, 'blur_overlay_enabled_var'):
+                self.blur_overlay_enabled_var.set(job.get("blur_overlay_enabled", False))
+                self.blur_overlay_x_var.set(job.get("blur_overlay_x", 10.0))
+                self.blur_overlay_y_var.set(job.get("blur_overlay_y", 10.0))
+                self.blur_overlay_w_var.set(job.get("blur_overlay_w", 20.0))
+                self.blur_overlay_h_var.set(job.get("blur_overlay_h", 15.0))
+                self.blur_overlay_intensity_var.set(job.get("blur_overlay_intensity", 20))
             
             # Load font and border settings
             text_color = job.get("caption_text_color", (255, 255, 255, 255))
@@ -6437,7 +6564,14 @@ class App:
                    "effect_brightness": self.effect_brightness_var.get(),
                    "effect_brightness_intensity": self.effect_brightness_intensity_var.get(),
                    "effect_vintage": self.effect_vintage_var.get(),
-                   "effect_vintage_intensity": self.effect_vintage_intensity_var.get()}
+                   "effect_vintage_intensity": self.effect_vintage_intensity_var.get(),
+                   # Blur overlay (cover-up region)
+                   "blur_overlay_enabled": self.blur_overlay_enabled_var.get(),
+                   "blur_overlay_x": self.blur_overlay_x_var.get(),
+                   "blur_overlay_y": self.blur_overlay_y_var.get(),
+                   "blur_overlay_w": self.blur_overlay_w_var.get(),
+                   "blur_overlay_h": self.blur_overlay_h_var.get(),
+                   "blur_overlay_intensity": self.blur_overlay_intensity_var.get()}
             q = self.q
             # Extract effect settings
             effect_settings = {
@@ -6450,7 +6584,13 @@ class App:
                 'effect_brightness': job.get("effect_brightness", False),
                 'effect_brightness_intensity': job.get("effect_brightness_intensity", 1.15),
                 'effect_vintage': job.get("effect_vintage", False),
-                'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3)
+                'effect_vintage_intensity': job.get("effect_vintage_intensity", 0.3),
+                'blur_overlay_enabled': job.get("blur_overlay_enabled", False),
+                'blur_overlay_x': job.get("blur_overlay_x", 10.0),
+                'blur_overlay_y': job.get("blur_overlay_y", 10.0),
+                'blur_overlay_w': job.get("blur_overlay_w", 20.0),
+                'blur_overlay_h': job.get("blur_overlay_h", 15.0),
+                'blur_overlay_intensity': job.get("blur_overlay_intensity", 20)
             }
             # Run in background thread so GUI remains responsive
             t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en')}, daemon=True)
@@ -6592,7 +6732,13 @@ class App:
             'effect_brightness': self.effect_brightness_var.get(),
             'effect_brightness_intensity': self.effect_brightness_intensity_var.get(),
             'effect_vintage': self.effect_vintage_var.get(),
-            'effect_vintage_intensity': self.effect_vintage_intensity_var.get()
+            'effect_vintage_intensity': self.effect_vintage_intensity_var.get(),
+            'blur_overlay_enabled': self.blur_overlay_enabled_var.get(),
+            'blur_overlay_x': self.blur_overlay_x_var.get(),
+            'blur_overlay_y': self.blur_overlay_y_var.get(),
+            'blur_overlay_w': self.blur_overlay_w_var.get(),
+            'blur_overlay_h': self.blur_overlay_h_var.get(),
+            'blur_overlay_intensity': self.blur_overlay_intensity_var.get()
         }
 
     def _mini_update_worker_async(self):
@@ -7205,6 +7351,14 @@ class App:
                 "effect_vintage": self.effect_vintage_var.get(),
                 "effect_vintage_intensity": self.effect_vintage_intensity_var.get(),
                 
+                # Blur overlay
+                "blur_overlay_enabled": self.blur_overlay_enabled_var.get(),
+                "blur_overlay_x": self.blur_overlay_x_var.get(),
+                "blur_overlay_y": self.blur_overlay_y_var.get(),
+                "blur_overlay_w": self.blur_overlay_w_var.get(),
+                "blur_overlay_h": self.blur_overlay_h_var.get(),
+                "blur_overlay_intensity": self.blur_overlay_intensity_var.get(),
+                
                 # Background effects
                 "blur_radius": globals().get('STATIC_BG_BLUR_RADIUS', 25),
                 "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
@@ -7302,6 +7456,14 @@ class App:
             self.effect_vintage_var.set(preset_data.get("effect_vintage", False))
             self.effect_vintage_intensity_var.set(preset_data.get("effect_vintage_intensity", 0.3))
             
+            # Apply blur overlay settings
+            self.blur_overlay_enabled_var.set(preset_data.get("blur_overlay_enabled", False))
+            self.blur_overlay_x_var.set(preset_data.get("blur_overlay_x", 10.0))
+            self.blur_overlay_y_var.set(preset_data.get("blur_overlay_y", 10.0))
+            self.blur_overlay_w_var.set(preset_data.get("blur_overlay_w", 20.0))
+            self.blur_overlay_h_var.set(preset_data.get("blur_overlay_h", 15.0))
+            self.blur_overlay_intensity_var.set(preset_data.get("blur_overlay_intensity", 20))
+            
             # Apply background effects
             globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
             globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
@@ -7396,6 +7558,14 @@ class App:
             self.effect_vintage_var.set(preset_data.get("effect_vintage", False))
             self.effect_vintage_intensity_var.set(preset_data.get("effect_vintage_intensity", 0.3))
             
+            # Apply blur overlay settings
+            self.blur_overlay_enabled_var.set(preset_data.get("blur_overlay_enabled", False))
+            self.blur_overlay_x_var.set(preset_data.get("blur_overlay_x", 10.0))
+            self.blur_overlay_y_var.set(preset_data.get("blur_overlay_y", 10.0))
+            self.blur_overlay_w_var.set(preset_data.get("blur_overlay_w", 20.0))
+            self.blur_overlay_h_var.set(preset_data.get("blur_overlay_h", 15.0))
+            self.blur_overlay_intensity_var.set(preset_data.get("blur_overlay_intensity", 20))
+            
             # Apply background effects
             globals()['STATIC_BG_BLUR_RADIUS'] = preset_data.get("blur_radius", 25)
             globals()['BG_SCALE_EXTRA'] = preset_data.get("bg_scale_extra", 1.08)
@@ -7474,6 +7644,14 @@ class App:
             self.effect_brightness_intensity_var.set(1.15)
             self.effect_vintage_var.set(False)
             self.effect_vintage_intensity_var.set(0.3)
+            
+            # Reset blur overlay
+            self.blur_overlay_enabled_var.set(False)
+            self.blur_overlay_x_var.set(10.0)
+            self.blur_overlay_y_var.set(10.0)
+            self.blur_overlay_w_var.set(20.0)
+            self.blur_overlay_h_var.set(15.0)
+            self.blur_overlay_intensity_var.set(20)
             
             # Reset background effects
             globals()['STATIC_BG_BLUR_RADIUS'] = 25
