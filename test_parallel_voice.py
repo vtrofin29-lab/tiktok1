@@ -186,7 +186,7 @@ def test_run_video_job_exists():
 
 
 def test_queue_worker_nonblocking_voice_pipeline():
-    """queue_worker must implement non-blocking voice submission for multiple AI voice jobs."""
+    """queue_worker must implement interleaved non-blocking voice pipeline for multiple AI voice jobs."""
     source = _load_source()
     tree = ast.parse(source)
 
@@ -197,11 +197,11 @@ def test_queue_worker_nonblocking_voice_pipeline():
             assert "use_ai_voice" in src, (
                 "queue_worker must check use_ai_voice to decide pipeline"
             )
-            # Must call _submit_voice_for_job (Phase 1: non-blocking submission)
+            # Must call _submit_voice_for_job for non-blocking submission
             assert "_submit_voice_for_job" in src, (
                 "queue_worker must call _submit_voice_for_job for non-blocking submission"
             )
-            # Must call _complete_voice_for_job via threads (Phase 2: parallel completion)
+            # Must call _complete_voice_for_job via threads
             assert "_complete_voice_for_job" in src or "_completion_worker" in src, (
                 "queue_worker must call _complete_voice_for_job for parallel completion"
             )
@@ -221,7 +221,11 @@ def test_queue_worker_nonblocking_voice_pipeline():
             assert "QUEUE_DONE" in src, (
                 "queue_worker must emit QUEUE_DONE when finished"
             )
-            print("✓ queue_worker implements non-blocking voice pipeline")
+            # Must run submitter in background thread (interleaved, not sequential phases)
+            assert "_submitter" in src, (
+                "queue_worker must use a background submitter thread for interleaved operation"
+            )
+            print("✓ queue_worker implements interleaved non-blocking voice pipeline")
             return
     raise AssertionError("Could not find queue_worker function")
 
@@ -268,22 +272,31 @@ def test_queue_worker_sequential_fallback():
     raise AssertionError("Could not find queue_worker function")
 
 
-def test_queue_worker_phase1_submits_all_before_phase2():
-    """Phase 1 must submit ALL voices before Phase 2 starts polling."""
+def test_queue_worker_interleaved_submission_and_completion():
+    """Submission and completion must be interleaved: each voice starts completion
+    immediately after submission, not waiting for all submissions to finish."""
     source = _load_source()
     tree = ast.parse(source)
 
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "queue_worker":
             src = ast.get_source_segment(source, node)
-            # Phase 1 submission loop must come before Phase 2 completion threads
-            submit_pos = src.find("_submit_voice_for_job")
-            complete_pos = src.find("_completion_worker")
-            assert submit_pos >= 0, "queue_worker must call _submit_voice_for_job"
-            assert complete_pos >= 0, "queue_worker must define _completion_worker"
-            assert submit_pos < complete_pos, (
-                "Phase 1 (submit) must come before Phase 2 (completion) in queue_worker"
+            # Must have a submitter thread (background submission)
+            assert "_submitter" in src, "queue_worker must define _submitter"
+            # Submitter must call _submit_voice_for_job
+            assert "_submit_voice_for_job" in src, "queue_worker must call _submit_voice_for_job"
+            # Completion workers must start inside the submitter (interleaved)
+            # Find _submitter function body and check it starts completion threads
+            submitter_def = src.find("def _submitter")
+            assert submitter_def >= 0, "queue_worker must define _submitter function"
+            submitter_body = src[submitter_def:]
+            assert "_completion_worker" in submitter_body, (
+                "_submitter must start _completion_worker threads (interleaved, not after all submissions)"
             )
-            print("✓ Phase 1 submits all voices before Phase 2 starts")
+            # Must run submitter as a thread
+            assert "submitter_thread" in src, (
+                "queue_worker must run _submitter as a background thread"
+            )
+            print("✓ Submission and completion are interleaved (not sequential phases)")
             return
     raise AssertionError("Could not find queue_worker function")

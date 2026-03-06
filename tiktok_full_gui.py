@@ -4945,49 +4945,37 @@ def queue_worker(jobs, q):
         log("[QUEUE_DONE]")
         return
     
-    # === NON-BLOCKING VOICE PIPELINE ===
-    # Phase 1: Submit ALL voices quickly (transcribe + submit TTS, don't wait for result)
-    # Phase 2: Poll for completions in parallel, process videos as-ready
+    # === INTERLEAVED NON-BLOCKING VOICE PIPELINE ===
+    # Voice submissions and completions run concurrently:
+    #   - Submitter thread: transcribes + submits TTS for each job, starts completion
+    #     thread immediately after each submission (so GenAI processes job 1 while
+    #     Whisper transcribes job 2)
+    #   - Completion threads: poll GenAI + silence removal + re-transcribe (in parallel)
+    #   - Main thread: processes videos as soon as each voice becomes ready
     
     total = len(jobs)
     
     log("")
     log("━"*60)
-    log("[QUEUE] 🚀 NON-BLOCKING VOICE PIPELINE")
-    log(f"[QUEUE] Phase 1: Submit all {total} voices (transcribe → submit to GenAI)")
-    log(f"[QUEUE] Phase 2: Process videos as each voice becomes ready")
+    log("[QUEUE] 🚀 INTERLEAVED NON-BLOCKING VOICE PIPELINE")
+    log(f"[QUEUE] {total} jobs — submitting voices & processing videos concurrently")
+    log(f"[QUEUE] Each voice starts completion immediately after submission")
     log("━"*60)
     log("")
-    
-    # ═══ PHASE 1: Submit all voices sequentially (fast per job) ═══
-    log("[QUEUE] ═══ PHASE 1: SUBMITTING ALL VOICES ═══")
-    submissions = []
-    for idx in range(total):
-        job = jobs[idx]
-        log(f"\n[QUEUE] 📤 Submitting voice for job {idx+1}/{total}...")
-        sub = _submit_voice_for_job(job, idx + 1, total, q)
-        submissions.append(sub)
-    
-    submitted_count = sum(1 for s in submissions if s is not None)
-    polling_count = sum(1 for s in submissions if s and s.get('needs_polling'))
-    log(f"\n[QUEUE] ═══ ALL VOICES SUBMITTED! ═══")
-    log(f"[QUEUE] {submitted_count}/{total} with AI voice, {polling_count} awaiting GenAI Pro")
-    log("")
-    
-    # ═══ PHASE 2: Complete voices in parallel + process videos as-ready ═══
-    log("[QUEUE] ═══ PHASE 2: COMPLETING VOICES & PROCESSING VIDEOS ═══")
     
     voice_results = [None] * total
     voice_done_events = [threading.Event() for _ in range(total)]
     any_voice_ready = threading.Event()
+    completion_threads = []
+    completion_threads_lock = threading.Lock()
     
-    def _completion_worker(idx):
+    def _completion_worker(idx, submission):
         """Thread: poll for TTS completion + post-process (silence removal + re-transcribe)."""
         try:
-            if submissions[idx] is None:
+            if submission is None:
                 voice_results[idx] = None
             else:
-                voice_results[idx] = _complete_voice_for_job(submissions[idx], idx + 1, total, q)
+                voice_results[idx] = _complete_voice_for_job(submission, idx + 1, total, q)
         except Exception as e:
             q.put(f"[VOICE COMPLETE {idx+1}/{total}] ❌ Unexpected error: {e}")
             voice_results[idx] = None
@@ -4995,19 +4983,40 @@ def queue_worker(jobs, q):
             voice_done_events[idx].set()
             any_voice_ready.set()
     
-    # Start completion threads for all AI voice jobs (these poll GenAI in parallel)
-    completion_threads = []
-    for idx in range(total):
-        if not jobs[idx].get("use_ai_voice", False) or submissions[idx] is None:
-            # No AI voice or submission failed — mark as immediately ready
-            voice_done_events[idx].set()
-            any_voice_ready.set()
-        else:
-            t = threading.Thread(target=_completion_worker, args=(idx,))
-            completion_threads.append(t)
-            t.start()
+    def _submitter():
+        """Background thread: submit voices one by one, start completion immediately."""
+        for idx in range(total):
+            job = jobs[idx]
+            
+            if not job.get("use_ai_voice", False):
+                # No AI voice — mark as immediately ready
+                log(f"[QUEUE] Job {idx+1}/{total}: no AI voice — ready immediately")
+                voice_done_events[idx].set()
+                any_voice_ready.set()
+                continue
+            
+            log(f"\n[QUEUE] 📤 Submitting voice {idx+1}/{total}...")
+            sub = _submit_voice_for_job(job, idx + 1, total, q)
+            
+            if sub is None:
+                # Submission failed — mark as ready (will process without pre-gen voice)
+                voice_done_events[idx].set()
+                any_voice_ready.set()
+            else:
+                # Start completion thread IMMEDIATELY (polls GenAI while we submit next job)
+                t = threading.Thread(target=_completion_worker, args=(idx, sub))
+                with completion_threads_lock:
+                    completion_threads.append(t)
+                t.start()
+                log(f"[QUEUE] ✓ Job {idx+1} completion thread started — moving to next")
+        
+        log(f"\n[QUEUE] ═══ ALL {total} VOICES SUBMITTED ═══")
     
-    # Process videos one at a time, picking whichever voice is ready first
+    # Start submitter in background — submissions happen while videos process
+    submitter_thread = threading.Thread(target=_submitter)
+    submitter_thread.start()
+    
+    # Process videos as each voice becomes ready (main thread)
     processed = [False] * total
     processed_count = 0
     
@@ -5050,15 +5059,18 @@ def queue_worker(jobs, q):
         processed_count += 1
         log(f"[QUEUE] ✓ Completed {processed_count}/{total} jobs")
     
-    # Wait for all completion threads to finish
-    for t in completion_threads:
+    # Wait for submitter and all completion threads to finish
+    submitter_thread.join()
+    with completion_threads_lock:
+        threads_to_join = list(completion_threads)
+    for t in threads_to_join:
         t.join(timeout=10.0)
         if t.is_alive():
             log(f"[QUEUE] ⚠️ Completion thread still running after timeout")
     
     log("")
     log("━"*60)
-    log("[QUEUE] ✅ ALL JOBS COMPLETE (non-blocking voice pipeline)")
+    log("[QUEUE] ✅ ALL JOBS COMPLETE (interleaved voice pipeline)")
     log("━"*60)
     log("")
     log("[QUEUE_DONE]")
