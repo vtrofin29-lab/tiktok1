@@ -4509,6 +4509,8 @@ def queue_worker(jobs, q):
     voice_results = [None] * total
     # voice_done[i] is set when voice generation for job i is complete
     voice_done_events = [threading.Event() for _ in range(total)]
+    # any_voice_ready is set when ANY voice finishes — avoids polling
+    any_voice_ready = threading.Event()
     
     def _voice_worker(idx):
         """Worker thread that generates voice for a single job."""
@@ -4520,11 +4522,12 @@ def queue_worker(jobs, q):
             voice_results[idx] = None
         finally:
             voice_done_events[idx].set()
+            any_voice_ready.set()  # Signal that at least one voice is ready
     
-    # Start all voice generation threads in parallel
+    # Start all voice generation threads in parallel (non-daemon for clean shutdown)
     voice_threads = []
     for idx in range(total):
-        t = threading.Thread(target=_voice_worker, args=(idx,), daemon=True)
+        t = threading.Thread(target=_voice_worker, args=(idx,))
         voice_threads.append(t)
         t.start()
     
@@ -4544,13 +4547,18 @@ def queue_worker(jobs, q):
                 break
         
         if ready_idx is None:
-            # No voice is ready yet — wait for ANY voice to finish
-            # Use a short polling interval to check all events
-            while ready_idx is None:
-                for idx in range(total):
-                    if not processed[idx] and voice_done_events[idx].wait(timeout=0.5):
-                        ready_idx = idx
-                        break
+            # No voice is ready yet — wait for the shared signal
+            any_voice_ready.wait()
+            any_voice_ready.clear()
+            # Now scan to find which one(s) finished
+            for idx in range(total):
+                if not processed[idx] and voice_done_events[idx].is_set():
+                    ready_idx = idx
+                    break
+        
+        if ready_idx is None:
+            # Defensive: should not happen, but avoid infinite loop
+            continue
         
         # Process this job's video
         job = jobs[ready_idx]
@@ -4567,9 +4575,12 @@ def queue_worker(jobs, q):
         processed_count += 1
         log(f"[QUEUE] ✓ Completed {processed_count}/{total} jobs")
     
-    # Wait for all voice threads to finish (they should be done by now)
+    # Wait for all voice threads to finish (they should all be done since we
+    # processed every job, which required every voice to be ready first)
     for t in voice_threads:
-        t.join(timeout=1.0)
+        t.join(timeout=10.0)
+        if t.is_alive():
+            log(f"[QUEUE] ⚠️ Voice thread still running after timeout — may indicate stuck TTS generation")
     
     log("")
     log("━"*60)
