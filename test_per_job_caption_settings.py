@@ -36,12 +36,15 @@ def test_add_job_saves_caption_font_size():
 
 
 def test_queue_worker_passes_caption_settings():
-    """queue_worker must pass per-job caption settings to process_single_job."""
+    """queue_worker pipeline must pass per-job caption settings to process_single_job."""
     source = _load_source()
     tree = ast.parse(source)
 
+    # The caption settings may be in queue_worker itself or in helper functions
+    # it delegates to (_run_video_job).
+    found = False
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "queue_worker":
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_video_job":
             src = ast.get_source_segment(source, node)
             for key in [
                 "caption_text_color",
@@ -50,11 +53,11 @@ def test_queue_worker_passes_caption_settings():
                 "caption_font_size",
             ]:
                 assert key in src, (
-                    f"queue_worker must pass {key} to process_single_job"
+                    f"_run_video_job must pass {key} to process_single_job"
                 )
-            print("✓ queue_worker passes all four caption settings")
-            return
-    raise AssertionError("Could not find queue_worker function")
+            found = True
+    assert found, "Could not find _run_video_job function"
+    print("✓ queue_worker pipeline passes all four caption settings")
 
 
 def test_process_single_job_accepts_caption_params():

@@ -37,25 +37,37 @@ def test_add_job_saves_blur_overlay_settings():
 
 
 def test_queue_worker_passes_blur_overlay_settings():
-    """queue_worker must pass blur overlay settings to process_single_job via effect_settings."""
+    """queue_worker pipeline must pass blur overlay settings to process_single_job via effect_settings."""
     source = _load_source()
     tree = ast.parse(source)
 
+    # The blur overlay settings may be in queue_worker itself or in helper functions
+    # it delegates to (_extract_effect_settings, _run_video_job).
+    # Check all three.
+    found_extract = False
+    found_run = False
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "queue_worker":
-            src = ast.get_source_segment(source, node)
-            for key in [
-                "blur_overlay_enabled",
-                "blur_overlay_x",
-                "blur_overlay_y",
-                "blur_overlay_w",
-                "blur_overlay_h",
-                "blur_overlay_intensity",
-            ]:
-                assert key in src, f"queue_worker must pass {key} in effect_settings"
-            print("✓ queue_worker passes all blur overlay settings")
-            return
-    raise AssertionError("Could not find queue_worker function")
+        if isinstance(node, ast.FunctionDef):
+            if node.name in ("queue_worker", "_extract_effect_settings", "_run_video_job"):
+                src = ast.get_source_segment(source, node)
+                if node.name == "_extract_effect_settings":
+                    for key in [
+                        "blur_overlay_enabled",
+                        "blur_overlay_x",
+                        "blur_overlay_y",
+                        "blur_overlay_w",
+                        "blur_overlay_h",
+                        "blur_overlay_intensity",
+                    ]:
+                        assert key in src, f"_extract_effect_settings must include {key}"
+                    found_extract = True
+                if node.name == "_run_video_job":
+                    assert "effect_settings" in src, "_run_video_job must pass effect_settings"
+                    assert "process_single_job" in src, "_run_video_job must call process_single_job"
+                    found_run = True
+    assert found_extract, "Could not find _extract_effect_settings function"
+    assert found_run, "Could not find _run_video_job function"
+    print("✓ queue_worker pipeline passes all blur overlay settings")
 
 
 def test_format_job_info_shows_blur_overlay():
