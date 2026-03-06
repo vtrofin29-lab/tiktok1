@@ -1164,7 +1164,7 @@ CUSTOM_FONT_ROOT = os.environ.get("TIKTOK_FONT_DIR", r"C:\tiktok")
 
 # --- Custom dark CanvasSlider widget ---
 class CanvasSlider(tk.Canvas):
-    def __init__(self, master, from_=0.0, to=1.0, length=400, command=None, initial=0.0, bg='#111111', trough='#222222', slider_color='#2b8cff', height=24, **kwargs):
+    def __init__(self, master, from_=0.0, to=1.0, length=400, command=None, initial=0.0, bg='#161b22', trough='#21262d', slider_color='#58a6ff', height=24, **kwargs):
         # accept optional tk.Variable to sync value externally
         self.tk_variable = kwargs.pop('variable', None)
         # remove other widget-specific kwargs
@@ -5284,7 +5284,7 @@ class App:
             pass
 
         # Helper to force dark colors for native tk widgets that ttk styles don't affect.
-        _app_ref = self
+        app_ref = self
         def apply_dark_theme_to(root_widget):
             try:
                 import tkinter as _tk
@@ -5296,43 +5296,43 @@ class App:
                 # set native tk widget colors
                 try:
                     if isinstance(w, _tk.Listbox) or isinstance(w, _tk.Text):
-                        w.config(bg=_app_ref.BG_SECONDARY, fg=_app_ref.TEXT_PRIMARY,
-                                insertbackground=_app_ref.TEXT_PRIMARY,
-                                selectbackground=_app_ref.SELECT_BG,
+                        w.config(bg=app_ref.BG_SECONDARY, fg=app_ref.TEXT_PRIMARY,
+                                insertbackground=app_ref.TEXT_PRIMARY,
+                                selectbackground=app_ref.SELECT_BG,
                                 selectforeground='#ffffff',
-                                highlightbackground=_app_ref.BORDER_COLOR,
-                                highlightcolor=_app_ref.ACCENT_BLUE,
+                                highlightbackground=app_ref.BORDER_COLOR,
+                                highlightcolor=app_ref.ACCENT_BLUE,
                                 relief='flat', bd=1)
                     elif isinstance(w, _tk.Canvas):
                         # Don't override preview/color canvases that have specific bg
                         cur_bg = str(w.cget('bg'))
                         if cur_bg in ('#141414', '#0b0b0b'):
-                            w.config(bg=_app_ref.BG_SECONDARY)
+                            w.config(bg=app_ref.BG_SECONDARY)
                     elif isinstance(w, _tk.Scrollbar):
                         try:
-                            w.config(bg=_app_ref.BG_SECONDARY,
-                                    troughcolor=_app_ref.BG_DARK,
-                                    activebackground=_app_ref.BG_ELEVATED,
-                                    highlightbackground=_app_ref.BG_DARK,
+                            w.config(bg=app_ref.BG_SECONDARY,
+                                    troughcolor=app_ref.BG_DARK,
+                                    activebackground=app_ref.BG_ELEVATED,
+                                    highlightbackground=app_ref.BG_DARK,
                                     relief='flat', bd=0)
                         except Exception:
-                            w.config(bg=_app_ref.BG_SECONDARY)
+                            w.config(bg=app_ref.BG_SECONDARY)
                     elif isinstance(w, _tk.Entry):
                         try:
-                            w.config(bg=_app_ref.BG_TERTIARY, fg=_app_ref.TEXT_PRIMARY,
-                                    insertbackground=_app_ref.TEXT_PRIMARY,
+                            w.config(bg=app_ref.BG_TERTIARY, fg=app_ref.TEXT_PRIMARY,
+                                    insertbackground=app_ref.TEXT_PRIMARY,
                                     relief='flat', bd=1,
-                                    highlightbackground=_app_ref.BORDER_COLOR,
-                                    highlightcolor=_app_ref.ACCENT_BLUE)
+                                    highlightbackground=app_ref.BORDER_COLOR,
+                                    highlightcolor=app_ref.ACCENT_BLUE)
                         except Exception:
                             pass
                     elif isinstance(w, _tk.Scale):
                         try:
-                            w.config(bg=_app_ref.BG_DARK, fg=_app_ref.TEXT_PRIMARY,
-                                    troughcolor=_app_ref.BG_TERTIARY,
-                                    activebackground=_app_ref.ACCENT_BLUE,
-                                    highlightbackground=_app_ref.BG_DARK,
-                                    highlightcolor=_app_ref.BG_DARK,
+                            w.config(bg=app_ref.BG_DARK, fg=app_ref.TEXT_PRIMARY,
+                                    troughcolor=app_ref.BG_TERTIARY,
+                                    activebackground=app_ref.ACCENT_BLUE,
+                                    highlightbackground=app_ref.BG_DARK,
+                                    highlightcolor=app_ref.BG_DARK,
                                     relief='flat', bd=0, sliderrelief='flat')
                         except Exception:
                             pass
@@ -5975,11 +5975,11 @@ class App:
             color_frame = ttk.Frame(self.font_panel)
             color_frame.pack(fill='x', pady=(6,4))
             ttk.Label(color_frame, text='Text color:').grid(row=0, column=0, sticky='w')
-            self.text_color_canvas = tk.Canvas(color_frame, width=28, height=28, bg='#222222', highlightthickness=1, bd=0)
+            self.text_color_canvas = tk.Canvas(color_frame, width=28, height=28, bg=self.BORDER_COLOR, highlightthickness=1, highlightbackground=self.BORDER_COLOR, bd=0)
             self.text_color_canvas.grid(row=0, column=1, padx=(6,12))
             ttk.Button(color_frame, text='Custom...', command=self.on_pick_text_color).grid(row=0, column=2, padx=(0,6))
             ttk.Label(color_frame, text='Stroke color:').grid(row=1, column=0, sticky='w', pady=(6,0))
-            self.stroke_color_canvas = tk.Canvas(color_frame, width=28, height=28, bg='#222222', highlightthickness=1, bd=0)
+            self.stroke_color_canvas = tk.Canvas(color_frame, width=28, height=28, bg=self.BORDER_COLOR, highlightthickness=1, highlightbackground=self.BORDER_COLOR, bd=0)
             self.stroke_color_canvas.grid(row=1, column=1, padx=(6,12), pady=(6,0))
             ttk.Button(color_frame, text='Custom...', command=self.on_pick_stroke_color).grid(row=1, column=2, padx=(0,6), pady=(6,0))
             # quick preset swatches below
