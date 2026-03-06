@@ -5176,32 +5176,115 @@ def seconds_to_hms(sec: float) -> str:
     return f"{m:02d}:{s:02d}"
 
 class App:
+    # --- Modern Dark Theme Color Palette ---
+    BG_DARK = '#0d1117'          # Main background (GitHub-dark inspired)
+    BG_SECONDARY = '#161b22'     # Secondary panels / cards
+    BG_TERTIARY = '#1c2333'      # Input fields / entries
+    BG_ELEVATED = '#21262d'      # Elevated surfaces (buttons, headers)
+    BORDER_COLOR = '#30363d'     # Subtle borders
+    BORDER_LIGHT = '#3d444d'     # Lighter borders for focus
+    TEXT_PRIMARY = '#e6edf3'     # Primary text (soft white)
+    TEXT_SECONDARY = '#8b949e'   # Secondary / hint text
+    TEXT_MUTED = '#6e7681'       # Muted text
+    ACCENT_BLUE = '#58a6ff'      # Primary accent (links, active)
+    ACCENT_GREEN = '#3fb950'     # Success / Run buttons
+    ACCENT_PURPLE = '#bc8cff'    # Secondary accent
+    ACCENT_RED = '#f85149'       # Danger / Remove
+    ACCENT_ORANGE = '#d29922'    # Warning / highlight
+    SELECT_BG = '#1f6feb'        # Selection background
+    HOVER_BG = '#292e36'         # Hover state
+    PROGRESS_BG = '#58a6ff'      # Progress bar fill
+
     def __init__(self, root):
         self.root = root
-        root.title("TikTok Auto — Responsive UI")
-        # --- Apply dark UI theme ---
+        root.title("TikTok Auto Studio")
+        # --- Apply modern dark UI theme ---
         try:
             style = ttk.Style()
             try:
                 style.theme_use('clam')
             except Exception:
                 pass
-            style.configure('TFrame', background='#0b0b0b')
-            style.configure('TLabel', background='#0b0b0b', foreground='#FFFFFF')
-            style.configure('TButton', background='#1f1f1f', foreground='#FFFFFF')
-            style.configure('TEntry', fieldbackground='#1a1a1a', foreground='#FFFFFF')
-            style.configure('TCheckbutton', background='#0b0b0b', foreground='#FFFFFF')
-            style.configure('TMenubutton', background='#1f1f1f', foreground='#FFFFFF')
-            style.configure('Horizontal.TProgressbar', troughcolor='#151515', background='#2b8cff')
+
+            # Core widget styles
+            style.configure('TFrame', background=self.BG_DARK)
+            style.configure('TLabel', background=self.BG_DARK, foreground=self.TEXT_PRIMARY,
+                          font=('Segoe UI', 9))
+            style.configure('TButton', background=self.BG_ELEVATED, foreground=self.TEXT_PRIMARY,
+                          borderwidth=1, focuscolor=self.ACCENT_BLUE,
+                          font=('Segoe UI', 9), padding=(10, 4))
+            style.map('TButton',
+                      background=[('active', self.HOVER_BG), ('pressed', self.BG_TERTIARY)],
+                      foreground=[('disabled', self.TEXT_MUTED)])
+            style.configure('TEntry', fieldbackground=self.BG_TERTIARY, foreground=self.TEXT_PRIMARY,
+                          borderwidth=1, padding=4, insertcolor=self.TEXT_PRIMARY)
+            style.map('TEntry',
+                      fieldbackground=[('focus', '#1c2333'), ('readonly', self.BG_SECONDARY)],
+                      bordercolor=[('focus', self.ACCENT_BLUE)])
+            style.configure('TCheckbutton', background=self.BG_DARK, foreground=self.TEXT_PRIMARY,
+                          font=('Segoe UI', 9), indicatormargin=4)
+            style.map('TCheckbutton',
+                      background=[('active', self.BG_DARK)],
+                      indicatorcolor=[('selected', self.ACCENT_BLUE), ('!selected', self.BG_TERTIARY)])
+            style.configure('TMenubutton', background=self.BG_ELEVATED, foreground=self.TEXT_PRIMARY,
+                          borderwidth=1, padding=(8, 3))
+            style.configure('Horizontal.TProgressbar', troughcolor=self.BG_SECONDARY,
+                          background=self.PROGRESS_BG, borderwidth=0)
+            style.configure('TCombobox', fieldbackground=self.BG_TERTIARY, foreground=self.TEXT_PRIMARY,
+                          selectbackground=self.SELECT_BG, selectforeground=self.TEXT_PRIMARY,
+                          padding=4, arrowcolor=self.TEXT_SECONDARY)
+            style.map('TCombobox',
+                      fieldbackground=[('readonly', self.BG_TERTIARY)],
+                      selectbackground=[('readonly', self.SELECT_BG)])
+            style.configure('TSpinbox', fieldbackground=self.BG_TERTIARY, foreground=self.TEXT_PRIMARY,
+                          arrowcolor=self.TEXT_SECONDARY, padding=3)
+            style.configure('TSeparator', background=self.BORDER_COLOR)
+            style.configure('TScrollbar', background=self.BG_SECONDARY, troughcolor=self.BG_DARK,
+                          borderwidth=0, arrowcolor=self.TEXT_MUTED)
+            style.map('TScrollbar',
+                      background=[('active', self.BG_ELEVATED)])
+            style.configure('TPanedwindow', background=self.BG_DARK)
+            style.configure('TLabelframe', background=self.BG_DARK, foreground=self.ACCENT_BLUE,
+                          borderwidth=1, relief='groove')
+            style.configure('TLabelframe.Label', background=self.BG_DARK, foreground=self.ACCENT_BLUE,
+                          font=('Segoe UI', 10, 'bold'))
+
+            # --- Accent button styles ---
+            style.configure('Accent.TButton', background=self.ACCENT_BLUE, foreground='#ffffff',
+                          borderwidth=0, font=('Segoe UI', 9, 'bold'), padding=(12, 5))
+            style.map('Accent.TButton',
+                      background=[('active', '#4090e0'), ('pressed', '#3070c0')])
+
+            style.configure('Success.TButton', background=self.ACCENT_GREEN, foreground='#ffffff',
+                          borderwidth=0, font=('Segoe UI', 9, 'bold'), padding=(12, 5))
+            style.map('Success.TButton',
+                      background=[('active', '#2ea043'), ('pressed', '#238636')])
+
+            style.configure('Danger.TButton', background=self.ACCENT_RED, foreground='#ffffff',
+                          borderwidth=0, font=('Segoe UI', 9, 'bold'), padding=(12, 5))
+            style.map('Danger.TButton',
+                      background=[('active', '#da3633'), ('pressed', '#b62324')])
+
+            # --- Section header labels ---
+            style.configure('SectionHeader.TLabel', background=self.BG_DARK,
+                          foreground=self.ACCENT_BLUE, font=('Segoe UI', 10, 'bold'))
+            style.configure('SubHeader.TLabel', background=self.BG_DARK,
+                          foreground=self.TEXT_SECONDARY, font=('Segoe UI', 8))
+            style.configure('Hint.TLabel', background=self.BG_DARK,
+                          foreground=self.TEXT_MUTED, font=('Segoe UI', 8))
+            style.configure('Emoji.TLabel', background=self.BG_DARK,
+                          foreground=self.TEXT_PRIMARY, font=('Segoe UI', 11))
+
         except Exception:
             pass
 
         try:
-            root.configure(bg='#0b0b0b')
+            root.configure(bg=self.BG_DARK)
         except Exception:
             pass
 
         # Helper to force dark colors for native tk widgets that ttk styles don't affect.
+        _app_ref = self
         def apply_dark_theme_to(root_widget):
             try:
                 import tkinter as _tk
@@ -5213,17 +5296,44 @@ class App:
                 # set native tk widget colors
                 try:
                     if isinstance(w, _tk.Listbox) or isinstance(w, _tk.Text):
-                        w.config(bg='#111111', fg='#FFFFFF', insertbackground='#FFFFFF', selectbackground='#2b2b2b', selectforeground='#FFFFFF')
+                        w.config(bg=_app_ref.BG_SECONDARY, fg=_app_ref.TEXT_PRIMARY,
+                                insertbackground=_app_ref.TEXT_PRIMARY,
+                                selectbackground=_app_ref.SELECT_BG,
+                                selectforeground='#ffffff',
+                                highlightbackground=_app_ref.BORDER_COLOR,
+                                highlightcolor=_app_ref.ACCENT_BLUE,
+                                relief='flat', bd=1)
                     elif isinstance(w, _tk.Canvas):
-                        w.config(bg='#141414')
+                        # Don't override preview/color canvases that have specific bg
+                        cur_bg = str(w.cget('bg'))
+                        if cur_bg in ('#141414', '#0b0b0b'):
+                            w.config(bg=_app_ref.BG_SECONDARY)
                     elif isinstance(w, _tk.Scrollbar):
                         try:
-                            w.config(bg='#0b0b0b', troughcolor='#0b0b0b', activebackground='#333333')
+                            w.config(bg=_app_ref.BG_SECONDARY,
+                                    troughcolor=_app_ref.BG_DARK,
+                                    activebackground=_app_ref.BG_ELEVATED,
+                                    highlightbackground=_app_ref.BG_DARK,
+                                    relief='flat', bd=0)
                         except Exception:
-                            w.config(bg='#0b0b0b')
+                            w.config(bg=_app_ref.BG_SECONDARY)
                     elif isinstance(w, _tk.Entry):
                         try:
-                            w.config(bg='#1a1a1a', fg='#FFFFFF', insertbackground='#FFFFFF')
+                            w.config(bg=_app_ref.BG_TERTIARY, fg=_app_ref.TEXT_PRIMARY,
+                                    insertbackground=_app_ref.TEXT_PRIMARY,
+                                    relief='flat', bd=1,
+                                    highlightbackground=_app_ref.BORDER_COLOR,
+                                    highlightcolor=_app_ref.ACCENT_BLUE)
+                        except Exception:
+                            pass
+                    elif isinstance(w, _tk.Scale):
+                        try:
+                            w.config(bg=_app_ref.BG_DARK, fg=_app_ref.TEXT_PRIMARY,
+                                    troughcolor=_app_ref.BG_TERTIARY,
+                                    activebackground=_app_ref.ACCENT_BLUE,
+                                    highlightbackground=_app_ref.BG_DARK,
+                                    highlightcolor=_app_ref.BG_DARK,
+                                    relief='flat', bd=0, sliderrelief='flat')
                         except Exception:
                             pass
                 except Exception:
@@ -5254,10 +5364,10 @@ class App:
             pass
 
         pw = ttk.PanedWindow(root, orient="horizontal")
-        pw.pack(fill="both", expand=True)
+        pw.pack(fill="both", expand=True, padx=4, pady=4)
         try:
             pw.config(style='TPanedwindow')
-            pw.config(bg='#0b0b0b')
+            pw.config(bg=self.BG_DARK)
         except Exception:
             pass
 
@@ -5265,19 +5375,19 @@ class App:
         left_container = ttk.Frame(pw)
         try:
             left_container.configure(style='TFrame')
-            left_container.config(bg='#0b0b0b')
+            left_container.config(bg=self.BG_DARK)
         except Exception:
             pass
         
         # Create Canvas and Scrollbar for scrollable left panel
-        left_canvas = tk.Canvas(left_container, bg='#0b0b0b', highlightthickness=0)
+        left_canvas = tk.Canvas(left_container, bg=self.BG_DARK, highlightthickness=0)
         left_scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=left_canvas.yview)
         
         # Create the actual frame that will contain all controls
-        left_frame = ttk.Frame(left_canvas, padding=8)
+        left_frame = ttk.Frame(left_canvas, padding=10)
         try:
             left_frame.configure(style='TFrame')
-            left_frame.config(bg='#0b0b0b')
+            left_frame.config(bg=self.BG_DARK)
         except Exception:
             pass
         left_frame.columnconfigure(1, weight=1)
@@ -5320,53 +5430,62 @@ class App:
         right_outer = ttk.PanedWindow(pw, orient="vertical")
         pw.add(right_outer, weight=2)
 
-        preview_frame = ttk.Frame(right_outer, padding=8)
+        preview_frame = ttk.Frame(right_outer, padding=10)
         try:
             preview_frame.configure(style='TFrame')
-            preview_frame.config(bg='#0b0b0b')
+            preview_frame.config(bg=self.BG_DARK)
         except Exception:
             pass
         right_outer.add(preview_frame, weight=3)
 
-        bottom_frame = ttk.Frame(right_outer, padding=8)
+        bottom_frame = ttk.Frame(right_outer, padding=10)
         try:
             bottom_frame.configure(style='TFrame')
-            bottom_frame.config(bg='#0b0b0b')
+            bottom_frame.config(bg=self.BG_DARK)
         except Exception:
             pass
         right_outer.add(bottom_frame, weight=2)
 
         # left controls
         row = 0
-        ttk.Label(left_frame, text="VIDEO:").grid(row=row, column=0, sticky="w")
+
+        # ══════════ FILE SELECTION ══════════
+        ttk.Label(left_frame, text="📁  File Selection", style='SectionHeader.TLabel').grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        row += 1
+
+        ttk.Label(left_frame, text="Video:").grid(row=row, column=0, sticky="w")
         self.video_var = tk.StringVar(value="")
         self.video_entry = ttk.Entry(left_frame, textvariable=self.video_var)
         self.video_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
-        ttk.Button(left_frame, text="Browse...", command=self.browse_video).grid(row=row, column=2, padx=6)
+        ttk.Button(left_frame, text="Browse…", command=self.browse_video).grid(row=row, column=2, padx=6)
         row += 1
 
-        ttk.Label(left_frame, text="VOICE (optional):").grid(row=row, column=0, sticky="w")
+        ttk.Label(left_frame, text="Voice:").grid(row=row, column=0, sticky="w")
         self.voice_var = tk.StringVar(value="")
         self.voice_entry = ttk.Entry(left_frame, textvariable=self.voice_var)
         self.voice_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
-        ttk.Button(left_frame, text="Browse...", command=self.browse_voice).grid(row=row, column=2, padx=6)
+        ttk.Button(left_frame, text="Browse…", command=self.browse_voice).grid(row=row, column=2, padx=6)
         row += 1
 
-        ttk.Label(left_frame, text="MUSIC:").grid(row=row, column=0, sticky="w")
+        ttk.Label(left_frame, text="Music:").grid(row=row, column=0, sticky="w")
         self.music_var = tk.StringVar(value="")
         self.music_entry = ttk.Entry(left_frame, textvariable=self.music_var)
         self.music_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
-        ttk.Button(left_frame, text="Browse...", command=self.browse_music).grid(row=row, column=2, padx=6)
+        ttk.Button(left_frame, text="Browse…", command=self.browse_music).grid(row=row, column=2, padx=6)
         row += 1
 
-        ttk.Label(left_frame, text="OUTPUT:").grid(row=row, column=0, sticky="w")
+        ttk.Label(left_frame, text="Output:").grid(row=row, column=0, sticky="w")
         self.output_var = tk.StringVar(value="final_tiktok.mp4")
         self.output_entry = ttk.Entry(left_frame, textvariable=self.output_var)
         self.output_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
-        ttk.Button(left_frame, text="Choose...", command=self.choose_output).grid(row=row, column=2, padx=6)
+        ttk.Button(left_frame, text="Choose…", command=self.choose_output).grid(row=row, column=2, padx=6)
         row += 1
 
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
+        row += 1
+
+        # ══════════ VIDEO SETTINGS ══════════
+        ttk.Label(left_frame, text="⚙️  Video Settings", style='SectionHeader.TLabel').grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 6))
         row += 1
 
         self.use_custom_crop_var = tk.BooleanVar(value=False)
@@ -5399,11 +5518,11 @@ class App:
         self.music_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
         row += 1
 
-        # --- Translation Controls ---
-        ttk.Label(left_frame, text="Translation & AI Voice", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky="w")
+        # ══════════ TRANSLATION & AI VOICE ══════════
+        ttk.Label(left_frame, text="🎤  Translation & AI Voice", style='SectionHeader.TLabel').grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 6))
         row += 1
 
         self.translation_enabled_var = tk.BooleanVar(value=TRANSLATION_ENABLED)
@@ -5558,11 +5677,11 @@ class App:
         ttk.Label(left_frame, text="(1=single word, 2-3=groups)").grid(row=row, column=2, sticky="w", padx=(3,0))
         row += 1
 
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
         row += 1
 
-        # --- Video Effects (CapCut-style) ---
-        ttk.Label(left_frame, text="Video Effects", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky="w")
+        # ══════════ VIDEO EFFECTS ══════════
+        ttk.Label(left_frame, text="✨  Video Effects", style='SectionHeader.TLabel').grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 6))
         row += 1
 
         # Sharpness/Resilience effect
@@ -5655,11 +5774,11 @@ class App:
         self.effect_vintage_intensity_var.trace('w', lambda *args: self.vintage_label.config(text=f"{self.effect_vintage_intensity_var.get():.2f}"))
         row += 1
 
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
         row += 1
 
-        # --- Blur Overlay (cover-up) ---
-        ttk.Label(left_frame, text="Blur Overlay", font=("Arial", 10, "bold")).grid(row=row, column=0, columnspan=3, sticky="w")
+        # ══════════ BLUR OVERLAY ══════════
+        ttk.Label(left_frame, text="🔲  Blur Overlay", style='SectionHeader.TLabel').grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 6))
         row += 1
 
         self.blur_overlay_enabled_var = tk.BooleanVar(value=False)
@@ -5723,7 +5842,11 @@ class App:
         self.blur_overlay_intensity_var.trace('w', lambda *args: self.blur_overlay_intensity_label.config(text=f"{self.blur_overlay_intensity_var.get()}"))
         row += 1
 
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
+        row += 1
+
+        # ══════════ CROP SETTINGS ══════════
+        ttk.Label(left_frame, text="✂️  Crop Settings", style='SectionHeader.TLabel').grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 6))
         row += 1
 
         ttk.Label(left_frame, text="Top:").grid(row=row, column=0, sticky="e")
@@ -5741,7 +5864,7 @@ class App:
         btns = ttk.Frame(left_frame)
         try:
             btns.configure(style='TFrame')
-            btns.config(bg='#0b0b0b')
+            btns.config(bg=self.BG_DARK)
         except Exception:
             pass
         btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6,0))
@@ -5749,33 +5872,39 @@ class App:
         ttk.Button(btns, text="Load crop settings", command=self.on_load_crop).pack(side="left", padx=4)
         row += 1
 
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
         row += 1
 
-        # Settings Preset Section
-        ttk.Label(left_frame, text="Settings Presets:").grid(row=row, column=0, sticky="w")
+        # ══════════ PRESETS ══════════
+        ttk.Label(left_frame, text="💾  Settings Presets", style='SectionHeader.TLabel').grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 6))
         row += 1
         preset_btns = ttk.Frame(left_frame)
         try:
             preset_btns.configure(style='TFrame')
-            preset_btns.config(bg='#0b0b0b')
+            preset_btns.config(bg=self.BG_DARK)
         except Exception:
             pass
-        preset_btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6,0))
-        ttk.Button(preset_btns, text="💾 Save Preset", command=self.save_preset).pack(side="left", padx=4)
-        ttk.Button(preset_btns, text="📂 Load Preset", command=self.load_preset).pack(side="left", padx=4)
-        ttk.Button(preset_btns, text="🔄 Reset to Defaults", command=self.reset_to_defaults).pack(side="left", padx=4)
+        preset_btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(4,0))
+        ttk.Button(preset_btns, text="Save Preset", style='Accent.TButton', command=self.save_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="Load Preset", command=self.load_preset).pack(side="left", padx=4)
+        ttk.Button(preset_btns, text="Reset to Defaults", command=self.reset_to_defaults).pack(side="left", padx=4)
         row += 1
 
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
         row += 1
 
-        ttk.Label(left_frame, text="Job queue:").grid(row=row, column=0, sticky="w")
+        # ══════════ JOB QUEUE ══════════
+        ttk.Label(left_frame, text="📋  Job Queue", style='SectionHeader.TLabel').grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 6))
         row += 1
-        self.job_listbox = tk.Listbox(left_frame, height=10, selectmode=tk.EXTENDED, bg='#111111', fg='#FFFFFF')
+        self.job_listbox = tk.Listbox(left_frame, height=10, selectmode=tk.EXTENDED,
+                                      bg=self.BG_SECONDARY, fg=self.TEXT_PRIMARY,
+                                      font=('Segoe UI', 9))
         self.job_listbox.grid(row=row, column=0, columnspan=3, sticky="nsew", pady=(4,0))
         try:
-            self.job_listbox.config(selectbackground='#2b2b2b', selectforeground='#FFFFFF', highlightthickness=1, highlightbackground='#222222', bd=2, relief='groove')
+            self.job_listbox.config(selectbackground=self.SELECT_BG, selectforeground='#ffffff',
+                                   highlightthickness=1, highlightbackground=self.BORDER_COLOR,
+                                   highlightcolor=self.ACCENT_BLUE,
+                                   bd=1, relief='flat')
         except Exception:
             pass
         # Add double-click binding to load job settings
@@ -5786,43 +5915,45 @@ class App:
         job_btns = ttk.Frame(left_frame)
         try:
             job_btns.configure(style='TFrame')
-            job_btns.config(bg='#0b0b0b')
+            job_btns.config(bg=self.BG_DARK)
         except Exception:
             pass
         job_btns.grid(row=row, column=0, columnspan=3, sticky="w", pady=(6,0))
-        ttk.Button(job_btns, text="Add job", command=self.add_job).pack(side="left", padx=4)
-        ttk.Button(job_btns, text="Remove selected", command=self.remove_job).pack(side="left", padx=4)
-        self.run_queue_btn = ttk.Button(job_btns, text="Run queue", command=self.run_queue)
+        ttk.Button(job_btns, text="➕ Add Job", style='Accent.TButton', command=self.add_job).pack(side="left", padx=4)
+        ttk.Button(job_btns, text="Remove Selected", style='Danger.TButton', command=self.remove_job).pack(side="left", padx=4)
+        self.run_queue_btn = ttk.Button(job_btns, text="▶ Run Queue", style='Success.TButton', command=self.run_queue)
         self.run_queue_btn.pack(side="left", padx=4)
         row += 1
 
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
+        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
         row += 1
 
+        # ══════════ ACTIONS ══════════
         bottom_controls = ttk.Frame(left_frame)
         try:
             bottom_controls.configure(style='TFrame')
-            bottom_controls.config(bg='#0b0b0b')
+            bottom_controls.config(bg=self.BG_DARK)
         except Exception:
             pass
         bottom_controls.grid(row=row, column=0, columnspan=3, sticky="we")
-        self.run_single_btn = ttk.Button(bottom_controls, text="Run (single)", command=self.on_run_single)
+        self.run_single_btn = ttk.Button(bottom_controls, text="▶ Run (Single)", style='Success.TButton', command=self.on_run_single)
         self.run_single_btn.pack(side="left", padx=4)
         ttk.Button(bottom_controls, text="Toggle Fullscreen", command=self.toggle_fullscreen).pack(side="left", padx=4)
-        ttk.Button(bottom_controls, text="Quit", command=root.quit).pack(side="left", padx=4)
+        ttk.Button(bottom_controls, text="Quit", style='Danger.TButton', command=root.quit).pack(side="left", padx=4)
 
         # preview
-        ttk.Label(preview_frame, text="Mini preview: drag lines to adjust crop").pack(anchor="w")
+        ttk.Label(preview_frame, text="🖼️  Mini Preview — drag lines to adjust crop",
+                 style='SectionHeader.TLabel').pack(anchor="w")
         self.mini_canvas_container = ttk.Frame(preview_frame)
         self.mini_canvas_container.pack(side='left', pady=(6,4), fill="both", expand=False)
         try:
             self.mini_canvas_container.config(style='MiniCanvas.TFrame')
         except Exception:
             pass
-        # create a visible dark border by using a frame with padding and a slightly lighter inner bg
-        self.mini_canvas_border = tk.Frame(self.mini_canvas_container, bg='#222222', bd=2, relief='solid')
+        # create a visible border with accent color
+        self.mini_canvas_border = tk.Frame(self.mini_canvas_container, bg=self.BORDER_COLOR, bd=2, relief='solid')
         self.mini_canvas_border.pack(fill='both', expand=True, padx=0, pady=0)
-        self.mini_canvas = tk.Canvas(self.mini_canvas_border, width=360, height=640, bg='#111111', highlightthickness=0)
+        self.mini_canvas = tk.Canvas(self.mini_canvas_border, width=360, height=640, bg=self.BG_SECONDARY, highlightthickness=0)
         self.mini_canvas.pack(fill='both', expand=True)
         
         self.mini_image_ref = None
@@ -5833,7 +5964,7 @@ class App:
             self.font_panel.configure(style='TFrame')
         except Exception:
             pass
-        ttk.Label(self.font_panel, text='Fonts:').pack(anchor='nw')
+        ttk.Label(self.font_panel, text='🔤 Fonts:').pack(anchor='nw')
         self.font_listbox = tk.Listbox(self.font_panel, height=12, exportselection=False)
         self.font_listbox.pack(fill='y', expand=True)
         # preview sample
@@ -5856,7 +5987,7 @@ class App:
             swatch_frame.pack(fill='x', pady=(4,6))
             PRESET_SWATCHES = ['#FFFFFF', '#000000', '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF', '#FFA500', '#800080']
             ttk.Label(swatch_frame, text='Presets:').pack(anchor='w')
-            sf = tk.Frame(swatch_frame, bg='#0b0b0b')
+            sf = tk.Frame(swatch_frame, bg=self.BG_DARK)
             sf.pack(fill='x', pady=(4,0))
 
             # --- Stroke width control ---
@@ -5912,7 +6043,8 @@ class App:
             self.template_cb.pack(fill='x', pady=(2,4))
             self.template_cb.bind('<<ComboboxSelected>>', self.on_template_selected)
             # Preview area for generated caption image
-            self.caption_preview_canvas = tk.Canvas(self.font_panel, width=320, height=120, bg='#111111', highlightthickness=0)
+            self.caption_preview_canvas = tk.Canvas(self.font_panel, width=320, height=120,
+                                                    bg=self.BG_SECONDARY, highlightthickness=0)
             self.caption_preview_canvas.pack(pady=(4,6))
             ttk.Button(self.font_panel, text='Preview template', command=self.on_preview_template).pack(pady=(0,6))
         except Exception:
@@ -5966,7 +6098,7 @@ class App:
         tl_frame = ttk.Frame(preview_frame)
         try:
             tl_frame.configure(style='TFrame')
-            tl_frame.config(bg='#0b0b0b')
+            tl_frame.config(bg=self.BG_DARK)
         except Exception:
             pass
         tl_frame.pack(fill="x", pady=(4,0))
@@ -5980,36 +6112,40 @@ class App:
         zoom_frame = ttk.Frame(preview_frame)
         try:
             zoom_frame.configure(style='TFrame')
-            zoom_frame.config(bg='#0b0b0b')
+            zoom_frame.config(bg=self.BG_DARK)
         except Exception:
             pass
         zoom_frame.pack(fill="x", pady=(4,0))
-        ttk.Label(zoom_frame, text="Video Zoom:").pack(side="left")
+        ttk.Label(zoom_frame, text="🔍 Zoom:").pack(side="left")
         self.zoom_var = tk.DoubleVar(value=1.0)
         self.zoom_scale = CanvasSlider(zoom_frame, from_=0.5, to=2.0, orient="horizontal", length=300, resolution=0.01, variable=self.zoom_var, command=self.on_zoom_changed)
         self.zoom_scale.pack(side="left", fill="x", expand=True, padx=4)
         self.zoom_label = ttk.Label(zoom_frame, text="1.00x")
         self.zoom_label.pack(side="left", padx=6)
         
-        ttk.Button(preview_frame, text="Refresh mini preview", command=self.on_mini_refresh_clicked).pack(pady=(6,0))
+        ttk.Button(preview_frame, text="🔄 Refresh Preview", style='Accent.TButton',
+                  command=self.on_mini_refresh_clicked).pack(pady=(6,0))
         
         # --- TikTok Format Preview (9:16 aspect ratio) ---
         tiktok_preview_frame = ttk.Frame(preview_frame)
         try:
             tiktok_preview_frame.configure(style='TFrame')
-            tiktok_preview_frame.config(bg='#0b0b0b')
+            tiktok_preview_frame.config(bg=self.BG_DARK)
         except Exception:
             pass
         tiktok_preview_frame.pack(fill='both', expand=False, pady=(6,0))
-        ttk.Label(tiktok_preview_frame, text="TikTok Preview (9:16):").pack(anchor="w")
-        self.tiktok_preview_border = tk.Frame(tiktok_preview_frame, bg='#222222', bd=2, relief='solid')
+        ttk.Label(tiktok_preview_frame, text="📱  TikTok Preview (9:16):",
+                 style='SectionHeader.TLabel').pack(anchor="w")
+        self.tiktok_preview_border = tk.Frame(tiktok_preview_frame, bg=self.BORDER_COLOR, bd=2, relief='solid')
         self.tiktok_preview_border.pack(fill='both', expand=True, padx=0, pady=(4,0))
         # 180x320 = 9:16 aspect ratio
-        self.tiktok_preview_canvas = tk.Canvas(self.tiktok_preview_border, width=180, height=320, bg='#111111', highlightthickness=0)
+        self.tiktok_preview_canvas = tk.Canvas(self.tiktok_preview_border, width=180, height=320,
+                                               bg=self.BG_SECONDARY, highlightthickness=0)
         self.tiktok_preview_canvas.pack(fill='both', expand=True)
         self.tiktok_preview_image_ref = None
         
-        ttk.Button(preview_frame, text="Refresh TikTok Preview", command=self.on_tiktok_preview_refresh).pack(pady=(6,0))
+        ttk.Button(preview_frame, text="🔄 Refresh TikTok Preview", style='Accent.TButton',
+                  command=self.on_tiktok_preview_refresh).pack(pady=(6,0))
 
         self.mini_canvas.bind("<ButtonPress-1>", self._mini_on_mouse_down)
         self.mini_canvas.bind("<B1-Motion>", self._mini_on_mouse_move)
@@ -6023,27 +6159,32 @@ class App:
         bottom_frame.columnconfigure(0, weight=1)
         bottom_frame.columnconfigure(1, weight=1)
 
-        log_label = ttk.Label(bottom_frame, text="Log:")
+        log_label = ttk.Label(bottom_frame, text="📋  Output Log",
+                             style='SectionHeader.TLabel')
         log_label.grid(row=0, column=0, sticky="w")
-        self.log_widget = ScrolledText(bottom_frame, width=80, height=12, state="disabled", wrap="word")
+        self.log_widget = ScrolledText(bottom_frame, width=80, height=12, state="disabled", wrap="word",
+                                       font=('Consolas', 9))
         self.log_widget.grid(row=1, column=0, sticky="nsew", padx=(0,8))
         try:
-            self.log_widget.config(bg='#0f0f0f', fg='#FFFFFF', insertbackground='#FFFFFF', selectbackground='#2b2b2b', selectforeground='#FFFFFF')
+            self.log_widget.config(bg=self.BG_SECONDARY, fg=self.TEXT_PRIMARY,
+                                  insertbackground=self.TEXT_PRIMARY,
+                                  selectbackground=self.SELECT_BG, selectforeground='#ffffff',
+                                  relief='flat', bd=1)
         except Exception:
             pass
 
         right_status = ttk.Frame(bottom_frame)
         try:
             right_status.configure(style='TFrame')
-            right_status.config(bg='#0b0b0b')
+            right_status.config(bg=self.BG_DARK)
         except Exception:
             pass
         right_status.grid(row=1, column=1, sticky="nsew")
         right_status.columnconfigure(0, weight=1)
-        ttk.Label(right_status, text="Preview info:").grid(row=0, column=0, sticky="w")
-        self.preview_info = ttk.Label(right_status, text="No preview")
+        ttk.Label(right_status, text="ℹ️  Status", style='SectionHeader.TLabel').grid(row=0, column=0, sticky="w")
+        self.preview_info = ttk.Label(right_status, text="No preview", style='SubHeader.TLabel')
         self.preview_info.grid(row=1, column=0, sticky="nw")
-        self.font_info = ttk.Label(right_status, text="")
+        self.font_info = ttk.Label(right_status, text="", style='SubHeader.TLabel')
         self.font_info.grid(row=2, column=0, sticky="nw", pady=(6,0))
 
         # internal job list
