@@ -6784,11 +6784,7 @@ class App:
             sample_text = " ".join(sample_words)
             
             text_x = composed.width // 2
-            # Position text center above the green line by half of the proportional FFmpeg text height
-            # FFmpeg drawtext 'th' ≈ font_size * 1.3 (ascent + descent)
-            # Use proportional height to match export positioning more accurately
-            approx_th_preview = max(scaled_font_size, int(font_size * 1.3 * preview_ratio))
-            text_y = caption_y - approx_th_preview // 2
+            text_y = caption_y - scaled_font_size // 2
             
             # Draw stroke (outline) effect by drawing text at the outer boundary only
             # This is more efficient than drawing at every pixel of the stroke width
@@ -7111,23 +7107,8 @@ class App:
             # In actual video (FFmpeg drawtext): y = h - th + y_offset
             # y_offset < 0 moves text UP from bottom, y_offset = 0 means text at bottom
             # In preview: proportional position matching the FFmpeg formula
-            #
-            # IMPORTANT: im.height includes bubble padding, shadow, and extra bottom margin
-            # from generate_caption_image(). The FFmpeg drawtext 'th' is just the text height.
-            # To match the export precisely, we position using the proportional FFmpeg text
-            # height (font_size * 1.3 approximation) instead of im.height.
             preview_ratio = ch / HEIGHT if HEIGHT > 0 else 1.0
-            font_size = globals().get('CAPTION_FONT_SIZE', 56)
-            # Approximate FFmpeg drawtext 'th' (text height with ascent + descent)
-            approx_th = int(font_size * 1.3)
-            # Scale to preview coordinates
-            th_preview = max(1, int(approx_th * preview_ratio))
-            
-            # Position image so its visual CENTER matches the FFmpeg text center
-            # FFmpeg text center in video: (h + y_offset) - approx_th/2
-            # In preview: ch + y_offset * preview_ratio - th_preview/2
-            text_center_y = ch + int(y_offset * preview_ratio) - th_preview // 2
-            simulated_y_pos = text_center_y - im.height // 2
+            simulated_y_pos = ch - im.height + int(y_offset * preview_ratio)
             
             # Clamp to canvas bounds
             simulated_y_pos = max(0, min(ch - im.height, simulated_y_pos))
@@ -7136,7 +7117,7 @@ class App:
             x = (cw - im.width) // 2
             y = simulated_y_pos
             
-            # Draw position indicator line to show text bottom baseline
+            # Draw position indicator line at bottom to show baseline
             baseline_y = ch + int(y_offset * preview_ratio)
             self.caption_preview_canvas.create_line(0, baseline_y, cw, baseline_y, fill='#00FF00', dash=(4, 4), width=1)
             self.caption_preview_canvas.create_text(5, baseline_y - 10, text=f'Y offset: {y_offset}px', anchor='w', fill='#00FF00', font=('Arial', 8))
