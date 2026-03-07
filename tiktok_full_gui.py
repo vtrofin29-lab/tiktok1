@@ -7114,6 +7114,7 @@ class App:
             # to the canvas bottom, matching the actual export position.
             preview_ratio = ch / HEIGHT if HEIGHT > 0 else 1.0
             font_size_cur = globals().get('CAPTION_FONT_SIZE', 56)
+            # padding_y(24) + extra_bottom_margin(font*0.35) + image_extra(8) + extra_bottom_margin(font*0.35)
             bottom_pad_video = int(24 + font_size_cur * 0.35 + 8 + font_size_cur * 0.35)
             image_scale = cw / WIDTH if WIDTH > 0 else 1.0
             bottom_pad_scaled = int(bottom_pad_video * image_scale)
