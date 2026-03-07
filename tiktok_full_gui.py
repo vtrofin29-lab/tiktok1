@@ -7077,10 +7077,11 @@ class App:
             cw = int(self.caption_preview_canvas['width']); ch = int(self.caption_preview_canvas['height'])
             
             # Simulate caption position in preview
-            # In actual video: y = HEIGHT - caption_height - y_offset
-            # In preview: proportional position from bottom
+            # In actual video (FFmpeg drawtext): y = h - th + y_offset
+            # y_offset < 0 moves text UP from bottom, y_offset = 0 means text at bottom
+            # In preview: proportional position matching the FFmpeg formula
             preview_ratio = ch / HEIGHT if HEIGHT > 0 else 1.0
-            simulated_y_pos = ch - im.height - int(y_offset * preview_ratio)
+            simulated_y_pos = ch - im.height + int(y_offset * preview_ratio)
             
             # Clamp to canvas bounds
             simulated_y_pos = max(0, min(ch - im.height, simulated_y_pos))
@@ -7090,7 +7091,7 @@ class App:
             y = simulated_y_pos
             
             # Draw position indicator line at bottom to show baseline
-            baseline_y = ch - int(y_offset * preview_ratio)
+            baseline_y = ch + int(y_offset * preview_ratio)
             self.caption_preview_canvas.create_line(0, baseline_y, cw, baseline_y, fill='#00FF00', dash=(4, 4), width=1)
             self.caption_preview_canvas.create_text(5, baseline_y - 10, text=f'Y offset: {y_offset}px', anchor='w', fill='#00FF00', font=('Arial', 8))
             
@@ -7739,6 +7740,7 @@ class App:
                    "use_ai_voice": self.use_ai_voice_var.get(),
                    "translation_enabled": self.translation_enabled_var.get(),
                    "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
+                   "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
                    "silence_threshold_ms": self.silence_threshold_var.get(),
                    # Font and border settings
                    "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
