@@ -7107,11 +7107,20 @@ class App:
             # In actual video (FFmpeg drawtext): y = h - th + y_offset
             # y_offset < 0 moves text UP from bottom, y_offset = 0 means text at bottom
             # In preview: proportional position matching the FFmpeg formula
+            #
+            # The PIL caption image from generate_caption_image() includes bottom padding
+            # (padding_y + 2*extra_bottom_margin + 8px) that FFmpeg drawtext 'th' doesn't
+            # have. Compensate by shifting the image down so the visible text sits closer
+            # to the canvas bottom, matching the actual export position.
             preview_ratio = ch / HEIGHT if HEIGHT > 0 else 1.0
-            simulated_y_pos = ch - im.height + int(y_offset * preview_ratio)
+            font_size_cur = globals().get('CAPTION_FONT_SIZE', 56)
+            bottom_pad_video = int(24 + font_size_cur * 0.35 + 8 + font_size_cur * 0.35)
+            image_scale = cw / WIDTH if WIDTH > 0 else 1.0
+            bottom_pad_scaled = int(bottom_pad_video * image_scale)
+            simulated_y_pos = ch - im.height + bottom_pad_scaled + int(y_offset * preview_ratio)
             
-            # Clamp to canvas bounds
-            simulated_y_pos = max(0, min(ch - im.height, simulated_y_pos))
+            # Clamp: allow transparent bottom padding to extend below canvas
+            simulated_y_pos = max(0, min(ch - im.height + bottom_pad_scaled, simulated_y_pos))
             
             # Center image horizontally, position vertically based on offset
             x = (cw - im.width) // 2
