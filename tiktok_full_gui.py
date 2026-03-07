@@ -8458,9 +8458,9 @@ class App:
                 # PIL image includes padding above and below text that FFmpeg's th doesn't.
                 # Below the text: padding_y(24) + 2*extra_bottom_margin + 4px of padding.
                 # We shift the image down by this amount so the visible text aligns with FFmpeg.
-                font_size_cur = globals().get('CAPTION_FONT_SIZE', 56)
-                ebm = int(font_size_cur * 0.35)
-                bottom_pad = 24 + 2 * ebm + 4  # padding below text in PIL image
+                font_size = globals().get('CAPTION_FONT_SIZE', 56)
+                extra_bottom_margin = int(font_size * 0.35)
+                bottom_pad = 24 + 2 * extra_bottom_margin + 4  # padding below text in PIL image
                 cap_x = (WIDTH - cap_img.width) // 2
                 cap_y = HEIGHT - cap_img.height + y_off + bottom_pad
                 cap_y = max(0, cap_y)
