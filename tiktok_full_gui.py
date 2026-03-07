@@ -8455,9 +8455,14 @@ class App:
                     cap_img = Image.fromarray(cap_img)
                 cap_img = cap_img.convert('RGBA')
                 # Position: FFmpeg uses y = h - th + y_offset for text top
-                # PIL image includes padding, so use full image height
+                # PIL image includes padding above and below text that FFmpeg's th doesn't.
+                # Below the text: padding_y(24) + 2*extra_bottom_margin + 4px of padding.
+                # We shift the image down by this amount so the visible text aligns with FFmpeg.
+                font_size_cur = globals().get('CAPTION_FONT_SIZE', 56)
+                ebm = int(font_size_cur * 0.35)
+                bottom_pad = 24 + 2 * ebm + 4  # padding below text in PIL image
                 cap_x = (WIDTH - cap_img.width) // 2
-                cap_y = HEIGHT - cap_img.height + y_off
+                cap_y = HEIGHT - cap_img.height + y_off + bottom_pad
                 cap_y = max(0, cap_y)
                 canvas_rgba = canvas.convert('RGBA')
                 canvas_rgba.paste(cap_img, (cap_x, cap_y), cap_img)
