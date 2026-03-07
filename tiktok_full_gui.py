@@ -7117,8 +7117,8 @@ class App:
             preview_ratio = ch / HEIGHT if HEIGHT > 0 else 1.0
             font_size_cur = globals().get('CAPTION_FONT_SIZE', 56)
             image_scale = cw / WIDTH if WIDTH > 0 else 1.0
-            # FFmpeg text height scaled to preview (th ≈ font_size * 1.3)
-            ffmpeg_th_preview = font_size_cur * 1.3 * preview_ratio
+            # FFmpeg text height scaled to preview (th ≈ font_size * 1.0)
+            ffmpeg_th_preview = font_size_cur * 1.0 * preview_ratio
             # PIL image top padding (4px gap + 24px padding_y) scaled to preview image
             top_pad_preview = int(28 * image_scale)
             # Position image so text inside it aligns with FFmpeg text_y
