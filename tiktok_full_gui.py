@@ -6661,6 +6661,7 @@ class App:
                     # Scale current offset value (multiply by 2)
                     current_offset = self.caption_y_offset_var.get()
                     self.caption_y_offset_var.set(current_offset * 2)
+                    globals()['CAPTION_Y_OFFSET'] = current_offset * 2
                 if hasattr(self, 'caption_y_offset_spinbox'):
                     self.caption_y_offset_spinbox.config(from_=-3840, to=200)
                 # Log resolution change
@@ -6691,6 +6692,7 @@ class App:
                     # Scale current offset value back (divide by 2)
                     current_offset = self.caption_y_offset_var.get()
                     self.caption_y_offset_var.set(current_offset // 2)
+                    globals()['CAPTION_Y_OFFSET'] = current_offset // 2
                 if hasattr(self, 'caption_y_offset_spinbox'):
                     self.caption_y_offset_spinbox.config(from_=-1920, to=200)
                 # Log resolution change
@@ -7106,22 +7108,24 @@ class App:
             # Simulate caption position in preview
             # In actual video (FFmpeg drawtext): y = h - th + y_offset
             # y_offset < 0 moves text UP from bottom, y_offset = 0 means text at bottom
-            # In preview: proportional position matching the FFmpeg formula
+            # In preview: use proportional FFmpeg text height to position the PIL image
+            # so the visible text inside it matches the actual export position.
             #
-            # The PIL caption image from generate_caption_image() includes bottom padding
-            # (padding_y + 2*extra_bottom_margin + 8px) that FFmpeg drawtext 'th' doesn't
-            # have. Compensate by shifting the image down so the visible text sits closer
-            # to the canvas bottom, matching the actual export position.
+            # The PIL image has top padding (4px gap + 24px padding_y = 28px) before the
+            # text starts. We position the image so its text aligns with where FFmpeg
+            # would place it, using the height ratio for Y mapping.
             preview_ratio = ch / HEIGHT if HEIGHT > 0 else 1.0
             font_size_cur = globals().get('CAPTION_FONT_SIZE', 56)
-            # padding_y(24) + extra_bottom_margin(font*0.35) + image_extra(8) + extra_bottom_margin(font*0.35)
-            bottom_pad_video = int(24 + font_size_cur * 0.35 + 8 + font_size_cur * 0.35)
             image_scale = cw / WIDTH if WIDTH > 0 else 1.0
-            bottom_pad_scaled = int(bottom_pad_video * image_scale)
-            simulated_y_pos = ch - im.height + bottom_pad_scaled + int(y_offset * preview_ratio)
+            # FFmpeg text height scaled to preview (th ≈ font_size * 1.3)
+            ffmpeg_th_preview = font_size_cur * 1.3 * preview_ratio
+            # PIL image top padding (4px gap + 24px padding_y) scaled to preview image
+            top_pad_preview = int(28 * image_scale)
+            # Position image so text inside it aligns with FFmpeg text_y
+            simulated_y_pos = int(ch - ffmpeg_th_preview + y_offset * preview_ratio - top_pad_preview)
             
-            # Clamp: allow transparent bottom padding to extend below canvas
-            simulated_y_pos = max(0, min(ch - im.height + bottom_pad_scaled, simulated_y_pos))
+            # Clamp: keep at least a sliver visible, allow extending below canvas
+            simulated_y_pos = max(0, simulated_y_pos)
             
             # Center image horizontally, position vertically based on offset
             x = (cw - im.width) // 2
@@ -8675,6 +8679,7 @@ class App:
                 globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
             self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
             self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            globals()['CAPTION_Y_OFFSET'] = preset_data.get("caption_y_offset", 0)
             # Load font size (apply block 1)
             if hasattr(self, 'caption_font_size_var'):
                 font_size = preset_data.get("caption_font_size", 56)
@@ -8777,6 +8782,7 @@ class App:
                 globals()['CAPTION_STROKE_COLOR'] = tuple(preset_data["caption_stroke_color"])
             self.stroke_width_var.set(preset_data.get("caption_stroke_width", max(1, int(CAPTION_FONT_SIZE * 0.05))))
             self.caption_y_offset_var.set(preset_data.get("caption_y_offset", 0))
+            globals()['CAPTION_Y_OFFSET'] = preset_data.get("caption_y_offset", 0)
             # Load font size (apply block 2)
             if hasattr(self, 'caption_font_size_var'):
                 font_size = preset_data.get("caption_font_size", 56)
@@ -8865,6 +8871,7 @@ class App:
             globals()['CAPTION_STROKE_COLOR'] = (0, 0, 0, 150)
             self.stroke_width_var.set(max(1, int(CAPTION_FONT_SIZE * 0.05)))
             self.caption_y_offset_var.set(0)
+            globals()['CAPTION_Y_OFFSET'] = 0
             # Reset font size
             if hasattr(self, 'caption_font_size_var'):
                 self.caption_font_size_var.set(56)
