@@ -6905,6 +6905,12 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
+            
+            # Also refresh TikTok preview to show caption at exact final position
+            try:
+                self.on_tiktok_preview_refresh()
+            except Exception:
+                pass
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -6930,6 +6936,11 @@ class App:
                     composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
                     self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
                     self.mini_canvas.update_idletasks()
+            except Exception:
+                pass
+            # Also refresh TikTok preview to show caption at exact final position
+            try:
+                self.on_tiktok_preview_refresh()
             except Exception:
                 pass
         except Exception:
@@ -7117,8 +7128,8 @@ class App:
             preview_ratio = ch / HEIGHT if HEIGHT > 0 else 1.0
             font_size_cur = globals().get('CAPTION_FONT_SIZE', 56)
             image_scale = cw / WIDTH if WIDTH > 0 else 1.0
-            # FFmpeg text height scaled to preview (th ≈ font_size * 1.0)
-            ffmpeg_th_preview = font_size_cur * 1.0 * preview_ratio
+            # FFmpeg text height scaled to preview (th ≈ font_size * 0.85)
+            ffmpeg_th_preview = font_size_cur * 0.85 * preview_ratio
             # PIL image top padding (4px gap + 24px padding_y) scaled to preview image
             top_pad_preview = int(28 * image_scale)
             # Position image so text inside it aligns with FFmpeg text_y
@@ -8421,6 +8432,38 @@ class App:
             paste_x = (WIDTH - scaled_w) // 2
             paste_y = (HEIGHT - scaled_h) // 2
             canvas.paste(pil_img, (paste_x, paste_y))
+            
+            # Overlay caption on the TikTok preview at exact FFmpeg position
+            # FFmpeg drawtext: y = h - th + y_offset
+            # This shows exactly where the caption will appear in the final export
+            try:
+                y_off = globals().get('CAPTION_Y_OFFSET', 0)
+                pf = None
+                try:
+                    selected_font_name = getattr(self, 'selected_font', None)
+                    selected_font_path = getattr(self, 'selected_font_path', None)
+                    pf = get_validated_font(selected_font_name, selected_font_path)
+                except Exception:
+                    pf = None
+                # Generate sample caption text
+                wpc = globals().get('WORDS_PER_GROUP', 2)
+                word_list = ["WORD", "ONE", "TWO"]
+                sample_words = word_list[:min(wpc, len(word_list))]
+                sample_text = " ".join(sample_words)
+                cap_img = generate_caption_image(sample_text, preferred_font=pf, log=lambda s: None)
+                if not isinstance(cap_img, Image.Image):
+                    cap_img = Image.fromarray(cap_img)
+                cap_img = cap_img.convert('RGBA')
+                # Position: FFmpeg uses y = h - th + y_offset for text top
+                # PIL image includes padding, so use full image height
+                cap_x = (WIDTH - cap_img.width) // 2
+                cap_y = HEIGHT - cap_img.height + y_off
+                cap_y = max(0, cap_y)
+                canvas_rgba = canvas.convert('RGBA')
+                canvas_rgba.paste(cap_img, (cap_x, cap_y), cap_img)
+                canvas = canvas_rgba.convert('RGB')
+            except Exception:
+                pass  # Don't fail TikTok preview if caption overlay fails
             
             # Scale down to preview size (180x320)
             preview_canvas = canvas.resize((180, 320), Image.Resampling.LANCZOS)
