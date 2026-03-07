@@ -8462,8 +8462,8 @@ class App:
                 canvas_rgba = canvas.convert('RGBA')
                 canvas_rgba.paste(cap_img, (cap_x, cap_y), cap_img)
                 canvas = canvas_rgba.convert('RGB')
-            except Exception:
-                pass  # Don't fail TikTok preview if caption overlay fails
+            except Exception as cap_err:
+                print(f"[TIKTOK-PREVIEW] Caption overlay skipped: {cap_err}")
             
             # Scale down to preview size (180x320)
             preview_canvas = canvas.resize((180, 320), Image.Resampling.LANCZOS)
