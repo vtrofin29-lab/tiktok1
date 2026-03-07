@@ -6661,6 +6661,8 @@ class App:
                     # Scale current offset value (multiply by 2)
                     current_offset = self.caption_y_offset_var.get()
                     self.caption_y_offset_var.set(current_offset * 2)
+                if hasattr(self, 'caption_y_offset_spinbox'):
+                    self.caption_y_offset_spinbox.config(from_=-3840, to=200)
                 # Log resolution change
                 try:
                     self.log_widget.config(state='normal')
@@ -6689,6 +6691,8 @@ class App:
                     # Scale current offset value back (divide by 2)
                     current_offset = self.caption_y_offset_var.get()
                     self.caption_y_offset_var.set(current_offset // 2)
+                if hasattr(self, 'caption_y_offset_spinbox'):
+                    self.caption_y_offset_spinbox.config(from_=-1920, to=200)
                 # Log resolution change
                 try:
                     self.log_widget.config(state='normal')
@@ -6915,8 +6919,9 @@ class App:
         """Callback when caption Y offset spinbox value changes (typed or incremented)."""
         try:
             offset = self.caption_y_offset_var.get()
-            # Clamp to valid range
-            offset = max(-3840, min(200, offset))
+            # Clamp to valid range (adapts to current resolution mode)
+            min_val = -3840 if globals().get('IS_4K_MODE', False) else -1920
+            offset = max(min_val, min(200, offset))
             self.caption_y_offset_var.set(offset)
             globals()['CAPTION_Y_OFFSET'] = offset
             # Update mini preview
