@@ -3009,13 +3009,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         blur_down_w = max(video_width // 4, 2) & ~1   # 1080→270, ensure even
         blur_down_h = max(video_height // 4, 2) & ~1  # 1920→480, ensure even
         small_blur = max(2, box_blur_val // 3)         # 12→4, proportionally reduced
-        # Encode background at half resolution for 4K to reduce GPU encoder load.
-        # NVENC at 2160×3840 pegs the GPU at 99%; 1080×1920 cuts that dramatically.
-        # For HD (1080×1920) keep full res — already lightweight.
+        # Encode background at blur resolution for 4K to minimise GPU encoder load.
+        # The blur already destroys detail above blur_down resolution, so encoding
+        # at a higher resolution wastes GPU cycles for no quality benefit.
         # Pass 2 upscales the background before compositing.
         is_4k = (video_width * video_height) > (1080 * 1920 * 2)  # >4M pixels = 4K-class
-        bg_encode_w = max(video_width // 2, 2) & ~1 if is_4k else video_width
-        bg_encode_h = max(video_height // 2, 2) & ~1 if is_4k else video_height
+        bg_encode_w = blur_down_w if is_4k else video_width
+        bg_encode_h = blur_down_h if is_4k else video_height
         bg_needs_upscale = (bg_encode_w != video_width or bg_encode_h != video_height)
         # Add eq brightness filter: handles both dimming and NV12 brightness compensation
         eq_part = f"eq=brightness={eq_brightness:.2f}," if abs(eq_brightness) > 0.001 else ""
