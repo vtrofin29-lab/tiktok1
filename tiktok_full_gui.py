@@ -3009,6 +3009,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         blur_down_w = max(video_width // 4, 2) & ~1   # 1080→270, ensure even
         blur_down_h = max(video_height // 4, 2) & ~1  # 1920→480, ensure even
         small_blur = max(2, box_blur_val // 3)         # 12→4, proportionally reduced
+        # Encode background at half resolution for 4K to reduce GPU encoder load.
+        # NVENC at 2160×3840 pegs the GPU at 99%; 1080×1920 cuts that dramatically.
+        # For HD (1080×1920) keep full res — already lightweight.
+        # Pass 2 upscales the background before compositing.
+        is_4k = video_width >= 2160 or video_height >= 3840
+        bg_encode_w = max(video_width // 2, 2) & ~1 if is_4k else video_width
+        bg_encode_h = max(video_height // 2, 2) & ~1 if is_4k else video_height
+        bg_needs_upscale = (bg_encode_w != video_width or bg_encode_h != video_height)
         # Add eq brightness filter: handles both dimming and NV12 brightness compensation
         eq_part = f"eq=brightness={eq_brightness:.2f}," if abs(eq_brightness) > 0.001 else ""
         # Build user crop filter for background (same crop as foreground)
@@ -3029,9 +3037,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 f"scale={blur_down_w}:{blur_down_h},"
                 f"boxblur={small_blur}:{small_blur},"
                 f"{eq_part}"
-                f"scale={video_width}:{video_height},setsar=1:1"
+                f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
             )
-            log_fn(f"[EXPORT] Pass 1 using GPU scale_cuda → fast CPU boxblur pipeline (downscale {video_width}→{blur_down_w}, blur={small_blur})")
+            log_fn(f"[EXPORT] Pass 1 using GPU scale_cuda → fast CPU boxblur pipeline (downscale {video_width}→{blur_down_w}, blur={small_blur}, encode={bg_encode_w}x{bg_encode_h})")
         else:
             bg_vf = (
                 f"{setpts_filter}{bg_crop_part}"
@@ -3040,13 +3048,15 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 f"scale={blur_down_w}:{blur_down_h},"
                 f"boxblur={small_blur}:{small_blur},"
                 f"{eq_part}"
-                f"scale={video_width}:{video_height},setsar=1:1"
+                f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
             )
         
         # ── Spot blur on background ──
         # If spot blur is enabled, also apply it to the blurred background so that
         # the covered area is hidden on both the foreground and background layers.
         # This requires -filter_complex (split → crop+boxblur → overlay).
+        # Coordinates are relative to bg_encode resolution (may be half of video_width
+        # for 4K to reduce GPU load).
         bg_spot_blur = ""
         bg_blur_ov = effect_settings or {}
         if bg_blur_ov.get('blur_overlay_enabled', False):
@@ -3056,17 +3066,17 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             bh_pct = float(bg_blur_ov.get('blur_overlay_h', 15))
             b_intensity = int(bg_blur_ov.get('blur_overlay_intensity', 20))
             # Background fills the entire canvas after crop+scale, so coordinates
-            # are relative to the canvas. The crop removes the same top/bottom as
-            # the foreground, so Y must be adjusted for the crop.
+            # are relative to the encode resolution. The crop removes the same
+            # top/bottom as the foreground, so Y must be adjusted for the crop.
             bg_keep = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
-            bg_bx = max(0, int(video_width * bx_pct / 100.0)) & ~1
-            bg_by = max(0, int(video_height * (by_pct / 100.0 - crop_top_ratio) / bg_keep)) & ~1
-            bg_bw = max(2, int(video_width * bw_pct / 100.0)) & ~1
-            bg_bh = max(2, int(video_height * bh_pct / (100.0 * bg_keep))) & ~1
-            if bg_bx + bg_bw > video_width:
-                bg_bw = (video_width - bg_bx) & ~1
-            if bg_by + bg_bh > video_height:
-                bg_bh = (video_height - bg_by) & ~1
+            bg_bx = max(0, int(bg_encode_w * bx_pct / 100.0)) & ~1
+            bg_by = max(0, int(bg_encode_h * (by_pct / 100.0 - crop_top_ratio) / bg_keep)) & ~1
+            bg_bw = max(2, int(bg_encode_w * bw_pct / 100.0)) & ~1
+            bg_bh = max(2, int(bg_encode_h * bh_pct / (100.0 * bg_keep))) & ~1
+            if bg_bx + bg_bw > bg_encode_w:
+                bg_bw = (bg_encode_w - bg_bx) & ~1
+            if bg_by + bg_bh > bg_encode_h:
+                bg_bh = (bg_encode_h - bg_by) & ~1
             bg_b_blur = max(2, b_intensity)
             bg_spot_blur = (
                 f",format=yuv420p,split[_bgm][_bgc];"
@@ -3123,7 +3133,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
-        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={small_blur} (downscaled {video_width}→{blur_down_w}), dim={eq_brightness:.2f}")
+        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={small_blur} (downscaled {video_width}→{blur_down_w}), encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
         log_fn(f"[EXPORT]   Command: {' '.join(bg_cmd)}")
         bg_timeout = max(300, int((bg_duration_limit or 60) * 5))  # 5x video duration, min 5 min
         bg_result = subprocess.run(bg_cmd, capture_output=True, text=True, timeout=bg_timeout)
@@ -3152,15 +3162,19 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Full GPU pipeline: hwupload both inputs → overlay_cuda
             # No captions/effects = pure GPU path
             fg_prep = f"[1:v]{setpts_filter}hwupload_cuda[fg_ready]"
+            # If background was encoded at reduced resolution, upscale before overlay
+            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}," if bg_needs_upscale else "[0:v]"
             filter_parts = [
                 fg_prep,
-                "[0:v]hwupload_cuda[bg_cuda]",
+                f"{bg_scale_prefix}hwupload_cuda[bg_cuda]",
                 "[bg_cuda][fg_ready]overlay_cuda=x=(W-w)/2:y=(H-h)/2,hwdownload,format=nv12"
             ]
             if effect_filter_str:
                 # Effects are CPU-only; data is already in CPU format (nv12) after hwdownload
                 filter_parts[-1] += f",{effect_filter_str}"
                 log_fn(f"[EXPORT] ✓ GPU overlay + CPU effects")
+            if bg_needs_upscale:
+                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
             log_fn("[EXPORT] ✓ Using GPU-accelerated overlay_cuda (full GPU pipeline)")
         else:
             # CPU overlay pipeline (when captions or mirror are needed)
@@ -3170,8 +3184,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             else:
                 fg_prep = f"[1:v]{setpts_filter}copy[fg_ready]"
             
-            # Combine: bg + fg overlay
-            filter_parts = [fg_prep, "[0:v][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
+            # If background was encoded at reduced resolution, upscale before overlay
+            if bg_needs_upscale:
+                bg_prep = f"[0:v]scale={video_width}:{video_height}[bg_up]"
+                filter_parts = [fg_prep, bg_prep, "[bg_up][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
+                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
+            else:
+                # Combine: bg + fg overlay
+                filter_parts = [fg_prep, "[0:v][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
         
         # --- Blur overlay (cover-up region) ---
         # If blur overlay is enabled in effect_settings, split the composited stream,
@@ -3277,7 +3297,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Log input information for debugging
         log_fn(f"[EXPORT] Pass 2/2: Final encode with lightweight filter chain")
-        log_fn(f"[EXPORT] Background (pre-rendered): {bg_prerendered_path}")
+        log_fn(f"[EXPORT] Background (pre-rendered): {bg_prerendered_path} ({bg_encode_w}x{bg_encode_h}{' → upscale to ' + str(video_width) + 'x' + str(video_height) if bg_needs_upscale else ''})")
         log_fn(f"[EXPORT] Foreground: {fg_path}")
         log_fn(f"[EXPORT] Audio: {audio_path}")
         log_fn(f"[EXPORT] Output: {output_path} ({video_width}x{video_height})")
