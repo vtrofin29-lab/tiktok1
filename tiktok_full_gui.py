@@ -135,7 +135,7 @@ except Exception:
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageTk
 
-# External heavy deps: moviepy, whisper
+# External heavy deps: moviepy (loaded eagerly), whisper+torch (loaded lazily on first use)
 from moviepy.editor import (
     VideoFileClip, CompositeVideoClip, AudioFileClip, ImageClip,
     concatenate_videoclips, concatenate_audioclips
@@ -144,8 +144,9 @@ from moviepy.audio.AudioClip import CompositeAudioClip
 from moviepy.video.fx.all import speedx
 from moviepy.audio.fx.all import audio_fadeout
 
-import whisper
-import torch  # For GPU detection in Whisper
+# whisper and torch are loaded lazily (inside _load_whisper_model_with_retries /
+# _release_whisper_model) so the app starts faster and these heavy modules
+# (~5-10 s import time) are only pulled in when transcription is actually needed.
 
 # ----------------- TRANSLATION & AI VOICE MODULES -----------------
 try:
@@ -1767,6 +1768,7 @@ def _release_whisper_model(log=None):
             _whisper_model_cache.clear()
             gc.collect()
             try:
+                import torch  # lazy import — only needed when releasing GPU memory
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     if log:
@@ -1804,6 +1806,8 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
     return removed
 
 def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
+    import torch    # lazy import — heavy module, only loaded when transcription is needed
+    import whisper  # lazy import — heavy module, only loaded when transcription is needed
     last_exc = None
     
     # Detect GPU availability for Whisper with improved detection

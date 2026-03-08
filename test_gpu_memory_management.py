@@ -159,3 +159,38 @@ def test_queue_worker_releases_model_at_end():
             print("✓ queue_worker releases Whisper model at end")
             return
     raise AssertionError("Could not find queue_worker function")
+
+
+def test_whisper_and_torch_are_lazy_imports():
+    """whisper and torch must NOT be imported at module level — they must be lazy."""
+    source = _load_source()
+    tree = ast.parse(source)
+
+    # Check top-level statements only (direct children of the module)
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name not in ("whisper", "torch"), (
+                    f"'{alias.name}' is imported at module level (line {node.lineno}). "
+                    f"It must be a lazy import inside the function that uses it to avoid "
+                    f"loading heavy modules (~5-10 s) at app startup."
+                )
+        elif isinstance(node, ast.ImportFrom) and node.module in ("whisper", "torch"):
+            raise AssertionError(
+                f"'from {node.module} import ...' at module level (line {node.lineno}). "
+                f"Must be a lazy import inside the function that uses it."
+            )
+
+    # Verify lazy imports exist inside _load_whisper_model_with_retries
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_load_whisper_model_with_retries":
+            src = ast.get_source_segment(source, node)
+            assert "import torch" in src, (
+                "_load_whisper_model_with_retries must have 'import torch' inside the function"
+            )
+            assert "import whisper" in src, (
+                "_load_whisper_model_with_retries must have 'import whisper' inside the function"
+            )
+            break
+
+    print("✓ whisper and torch are lazy imports (not loaded at app startup)")
