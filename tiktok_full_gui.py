@@ -6661,10 +6661,19 @@ class App:
                 globals()['CAPTION_FONT_SIZE'] = 112  # 56 * 2
                 # Update stroke width based on new font size
                 globals()['CAPTION_STROKE_WIDTH'] = max(1, int(112 * 0.05))
+                # Scale background blur radius for 4K (2x)
+                globals()['STATIC_BG_BLUR_RADIUS'] = 50  # 25 * 2
                 # Scale background zoom factor for 4K
                 globals()['BG_SCALE_EXTRA'] = 1.08  # Keep same for both (proportional to resolution)
                 # Mark that we're in 4K mode for scaling calculations
                 globals()['IS_4K_MODE'] = True
+                # Sync caption font size slider and label with 4K value
+                if hasattr(self, 'caption_font_size_scale'):
+                    self.caption_font_size_scale.config(from_=40, to=240)
+                if hasattr(self, 'caption_font_size_var'):
+                    self.caption_font_size_var.set(112)
+                if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
+                    self.caption_font_size_label.config(text="112px")
                 # Update caption Y offset slider range for 4K (-3840 to +200)
                 if hasattr(self, 'caption_y_offset_scale'):
                     self.caption_y_offset_scale.config(from_=-3840, to=200)
@@ -6679,6 +6688,7 @@ class App:
                     self.log_widget.config(state='normal')
                     self.log_widget.insert('end', "Resolution set to 4K: 2160x3840\n")
                     self.log_widget.insert('end', "Caption font size scaled to: 112px\n")
+                    self.log_widget.insert('end', f"Background blur scaled to: 50\n")
                     self.log_widget.insert('end', "Zoom/scale factors adjusted for 4K\n")
                     self.log_widget.see('end')
                     self.log_widget.config(state='disabled')
@@ -6692,10 +6702,19 @@ class App:
                 globals()['CAPTION_FONT_SIZE'] = 56
                 # Update stroke width based on default font size
                 globals()['CAPTION_STROKE_WIDTH'] = max(1, int(56 * 0.05))
+                # Reset background blur radius for HD
+                globals()['STATIC_BG_BLUR_RADIUS'] = 25
                 # Reset background zoom factor for HD
                 globals()['BG_SCALE_EXTRA'] = 1.08
                 # Mark that we're in HD mode
                 globals()['IS_4K_MODE'] = False
+                # Sync caption font size slider and label with HD value
+                if hasattr(self, 'caption_font_size_scale'):
+                    self.caption_font_size_scale.config(from_=20, to=120)
+                if hasattr(self, 'caption_font_size_var'):
+                    self.caption_font_size_var.set(56)
+                if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
+                    self.caption_font_size_label.config(text="56px")
                 # Reset caption Y offset slider range for HD (-1080 to +200)
                 if hasattr(self, 'caption_y_offset_scale'):
                     self.caption_y_offset_scale.config(from_=-1920, to=200)
@@ -6710,6 +6729,7 @@ class App:
                     self.log_widget.config(state='normal')
                     self.log_widget.insert('end', "Resolution set to HD: 1080x1920\n")
                     self.log_widget.insert('end', "Caption font size reset to: 56px\n")
+                    self.log_widget.insert('end', f"Background blur reset to: 25\n")
                     self.log_widget.insert('end', "Zoom/scale factors reset to HD\n")
                     self.log_widget.see('end')
                     self.log_widget.config(state='disabled')
@@ -6967,8 +6987,10 @@ class App:
                     size = int(val)
                 except Exception:
                     size = 56
-            # Clamp to valid range
-            size = max(20, min(120, size))
+            # Clamp to valid range (scaled for 4K)
+            max_size = 240 if globals().get('IS_4K_MODE', False) else 120
+            min_size = 40 if globals().get('IS_4K_MODE', False) else 20
+            size = max(min_size, min(max_size, size))
             globals()['CAPTION_FONT_SIZE'] = size
             try:
                 if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
