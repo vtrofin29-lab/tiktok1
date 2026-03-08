@@ -3013,7 +3013,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # NVENC at 2160×3840 pegs the GPU at 99%; 1080×1920 cuts that dramatically.
         # For HD (1080×1920) keep full res — already lightweight.
         # Pass 2 upscales the background before compositing.
-        is_4k = video_width >= 2160 or video_height >= 3840
+        is_4k = (video_width * video_height) > (1080 * 1920 * 2)  # >4M pixels = 4K-class
         bg_encode_w = max(video_width // 2, 2) & ~1 if is_4k else video_width
         bg_encode_h = max(video_height // 2, 2) & ~1 if is_4k else video_height
         bg_needs_upscale = (bg_encode_w != video_width or bg_encode_h != video_height)
