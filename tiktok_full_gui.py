@@ -2522,7 +2522,10 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
     # FFmpeg drawtext equivalent: y = h - text_h + y_offset
     # y_offset = 0 → text at bottom, y_offset = -618 → text 618px up from bottom
     # 'th' is the rendered text height in FFmpeg drawtext expressions
-    y_position = f"h-th+({y_offset})"
+    # Small upward correction: FFmpeg th is slightly smaller than PIL text height,
+    # causing exported captions to appear a few pixels lower than preview.
+    y_correction = int(fontsize * 0.08)
+    y_position = f"h-th+({y_offset})-{y_correction}"
     
     # Build drawtext filter with custom styling
     filter_parts = [
@@ -4948,6 +4951,9 @@ def _complete_voice_for_job(submission, job_index, total_jobs, q):
 
         log(f"[VOICE COMPLETE {job_index}/{total_jobs}] ✅ Voice ready! Duration: {tts_duration:.2f}s, Captions: {len(final_caption_segments)}")
 
+        # Release Whisper model after re-transcription to free GPU memory
+        _release_whisper_model(log=log)
+
         return {
             'compressed_tts_path': compressed_tts_path,
             'caption_segments': final_caption_segments,
@@ -4958,6 +4964,8 @@ def _complete_voice_for_job(submission, job_index, total_jobs, q):
         log(f"[VOICE COMPLETE {job_index}/{total_jobs}] ❌ Completion failed: {e}")
         import traceback
         log(traceback.format_exc())
+        # Release Whisper model even on failure
+        _release_whisper_model(log=log)
         return None
 
 
@@ -5101,6 +5109,8 @@ def queue_worker(jobs, q):
                 log(f"[QUEUE] ✓ Job {idx+1} completion thread started — moving to next")
         
         log(f"\n[QUEUE] ═══ ALL {total} VOICES SUBMITTED ═══")
+        # Release Whisper model after all submissions to free GPU memory during voice waiting
+        _release_whisper_model(log=log)
     
     # Start submitter in background — submissions happen while videos process
     submitter_thread = threading.Thread(target=_submitter)
