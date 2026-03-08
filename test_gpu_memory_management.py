@@ -175,7 +175,7 @@ def test_whisper_and_torch_are_lazy_imports():
                     f"It must be a lazy import inside the function that uses it to avoid "
                     f"loading heavy modules (~5-10 s) at app startup."
                 )
-        elif isinstance(node, ast.ImportFrom) and node.module in ("whisper", "torch"):
+        elif isinstance(node, ast.ImportFrom) and node.module and node.module in ("whisper", "torch"):
             raise AssertionError(
                 f"'from {node.module} import ...' at module level (line {node.lineno}). "
                 f"Must be a lazy import inside the function that uses it."
