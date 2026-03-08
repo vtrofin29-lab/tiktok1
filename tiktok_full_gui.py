@@ -3043,6 +3043,39 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 f"scale={video_width}:{video_height},setsar=1:1"
             )
         
+        # ── Spot blur on background ──
+        # If spot blur is enabled, also apply it to the blurred background so that
+        # the covered area is hidden on both the foreground and background layers.
+        # This requires -filter_complex (split → crop+boxblur → overlay).
+        bg_spot_blur = ""
+        bg_blur_ov = effect_settings or {}
+        if bg_blur_ov.get('blur_overlay_enabled', False):
+            bx_pct = float(bg_blur_ov.get('blur_overlay_x', 10))
+            by_pct = float(bg_blur_ov.get('blur_overlay_y', 10))
+            bw_pct = float(bg_blur_ov.get('blur_overlay_w', 20))
+            bh_pct = float(bg_blur_ov.get('blur_overlay_h', 15))
+            b_intensity = int(bg_blur_ov.get('blur_overlay_intensity', 20))
+            # Background fills the entire canvas after crop+scale, so coordinates
+            # are relative to the canvas. The crop removes the same top/bottom as
+            # the foreground, so Y must be adjusted for the crop.
+            bg_keep = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
+            bg_bx = max(0, int(video_width * bx_pct / 100.0)) & ~1
+            bg_by = max(0, int(video_height * (by_pct / 100.0 - crop_top_ratio) / bg_keep)) & ~1
+            bg_bw = max(2, int(video_width * bw_pct / 100.0)) & ~1
+            bg_bh = max(2, int(video_height * bh_pct / (100.0 * bg_keep))) & ~1
+            if bg_bx + bg_bw > video_width:
+                bg_bw = (video_width - bg_bx) & ~1
+            if bg_by + bg_bh > video_height:
+                bg_bh = (video_height - bg_by) & ~1
+            bg_b_blur = max(2, b_intensity)
+            bg_spot_blur = (
+                f",format=yuv420p,split[_bgm][_bgc];"
+                f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
+                f"boxblur={bg_b_blur}:2[_bgb];"
+                f"[_bgm][_bgb]overlay={bg_bx}:{bg_by}"
+            )
+            log_fn(f"[EXPORT] ✓ Background spot blur: pos=({bg_bx},{bg_by}) size={bg_bw}x{bg_bh} blur={bg_b_blur}")
+
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         # GPU hardware decoding for background pre-render.
         # Only use -hwaccel cuda when GPU filters (scale_cuda) are active so decoded
@@ -3057,7 +3090,12 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if not gpu_filters:
             cpu_threads = min(os.cpu_count() or 4, 8)
             bg_cmd.extend(["-filter_threads", str(cpu_threads)])
-        bg_cmd.extend(["-i", bg_path, "-an", "-vf", bg_vf])
+        # When spot blur is enabled on the background, we need -filter_complex
+        # because the split→crop→overlay graph requires named streams.
+        if bg_spot_blur:
+            bg_cmd.extend(["-i", bg_path, "-an", "-filter_complex", bg_vf + bg_spot_blur])
+        else:
+            bg_cmd.extend(["-i", bg_path, "-an", "-vf", bg_vf])
         
         # Use NVENC for bg pre-render if available, else CPU ultrafast
         # Background is blurred — use constqp with high QP for fastest encoding
