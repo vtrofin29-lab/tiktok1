@@ -3029,20 +3029,22 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
         if gpu_filters and not needs_stream_loop:
-            # GPU-accelerated blur: GPU decodes and downscales (fast!), then hwdownload
-            # to CPU for boxblur which produces the same smooth, high-quality blur as
-            # the CPU-only path. The boxblur runs on the tiny blur_down resolution
-            # (e.g. 270×480 for 1080p) so it's extremely fast even on CPU.
+            # GPU-accelerated decode + CPU boxblur: identical quality to CPU-only path.
+            # GPU handles fast decode via -hwaccel cuda, then hwdownload transfers frames
+            # to CPU where the same crop→scale→boxblur chain runs as the CPU path.
+            # NVENC handles encoding at the end. This ensures the blur looks identical
+            # to the CPU path while still benefiting from GPU decode/encode speed.
             bg_vf = (
-                f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h},"
-                f"scale_cuda={blur_down_w}:{blur_down_h},"
-                f"hwdownload,format=nv12,"
-                f"boxblur={small_blur}:{small_blur},"
+                f"{setpts_filter}hwdownload,format=yuv420p,"
                 f"{bg_crop_part}"
+                f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
+                f"crop={video_width}:{video_height},"
+                f"scale={blur_down_w}:{blur_down_h},"
+                f"boxblur={small_blur}:{small_blur},"
                 f"{eq_part}"
                 f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
             )
-            log_fn(f"[EXPORT] Pass 1 using GPU downscale + CPU boxblur={small_blur} (blur_down={blur_down_w}x{blur_down_h}, encode={bg_encode_w}x{bg_encode_h})")
+            log_fn(f"[EXPORT] Pass 1 using GPU decode + CPU boxblur={small_blur} (blur_down={blur_down_w}x{blur_down_h}, encode={bg_encode_w}x{bg_encode_h})")
         else:
             bg_vf = (
                 f"{setpts_filter}{bg_crop_part}"
@@ -3098,16 +3100,15 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
 
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         # GPU hardware decoding for background pre-render.
-        # Only use -hwaccel cuda when GPU filters (scale_cuda) are active so decoded
-        # frames stay in VRAM. For CPU-only filter chains (boxblur etc.) GPU decoding
-        # forces a costly GPU→CPU transfer for every frame, pegging GPU at 100% without
-        # actual speed benefit. Let CPU decode when filters are CPU-based.
+        # Use -hwaccel cuda for fast decode even though the blur filter chain runs on
+        # CPU (hwdownload transfers frames). GPU decode is still faster than CPU decode,
+        # and the background is a one-time pre-render so the transfer overhead is minimal.
         if use_gpu and USE_HARDWARE_DECODING and gpu_filters and not needs_stream_loop:
             bg_cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
         # Add filter threading for CPU filter processing.
-        # GPU path: GPU handles decode + downscale, CPU handles boxblur + post-processing.
+        # GPU path: GPU handles decode, CPU handles crop + scale + boxblur.
         # When GPU is active, use half CPU cores to keep CPU at ~50-60%.
         total_cores = os.cpu_count() or 4
         if use_gpu:
@@ -3147,7 +3148,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
-        blur_mode = "GPU downscale + CPU boxblur" if (gpu_filters and not needs_stream_loop) else f"CPU boxblur={small_blur}"
+        blur_mode = "GPU decode + CPU boxblur" if (gpu_filters and not needs_stream_loop) else f"CPU boxblur={small_blur}"
         blur_detail = f"(downscale {video_width}→{blur_down_w}, boxblur={small_blur})"
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
         log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} {blur_detail}, encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
