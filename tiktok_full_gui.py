@@ -2687,7 +2687,7 @@ def _build_ffmpeg_effect_filters(effect_settings, log_fn=None):
     return ""
 
 
-def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None, blur_radius=None, dim_factor=None, bg_scale_extra=None, crop_top_ratio=None, crop_bottom_ratio=None, caption_y_offset=None):
+def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None, blur_radius=None, dim_factor=None, bg_scale_extra=None, crop_top_ratio=None, crop_bottom_ratio=None, caption_y_offset=None, force_cpu=False):
     """
     Fast export using pure FFmpeg complex filters.
     2-3x faster than MoviePy's Python frame processing.
@@ -2982,18 +2982,24 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_prerendered_path = os.path.join(bg_temp_dir, "bg_blurred.mp4")
         
         # Determine GPU availability and select codec
-        use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
-        nvenc_codec = PREFERRED_NVENC_CODEC
-        if not use_gpu and USE_GPU_IF_AVAILABLE:
-            # Try fallback NVENC codecs
-            for alt_codec in ["hevc_nvenc", "h264_nvenc"]:
-                if alt_codec != PREFERRED_NVENC_CODEC and ffmpeg_supports_nvenc(alt_codec):
-                    use_gpu = True
-                    nvenc_codec = alt_codec
-                    log_fn(f"[EXPORT] Primary codec {PREFERRED_NVENC_CODEC} unavailable, using fallback: {alt_codec}")
-                    break
-        
-        gpu_filters = use_gpu and ffmpeg_gpu_filters_available()
+        if force_cpu:
+            use_gpu = False
+            gpu_filters = False
+            nvenc_codec = PREFERRED_NVENC_CODEC
+            log_fn("[EXPORT] ⚠️ CPU-only fallback mode (GPU disabled for this attempt)")
+        else:
+            use_gpu = USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC)
+            nvenc_codec = PREFERRED_NVENC_CODEC
+            if not use_gpu and USE_GPU_IF_AVAILABLE:
+                # Try fallback NVENC codecs
+                for alt_codec in ["hevc_nvenc", "h264_nvenc"]:
+                    if alt_codec != PREFERRED_NVENC_CODEC and ffmpeg_supports_nvenc(alt_codec):
+                        use_gpu = True
+                        nvenc_codec = alt_codec
+                        log_fn(f"[EXPORT] Primary codec {PREFERRED_NVENC_CODEC} unavailable, using fallback: {alt_codec}")
+                        break
+            
+            gpu_filters = use_gpu and ffmpeg_gpu_filters_available()
         
         # Log GPU diagnostic info
         log_fn(f"[EXPORT] ═══ GPU DIAGNOSTIC ═══")
@@ -3817,10 +3823,12 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     for ffmpeg_attempt in range(MAX_FFMPEG_RETRIES):
         try:
             import tempfile
+            # On second attempt, force CPU-only mode as fallback
+            use_cpu_fallback = (ffmpeg_attempt > 0)
             if ffmpeg_attempt == 0:
                 log("[EXPORT] Starting FFmpeg export...")
             else:
-                log(f"[EXPORT] Retrying FFmpeg export (attempt {ffmpeg_attempt + 1}/{MAX_FFMPEG_RETRIES})...")
+                log(f"[EXPORT] Retrying FFmpeg export (attempt {ffmpeg_attempt + 1}/{MAX_FFMPEG_RETRIES}) with CPU-only fallback...")
             if not caption_segments:
                 log("[EXPORT] Note: No captions to render (video will have no text overlay)")
             
@@ -3878,7 +3886,8 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 bg_scale_extra=bg_scale_extra,
                 crop_top_ratio=crop_top_ratio,
                 crop_bottom_ratio=crop_bottom_ratio,
-                caption_y_offset=caption_y_offset
+                caption_y_offset=caption_y_offset,
+                force_cpu=use_cpu_fallback
             )
             
             if ffmpeg_export_successful:
