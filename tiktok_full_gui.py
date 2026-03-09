@@ -3036,7 +3036,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         gpu_tiny_w = max(blur_down_w // gpu_blur_factor, 4) & ~1  # e.g. 270//8=33→32
         gpu_tiny_h = max(blur_down_h // gpu_blur_factor, 4) & ~1  # e.g. 480//8=60
         # Intermediate resolution for second blur pass (half of blur_down)
-        gpu_mid_w = max(blur_down_w // 2, 4) & ~1   # e.g. 270//2=134
+        gpu_mid_w = max(blur_down_w // 2, 4) & ~1   # e.g. 270//2=135→134
         gpu_mid_h = max(blur_down_h // 2, 4) & ~1   # e.g. 480//2=240
         # Pre-check if spot blur will be active (needs CPU filters after hwdownload)
         has_bg_spot_blur = (effect_settings or {}).get('blur_overlay_enabled', False)
@@ -3183,9 +3183,12 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
         blur_mode = "full GPU multi-pass" if bg_full_gpu else ("GPU multi-pass + CPU post" if (gpu_filters and not needs_stream_loop) else f"CPU boxblur={small_blur}")
-        blur_tiny = gpu_tiny_w if (gpu_filters and not needs_stream_loop) else blur_down_w
+        if gpu_filters and not needs_stream_loop:
+            blur_detail = f"(tiny={gpu_tiny_w}x{gpu_tiny_h}, mid={gpu_mid_w}x{gpu_mid_h})"
+        else:
+            blur_detail = f"(downscale {video_width}→{blur_down_w})"
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
-        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} (downscale {video_width}→{blur_tiny}), encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
+        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} {blur_detail}, encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
         log_fn(f"[EXPORT]   Command: {' '.join(bg_cmd)}")
         bg_timeout = max(300, int((bg_duration_limit or 60) * 5))  # 5x video duration, min 5 min
         bg_result = subprocess.run(bg_cmd, capture_output=True, text=True, timeout=bg_timeout)
