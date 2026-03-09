@@ -1679,7 +1679,7 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
     
     cmd.extend(["-i", input_path, "-an"])
     
-    if gpu_filters:
+    if gpu_filters and USE_HARDWARE_DECODING:
         # GPU path: -hwaccel_output_format cuda keeps decoded frames in CUDA memory.
         # crop is a CPU-only filter, so we must hwdownload first, then crop on CPU,
         # then hwupload_cuda back to GPU for scale_cuda.
@@ -3034,7 +3034,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
-        if gpu_filters and not needs_stream_loop:
+        if gpu_filters and USE_HARDWARE_DECODING and not needs_stream_loop:
             # GPU-accelerated decode + CPU boxblur: identical quality to CPU-only path.
             # GPU handles fast decode via -hwaccel cuda, then hwdownload transfers frames
             # to CPU where the same crop→scale→boxblur chain runs as the CPU path.
