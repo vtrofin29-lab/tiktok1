@@ -893,7 +893,7 @@ def test_bg_uses_downscale_blur_upscale():
 
     # The GPU bg_vf should use scale down before gblur then scale up
     # Pattern: crop → scale=blur_down → gblur=sigma → scale=encode
-    gpu_bg_section = fn_body[fn_body.find('if gpu_filters and USE_HARDWARE_DECODING and not needs_stream_loop'):fn_body.find('bg_cmd = [')]
+    gpu_bg_section = fn_body[fn_body.find('if gpu_filters and USE_HARDWARE_DECODING and not bg_needs_stream_loop'):fn_body.find('bg_cmd = [')]
     if 'gblur=sigma={blur_sigma}' in gpu_bg_section:
         print("✓ GPU path uses gblur with blur_sigma (Gaussian blur on downscaled frame)")
     else:

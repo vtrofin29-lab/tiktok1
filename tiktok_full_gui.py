@@ -2924,9 +2924,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Input [1:a] = audio
         
         # Calculate speed adjustment factor if target_duration is set
+        # Foreground (fg_path) may already be speed-adjusted by MoviePy, so probe it
+        # separately from the background (bg_path) which uses the original video.
         speed_factor = None
         if target_duration and target_duration > 0:
-            # We need to probe the foreground video duration to calculate speed factor
+            # Probe the foreground video duration to calculate speed factor
             try:
                 probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                              "-of", "default=noprint_wrappers=1:nokey=1", fg_path]
@@ -2935,24 +2937,48 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                     fg_duration = float(probe_result.stdout.strip())
                     if abs(fg_duration - target_duration) > 0.05:
                         speed_factor = fg_duration / target_duration
-                        log_fn(f"[EXPORT] Video speed adjustment: {fg_duration:.2f}s → {target_duration:.2f}s (factor: {speed_factor:.4f})")
+                        log_fn(f"[EXPORT] FG speed adjustment: {fg_duration:.2f}s → {target_duration:.2f}s (factor: {speed_factor:.4f})")
                 else:
-                    log_fn(f"[EXPORT] ffprobe failed (rc={probe_result.returncode}), skipping speed adjustment")
+                    log_fn(f"[EXPORT] ffprobe fg failed (rc={probe_result.returncode}), skipping fg speed adjustment")
             except Exception as e:
-                log_fn(f"[EXPORT] Could not probe video duration for speed adjustment: {e}")
+                log_fn(f"[EXPORT] Could not probe fg video duration for speed adjustment: {e}")
         
-        # Build the setpts expression for speed adjustment
+        # Build the setpts expression for foreground speed adjustment (Pass 2)
         setpts_filter = ""
-        # Track whether we're slowing down (need looping) or speeding up
-        needs_stream_loop = False
         if speed_factor and speed_factor > 0:
-            # setpts=PTS/factor speeds up (factor>1) or slows down (factor<1)
             setpts_filter = f"setpts=PTS/{speed_factor:.6f},"
-            log_fn(f"[EXPORT] ✓ Speed adjustment filter: setpts=PTS/{speed_factor:.6f}")
-            if speed_factor < 1.0:
+            log_fn(f"[EXPORT] ✓ FG speed filter: setpts=PTS/{speed_factor:.6f}")
+        
+        # Calculate BACKGROUND speed adjustment separately.
+        # bg_path may be the original video (different duration from the speed-adjusted fg).
+        # Without this, the background plays at original speed while the foreground is
+        # speed-adjusted, causing the background to drift 1-2 seconds behind.
+        bg_speed_factor = None
+        bg_needs_stream_loop = False
+        if target_duration and target_duration > 0:
+            try:
+                bg_probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                "-of", "default=noprint_wrappers=1:nokey=1", bg_path]
+                bg_probe_result = subprocess.run(bg_probe_cmd, capture_output=True, text=True, timeout=30)
+                if bg_probe_result.returncode == 0 and bg_probe_result.stdout.strip():
+                    bg_duration = float(bg_probe_result.stdout.strip())
+                    if abs(bg_duration - target_duration) > 0.05:
+                        bg_speed_factor = bg_duration / target_duration
+                        log_fn(f"[EXPORT] BG speed adjustment: {bg_duration:.2f}s → {target_duration:.2f}s (factor: {bg_speed_factor:.4f})")
+                else:
+                    log_fn(f"[EXPORT] ffprobe bg failed (rc={bg_probe_result.returncode}), skipping bg speed adjustment")
+            except Exception as e:
+                log_fn(f"[EXPORT] Could not probe bg video duration for speed adjustment: {e}")
+        
+        # Build the setpts expression for background speed adjustment (Pass 1)
+        bg_setpts_filter = ""
+        if bg_speed_factor and bg_speed_factor > 0:
+            bg_setpts_filter = f"setpts=PTS/{bg_speed_factor:.6f},"
+            log_fn(f"[EXPORT] ✓ BG speed filter: setpts=PTS/{bg_speed_factor:.6f}")
+            if bg_speed_factor < 1.0:
                 # Slowing down: video becomes longer, need looping to avoid running out of frames
-                needs_stream_loop = True
-                log_fn(f"[EXPORT] Video is being slowed down (factor={speed_factor:.4f}) - looping enabled")
+                bg_needs_stream_loop = True
+                log_fn(f"[EXPORT] BG is being slowed down (factor={bg_speed_factor:.4f}) - looping enabled")
         
         # Build background from video: scale to FILL canvas (preserving aspect ratio), apply blur and dim
         # Using Gaussian blur (gblur) for smooth, high-quality background.
@@ -3032,14 +3058,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
-        if gpu_filters and USE_HARDWARE_DECODING and not needs_stream_loop:
+        if gpu_filters and USE_HARDWARE_DECODING and not bg_needs_stream_loop:
             # GPU-accelerated decode + CPU Gaussian blur: high-quality blur path.
             # GPU handles fast decode via -hwaccel cuda, then hwdownload transfers frames
             # to CPU where gblur (Gaussian) runs on the half-resolution image.
             # gblur produces smoother, more natural results than boxblur.
             # NVENC handles encoding at the end.
             bg_vf = (
-                f"{setpts_filter}hwdownload,format=nv12,"
+                f"{bg_setpts_filter}hwdownload,format=nv12,"
                 f"{bg_crop_part}"
                 f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
@@ -3051,7 +3077,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             log_fn(f"[EXPORT] Pass 1 using GPU decode + CPU gblur sigma={blur_sigma} (blur_down={blur_down_w}x{blur_down_h}, encode={bg_encode_w}x{bg_encode_h})")
         else:
             bg_vf = (
-                f"{setpts_filter}{bg_crop_part}"
+                f"{bg_setpts_filter}{bg_crop_part}"
                 f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
                 f"scale={blur_down_w}:{blur_down_h}:flags=lanczos,"
@@ -3107,9 +3133,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Use -hwaccel cuda for fast decode even though the blur filter chain runs on
         # CPU (hwdownload transfers frames). GPU decode is still faster than CPU decode,
         # and the background is a one-time pre-render so the transfer overhead is minimal.
-        if use_gpu and USE_HARDWARE_DECODING and gpu_filters and not needs_stream_loop:
+        if use_gpu and USE_HARDWARE_DECODING and gpu_filters and not bg_needs_stream_loop:
             bg_cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
-        if needs_stream_loop:
+        if bg_needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
         # Add filter threading for CPU filter processing.
         # GPU path: GPU handles decode, CPU handles crop + scale + gblur.
@@ -3152,7 +3178,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
-        blur_mode = "GPU decode + CPU gblur" if (gpu_filters and not needs_stream_loop) else f"CPU gblur sigma={blur_sigma}"
+        blur_mode = "GPU decode + CPU gblur" if (gpu_filters and not bg_needs_stream_loop) else f"CPU gblur sigma={blur_sigma}"
         blur_detail = f"(downscale {video_width}→{blur_down_w}, gblur sigma={blur_sigma})"
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
         log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} {blur_detail}, encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
