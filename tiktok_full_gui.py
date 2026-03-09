@@ -3028,21 +3028,40 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
-        # GPU path: scale_cuda needed first (input is on GPU), then hwdownload to CPU.
-        # Crop uses iw/ih (relative), so it works correctly after any initial scale.
+        # GPU-accelerated blur: use scale_cuda downscale→upscale instead of CPU boxblur.
+        # Aggressive downscale destroys detail (like blur), then upscale interpolation
+        # creates smooth result — entire blur runs on GPU, no hwdownload needed for it.
+        # Blur factor: larger small_blur → more aggressive downscale → stronger blur
+        gpu_blur_factor = max(2, small_blur // 2)
+        gpu_tiny_w = max(blur_down_w // gpu_blur_factor, 4) & ~1  # e.g. 270//4=68
+        gpu_tiny_h = max(blur_down_h // gpu_blur_factor, 4) & ~1  # e.g. 480//4=120
+        # Pre-check if spot blur will be active (needs CPU filters after hwdownload)
+        has_bg_spot_blur = (effect_settings or {}).get('blur_overlay_enabled', False)
+        # Determine if any CPU-only filters are needed after GPU blur
+        needs_cpu_post = bool(bg_crop_part) or bool(eq_part) or has_bg_spot_blur
+        bg_full_gpu = False  # True when entire pipeline stays on GPU (no hwdownload)
         if gpu_filters and not needs_stream_loop:
-            bg_vf = (
-                f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h},"
-                f"hwdownload,format=nv12,"
-                f"{bg_crop_part}"
-                f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
-                f"crop={video_width}:{video_height},"
-                f"scale={blur_down_w}:{blur_down_h},"
-                f"boxblur={small_blur}:{small_blur},"
-                f"{eq_part}"
-                f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
-            )
-            log_fn(f"[EXPORT] Pass 1 using GPU scale_cuda → fast CPU boxblur pipeline (downscale {video_width}→{blur_down_w}, blur={small_blur}, encode={bg_encode_w}x{bg_encode_h})")
+            if needs_cpu_post:
+                # Hybrid: GPU blur via scale_cuda, then hwdownload for CPU post-processing
+                bg_vf = (
+                    f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h},"
+                    f"scale_cuda={gpu_tiny_w}:{gpu_tiny_h},"
+                    f"scale_cuda={bg_encode_w}:{bg_encode_h},"
+                    f"hwdownload,format=nv12,"
+                    f"{bg_crop_part}"
+                    f"{eq_part}"
+                    f"setsar=1:1"
+                )
+                log_fn(f"[EXPORT] Pass 1 using GPU scale_cuda blur → CPU post-process (tiny={gpu_tiny_w}x{gpu_tiny_h}, encode={bg_encode_w}x{bg_encode_h})")
+            else:
+                # Full GPU pipeline: blur + encode on GPU, no hwdownload at all!
+                bg_full_gpu = True
+                bg_vf = (
+                    f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h},"
+                    f"scale_cuda={gpu_tiny_w}:{gpu_tiny_h},"
+                    f"scale_cuda={bg_encode_w}:{bg_encode_h}"
+                )
+                log_fn(f"[EXPORT] Pass 1 using full GPU blur pipeline (scale_cuda only, tiny={gpu_tiny_w}x{gpu_tiny_h}, encode={bg_encode_w}x{bg_encode_h})")
         else:
             bg_vf = (
                 f"{setpts_filter}{bg_crop_part}"
@@ -3106,12 +3125,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             bg_cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
-        # Add filter threading for CPU filter processing (boxblur, scale, crop).
-        # Even in the GPU path, after hwdownload the boxblur and scale run on CPU,
-        # so threading helps in ALL cases. When GPU is active, use half CPU cores
-        # to keep CPU at ~50-60% and let GPU handle encoding.
+        # Add filter threading for CPU filter processing.
+        # For full GPU blur path, minimal CPU work. For hybrid/CPU paths,
+        # CPU handles post-processing. When GPU is active, use half CPU cores
+        # to keep CPU at ~50-60% and let GPU handle blur + encoding.
         total_cores = os.cpu_count() or 4
-        if use_gpu:
+        if bg_full_gpu:
+            cpu_threads = max(2, min(total_cores // 4, 4))  # Minimal: GPU does all work
+        elif use_gpu:
             cpu_threads = max(2, min(total_cores // 2, 8))
         else:
             cpu_threads = min(total_cores, 8)
@@ -3146,10 +3167,16 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if bg_duration_limit:
             bg_cmd.extend(["-t", f"{bg_duration_limit:.3f}"])
         
-        bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
+        # For full GPU pipeline, NVENC encodes directly from CUDA surfaces (NV12).
+        # Adding -pix_fmt yuv420p would force hwdownload, defeating the purpose.
+        if bg_full_gpu:
+            bg_cmd.extend([bg_prerendered_path])
+        else:
+            bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
+        blur_mode = "full GPU (scale_cuda)" if bg_full_gpu else ("GPU blur + CPU post" if (gpu_filters and not needs_stream_loop) else f"CPU boxblur={small_blur}")
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
-        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={small_blur} (downscaled {video_width}→{blur_down_w}), encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
+        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} (downscale {video_width}→{gpu_tiny_w if (gpu_filters and not needs_stream_loop) else blur_down_w}), encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
         log_fn(f"[EXPORT]   Command: {' '.join(bg_cmd)}")
         bg_timeout = max(300, int((bg_duration_limit or 60) * 5))  # 5x video duration, min 5 min
         bg_result = subprocess.run(bg_cmd, capture_output=True, text=True, timeout=bg_timeout)
