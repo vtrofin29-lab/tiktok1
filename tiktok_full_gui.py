@@ -1917,6 +1917,8 @@ def extract_and_scale_frame(video_path, time_sec=None, desired_width=360):
     w, h = img.size
     if w <= 0:
         w = 1
+    if h <= 0:
+        h = 1
     scale = desired_width / w
     new_w = desired_width
     new_h = int(round(h * scale))
@@ -6670,6 +6672,8 @@ class App:
             zoom = float(self.zoom_var.get())
             if crop_w <= 0:
                 crop_w = 1
+            if crop_h <= 0:
+                crop_h = 1
             width_scale = WIDTH / crop_w
             base_scale_factor = 1.03
             
