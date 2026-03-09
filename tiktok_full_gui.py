@@ -3053,7 +3053,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Add eq brightness filter: handles both dimming and NV12 brightness compensation
         eq_part = f"eq=brightness={eq_brightness:.2f}," if abs(eq_brightness) > 0.001 else ""
         # Build user crop filter for background (same crop as foreground)
-        keep_ratio = 1.0 - crop_top_ratio - crop_bottom_ratio
+        keep_ratio = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
         bg_crop_part = ""
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
@@ -3111,14 +3111,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # are relative to the encode resolution. The crop removes the same
             # top/bottom as the foreground, so Y must be adjusted for the crop.
             bg_keep = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
-            bg_bx = max(0, int(bg_encode_w * bx_pct / 100.0)) & ~1
-            bg_by = max(0, int(bg_encode_h * (by_pct / 100.0 - crop_top_ratio) / bg_keep)) & ~1
+            bg_bx = min(max(0, int(bg_encode_w * bx_pct / 100.0)), max(0, bg_encode_w - 2)) & ~1
+            bg_by = min(max(0, int(bg_encode_h * (by_pct / 100.0 - crop_top_ratio) / bg_keep)), max(0, bg_encode_h - 2)) & ~1
             bg_bw = max(2, int(bg_encode_w * bw_pct / 100.0)) & ~1
             bg_bh = max(2, int(bg_encode_h * bh_pct / (100.0 * bg_keep))) & ~1
             if bg_bx + bg_bw > bg_encode_w:
-                bg_bw = (bg_encode_w - bg_bx) & ~1
+                bg_bw = max(2, (bg_encode_w - bg_bx) & ~1)
             if bg_by + bg_bh > bg_encode_h:
-                bg_bh = (bg_encode_h - bg_by) & ~1
+                bg_bh = max(2, (bg_encode_h - bg_by) & ~1)
             bg_b_blur = max(2, b_intensity)
             # Clamp boxblur radius to respect YUV420p chroma plane limits.
             # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
@@ -3320,16 +3320,16 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Y: the top crop_top_ratio of the original is removed, and the visible
             #    area (keep_ratio) maps to fg_h. So original Y% must be adjusted:
             #    canvas_y = fg_y_off + (by_pct/100 - crop_top_ratio) / keep_ratio * fg_h
-            bx_px = max(0, fg_x_off + int(fg_w * bx_pct / 100.0)) & ~1
-            by_px = max(0, fg_y_off + int(fg_h * (by_pct / 100.0 - crop_top_ratio) / keep_ratio)) & ~1
+            bx_px = min(max(0, fg_x_off + int(fg_w * bx_pct / 100.0)), max(0, video_width - 2)) & ~1
+            by_px = min(max(0, fg_y_off + int(fg_h * (by_pct / 100.0 - crop_top_ratio) / keep_ratio)), max(0, video_height - 2)) & ~1
             bw_px = max(2, int(fg_w * bw_pct / 100.0)) & ~1
             bh_px = max(2, int(fg_h * bh_pct / (100.0 * keep_ratio))) & ~1
             
             # Clamp to fit within frame
             if bx_px + bw_px > video_width:
-                bw_px = (video_width - bx_px) & ~1
+                bw_px = max(2, (video_width - bx_px) & ~1)
             if by_px + bh_px > video_height:
-                bh_px = (video_height - by_px) & ~1
+                bh_px = max(2, (video_height - by_px) & ~1)
             b_blur = max(2, b_intensity)
             # Clamp boxblur radius to respect YUV420p chroma plane limits.
             # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
