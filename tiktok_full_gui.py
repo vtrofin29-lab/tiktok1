@@ -7222,6 +7222,109 @@ class App:
             except Exception:
                 pass
 
+    def on_caption_font_size_changed(self, val):
+        """Callback when caption font size slider changes."""
+        try:
+            # val comes as string; set global and update label
+            try:
+                size = int(float(val))
+            except Exception:
+                try:
+                    size = int(val)
+                except Exception:
+                    size = 56
+            # Clamp to valid range
+            size = max(20, min(120, size))
+            globals()['CAPTION_FONT_SIZE'] = size
+            try:
+                if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
+                    self.caption_font_size_label.config(text=f"{size}px")
+            except Exception:
+                pass
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[FONT-SIZE-CHANGE] Font size changed to: {size}px\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+            
+            # Update mini preview to show new font size - FORCE REDRAW
+            try:
+                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
+                    # Redraw the mini preview with updated caption
+                    top_pct = float(self.top_percent_var.get())/100.0
+                    bottom_pct = float(self.bottom_percent_var.get())/100.0
+                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
+                    # Use centralized redraw method that includes caption indicator
+                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
+                    # Force canvas update
+                    self.mini_canvas.update_idletasks()
+                    
+            except Exception as e:
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[FONT-SIZE-UPDATE-ERR] {e}\n")
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[FONT-SIZE-ERR] {e}\n")
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def on_words_per_caption_changed(self, *args):
+        """Callback when words per caption spinbox changes."""
+        try:
+            # Get the new value from spinbox
+            try:
+                words = self.words_per_caption_var.get()
+            except Exception:
+                words = 2
+            # Clamp to valid range
+            words = max(1, min(3, words))
+            
+            # Update the global WORDS_PER_GROUP
+            globals()['WORDS_PER_GROUP'] = words
+            
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[WORDS-PER-CAPTION] Changed to: {words} words\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+            
+            # Update mini preview to show new sample text - FORCE REDRAW
+            try:
+                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
+                    # Redraw the mini preview with updated caption
+                    top_pct = float(self.top_percent_var.get())/100.0
+                    bottom_pct = float(self.bottom_percent_var.get())/100.0
+                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
+                    # Use centralized redraw method that includes caption indicator
+                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
+                    # Force canvas update
+                    self.mini_canvas.update_idletasks()
+                    
+            except Exception as e:
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[WORDS-UPDATE-ERR] {e}\n")
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[WORDS-ERR] {e}\n")
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
     def on_template_selected(self, event=None):
         try:
             sel = (self.template_var.get() if hasattr(self, 'template_var') else '2 words').strip()
