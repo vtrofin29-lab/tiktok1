@@ -3028,8 +3028,6 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
-        # Pre-check if spot blur will be active (needs CPU filters after hwdownload)
-        has_bg_spot_blur = (effect_settings or {}).get('blur_overlay_enabled', False)
         if gpu_filters and not needs_stream_loop:
             # GPU-accelerated blur: GPU decodes and downscales (fast!), then hwdownload
             # to CPU for boxblur which produces the same smooth, high-quality blur as
