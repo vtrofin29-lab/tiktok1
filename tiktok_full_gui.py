@@ -3099,10 +3099,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             bg_cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
-        # Add filter threading for CPU filter path (scale, crop, boxblur)
-        if not gpu_filters:
-            cpu_threads = min(os.cpu_count() or 4, 8)
-            bg_cmd.extend(["-filter_threads", str(cpu_threads)])
+        # Add filter threading for CPU filter processing (boxblur, scale, crop).
+        # Even in the GPU path, after hwdownload the boxblur and scale run on CPU,
+        # so threading helps in ALL cases.
+        cpu_threads = min(os.cpu_count() or 4, 8)
+        bg_cmd.extend(["-filter_threads", str(cpu_threads)])
         # When spot blur is enabled on the background, we need -filter_complex
         # because the split→crop→overlay graph requires named streams.
         if bg_spot_blur:
@@ -3156,10 +3157,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Decide if we can use full GPU pipeline for Pass 2.
         # overlay_cuda requires both inputs in CUDA memory and no CPU-only filters after it.
-        # Subtitles (ass/drawtext) are CPU-only, so if we have captions we need CPU overlay
-        # OR we do GPU overlay first, then hwdownload for subtitle burn-in.
+        # Subtitles (ass/drawtext) are CPU-only, so if we have captions we use a HYBRID
+        # pipeline: GPU overlay_cuda for the expensive bg+fg composite, then hwdownload
+        # for CPU caption burn-in. This offloads the overlay to GPU and frees CPU cores.
         has_captions = (use_subtitle_file and ass_subtitle_path) or caption_filters
         use_gpu_overlay = gpu_filters and not has_captions and not mirror_video
+        # Hybrid GPU: use overlay_cuda even with captions, then hwdownload for CPU captions
+        use_gpu_hybrid = gpu_filters and has_captions and not mirror_video
         
         if use_gpu_overlay:
             # Full GPU pipeline: hwupload both inputs → overlay_cuda
@@ -3179,8 +3183,22 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             if bg_needs_upscale:
                 log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
             log_fn("[EXPORT] ✓ Using GPU-accelerated overlay_cuda (full GPU pipeline)")
+        elif use_gpu_hybrid:
+            # Hybrid GPU pipeline: GPU overlay_cuda for bg+fg, then hwdownload for
+            # CPU-only caption/subtitle burn-in. This offloads the most expensive filter
+            # (overlay) to GPU, freeing CPU cores for caption rendering.
+            fg_prep = f"[1:v]{setpts_filter}hwupload_cuda[fg_ready]"
+            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}," if bg_needs_upscale else "[0:v]"
+            filter_parts = [
+                fg_prep,
+                f"{bg_scale_prefix}hwupload_cuda[bg_cuda]",
+                "[bg_cuda][fg_ready]overlay_cuda=x=(W-w)/2:y=(H-h)/2,hwdownload,format=nv12"
+            ]
+            if bg_needs_upscale:
+                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
+            log_fn("[EXPORT] ✓ Hybrid GPU pipeline: overlay_cuda → hwdownload → CPU captions")
         else:
-            # CPU overlay pipeline (when captions or mirror are needed)
+            # CPU overlay pipeline (when mirror is needed or no GPU filters)
             if mirror_video:
                 fg_prep = f"[1:v]{setpts_filter}hflip[fg_ready]"
                 log_fn("[EXPORT] ✓ Mirror/flip filter added")
@@ -3260,6 +3278,10 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             filter_parts.append(f"[_bo_main][_bo_blurred]overlay={bx_px}:{by_px}")
             log_fn(f"[EXPORT] ✓ Blur overlay: pos=({bx_px},{by_px}) size={bw_px}x{bh_px} blur={b_blur} fg={fg_w}x{fg_h} offset=({fg_x_off},{fg_y_off})")
 
+        # Apply captions/subtitles and effects for CPU and hybrid GPU pipelines.
+        # In both cases, frames are in CPU memory at this point:
+        # - CPU path: frames were never on GPU
+        # - Hybrid GPU path: frames are in CPU after hwdownload,format=nv12
         if not use_gpu_overlay:
             if use_subtitle_file and ass_subtitle_path:
                 # Use ass subtitle filter (burns subtitles into video)
@@ -3329,14 +3351,16 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # [2:a] = audio
         cmd = ["ffmpeg", "-y"]
         
-        # GPU hardware decoding: only use when GPU overlay is active (full GPU pipeline).
-        # When the filter chain is CPU-based (overlay + captions), GPU decoding forces
-        # GPU→CPU transfer for BOTH video inputs on every frame. This pegs the GPU at
-        # 100% with PCI-e transfers without actually speeding up the export. Letting the
-        # CPU decode avoids this overhead — GPU is reserved for NVENC encoding only.
+        # GPU hardware decoding: use for full GPU pipeline only.
+        # Full GPU: decoded frames stay in CUDA memory → overlay_cuda → hwdownload.
+        # Hybrid GPU: CPU decodes both inputs (bg is tiny, fg is main video), then
+        #   hwupload_cuda in the filter chain uploads them to GPU for overlay_cuda.
+        #   This avoids the complexity of mixed CUDA/CPU decoded inputs.
         if use_gpu and USE_HARDWARE_DECODING and use_gpu_overlay:
             cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
             log_fn("[EXPORT] ✓ GPU hardware decoding + GPU overlay (full GPU pipeline)")
+        elif use_gpu and use_gpu_hybrid:
+            log_fn("[EXPORT] ✓ Hybrid GPU pipeline: CPU decode → GPU overlay_cuda → CPU captions → GPU NVENC")
         elif use_gpu:
             log_fn("[EXPORT] ✓ GPU NVENC encoding (CPU decode → CPU filters → GPU encode)")
         
@@ -3346,9 +3370,10 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             "-i", audio_path,             # [2:a] Audio
         ])
         
-        # Use multiple threads for CPU filter processing (overlay, captions, effects).
+        # Use multiple threads for CPU filter processing (captions, effects, etc.).
         # This lets FFmpeg parallelize the filter_complex graph across CPU cores,
         # reducing the bottleneck that starves the GPU NVENC encoder of frames.
+        # Also applies to hybrid GPU pipeline where captions run on CPU after hwdownload.
         if not use_gpu_overlay:
             cpu_threads = min(os.cpu_count() or 4, 8)
             cmd.extend(["-filter_threads", str(cpu_threads), "-filter_complex_threads", str(cpu_threads)])

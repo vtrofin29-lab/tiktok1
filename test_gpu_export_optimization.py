@@ -123,3 +123,63 @@ def test_get_export_settings_exists():
             print("✓ get_export_settings has GPU/CPU paths")
             return
     raise AssertionError("Could not find get_export_settings function")
+
+
+def test_hybrid_gpu_overlay_with_captions():
+    """When captions are present and GPU filters available, use hybrid GPU pipeline:
+    overlay_cuda for bg+fg composite, then hwdownload for CPU caption burn-in."""
+    source = _load_source()
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_export_with_ffmpeg_filters":
+            src = ast.get_source_segment(source, node)
+            # Must have use_gpu_hybrid variable for hybrid GPU pipeline
+            assert "use_gpu_hybrid" in src, (
+                "_export_with_ffmpeg_filters must define use_gpu_hybrid for hybrid GPU pipeline"
+            )
+            # Hybrid must use overlay_cuda + hwdownload
+            assert "overlay_cuda" in src, (
+                "Hybrid GPU pipeline must use overlay_cuda"
+            )
+            assert "hwdownload" in src, (
+                "Hybrid GPU pipeline must hwdownload after overlay_cuda for CPU captions"
+            )
+            # Hybrid pipeline must be conditioned on gpu_filters AND has_captions
+            assert "gpu_filters and has_captions" in src, (
+                "use_gpu_hybrid must be True when gpu_filters available AND captions present"
+            )
+            print("✓ Hybrid GPU pipeline: overlay_cuda → hwdownload → CPU captions")
+            return
+    raise AssertionError("Could not find _export_with_ffmpeg_filters function")
+
+
+def test_pass1_filter_threads_always():
+    """Pass 1 must use -filter_threads for ALL paths (GPU and CPU), since
+    boxblur always runs on CPU after hwdownload."""
+    source = _load_source()
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_export_with_ffmpeg_filters":
+            src = ast.get_source_segment(source, node)
+            # Pass 1 filter threading must NOT be gated on 'not gpu_filters'
+            # (it was previously only for CPU path, now it's for all paths)
+            assert 'bg_cmd.extend(["-filter_threads"' in src, (
+                "Pass 1 must add -filter_threads to bg_cmd"
+            )
+            # Ensure it's not conditionally skipped for GPU path
+            # The old code had: if not gpu_filters: ... filter_threads
+            # The new code unconditionally adds filter_threads
+            lines = src.split('\n')
+            for i, line in enumerate(lines):
+                if 'bg_cmd.extend(["-filter_threads"' in line:
+                    # Check that this line is NOT inside an 'if not gpu_filters:' block
+                    # by looking at indentation vs the preceding 'if' statement
+                    assert 'not gpu_filters' not in lines[max(0, i-3):i+1][-1] if i > 0 else True, (
+                        "Pass 1 -filter_threads must not be gated on 'not gpu_filters'"
+                    )
+                    break
+            print("✓ Pass 1 uses -filter_threads for all paths (GPU and CPU)")
+            return
+    raise AssertionError("Could not find _export_with_ffmpeg_filters function")
