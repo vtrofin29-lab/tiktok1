@@ -2956,9 +2956,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Build background from video: scale to FILL canvas (preserving aspect ratio), apply blur and dim
         # Using Gaussian blur (gblur) for smooth, high-quality background.
-        # box_blur_val is computed as a base reference for deriving the gblur sigma.
-        # Minimum of 5 ensures visible blur even with small radius settings.
-        box_blur_val = max(5, blur_radius // 2)
+        # base_blur_val is a reference value derived from blur_radius, used to compute
+        # the Gaussian sigma for the downscaled image. Minimum of 5 ensures visible blur.
+        base_blur_val = max(5, blur_radius // 2)
         # brightness adjustment: dim_factor 1.0 means no dimming (full brightness)
         # FFmpeg eq filter brightness is additive (-1.0 to 1.0), so: brightness = dim_factor - 1.0
         # Note: NV12 format conversion and downscale-blur-upscale can lose ~8% brightness,
@@ -3016,7 +3016,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # this produces a smooth, high-quality background.
         blur_down_w = max(video_width // 2, 2) & ~1   # 1080→540, ensure even
         blur_down_h = max(video_height // 2, 2) & ~1  # 1920→960, ensure even
-        blur_sigma = max(3, box_blur_val * 2 // 3)    # 12→8, Gaussian sigma for half-res
+        blur_sigma = max(3, base_blur_val * 2 // 3)    # 12→8, Gaussian sigma for half-res
         # Encode background at blur_down resolution for ALL resolutions.
         # The blur already destroys detail above blur_down resolution, so encoding
         # at a higher resolution wastes GPU encoder cycles for no quality benefit.
