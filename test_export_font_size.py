@@ -763,15 +763,15 @@ def test_source_code_cuda_format_handling():
         print("✗ hwdownload must come before crop to avoid CUDA format error")
         return False
 
-    # Check bg pre-render also has correct order: scale_cuda → hwdownload → crop
+    # Check bg pre-render also uses hwdownload,format=nv12 (GPU decode + CPU boxblur path)
     export_fn_start = content.find('def _export_with_ffmpeg_filters')
     next_fn2 = content.find('\ndef ', export_fn_start + 1)
     export_body = content[export_fn_start:next_fn2] if next_fn2 != -1 else content[export_fn_start:]
 
-    if 'scale_cuda=' in export_body and 'hwdownload,format=nv12' in export_body:
-        print("✓ Background pre-render has scale_cuda → hwdownload transition")
+    if 'hwdownload,format=nv12' in export_body:
+        print("✓ Background pre-render uses hwdownload,format=nv12 (correct CUDA→CPU transition)")
     else:
-        print("✗ Background pre-render should use scale_cuda with hwdownload")
+        print("✗ Background pre-render should use hwdownload,format=nv12 for CUDA frame download")
         return False
 
     return True
