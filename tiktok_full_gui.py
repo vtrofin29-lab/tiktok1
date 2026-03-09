@@ -3120,20 +3120,24 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             if bg_by + bg_bh > bg_encode_h:
                 bg_bh = max(2, (bg_encode_h - bg_by) & ~1)
             bg_b_blur = max(2, b_intensity)
-            # Clamp boxblur radius to respect YUV420p chroma plane limits.
-            # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
-            # boxblur radius <= min(chroma_w, chroma_h) / 2 = min(crop_w, crop_h) / 4.
-            safe_blur_limit = max(2, min(bg_bw, bg_bh) // 4)
-            if bg_b_blur > safe_blur_limit:
-                log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {safe_blur_limit} (crop {bg_bw}x{bg_bh} limit)")
-                bg_b_blur = safe_blur_limit
-            bg_spot_blur = (
-                f",format=yuv420p,split[_bgm][_bgc];"
-                f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
-                f"boxblur={bg_b_blur}:2[_bgb];"
-                f"[_bgm][_bgb]overlay={bg_bx}:{bg_by}"
-            )
-            log_fn(f"[EXPORT] ✓ Background spot blur: pos=({bg_bx},{bg_by}) size={bg_bw}x{bg_bh} blur={bg_b_blur}")
+            # Clamp boxblur radius to respect FFmpeg constraints.
+            # Luma plane: radius <= min(w, h) / 2
+            # YUV420p chroma plane: radius <= min(w/2, h/2) / 2 = min(w, h) / 4
+            # Use the stricter chroma constraint for the shared radius.
+            safe_blur_limit = min(bg_bw, bg_bh) // 4
+            if safe_blur_limit < 1:
+                log_fn(f"[EXPORT] ⚠️ Background spot blur skipped: crop {bg_bw}x{bg_bh} too small for boxblur")
+            else:
+                if bg_b_blur > safe_blur_limit:
+                    log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {safe_blur_limit} (crop {bg_bw}x{bg_bh} limit)")
+                    bg_b_blur = safe_blur_limit
+                bg_spot_blur = (
+                    f",format=yuv420p,split[_bgm][_bgc];"
+                    f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
+                    f"boxblur={bg_b_blur}:2[_bgb];"
+                    f"[_bgm][_bgb]overlay={bg_bx}:{bg_by}"
+                )
+                log_fn(f"[EXPORT] ✓ Background spot blur: pos=({bg_bx},{bg_by}) size={bg_bw}x{bg_bh} blur={bg_b_blur}")
 
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         # GPU hardware decoding for background pre-render.
@@ -3331,19 +3335,23 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             if by_px + bh_px > video_height:
                 bh_px = max(2, (video_height - by_px) & ~1)
             b_blur = max(2, b_intensity)
-            # Clamp boxblur radius to respect YUV420p chroma plane limits.
-            # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
-            # boxblur radius <= min(chroma_w, chroma_h) / 2 = min(crop_w, crop_h) / 4.
-            safe_blur_limit = max(2, min(bw_px, bh_px) // 4)
-            if b_blur > safe_blur_limit:
-                log_fn(f"[EXPORT] ⚠️ Blur overlay radius {b_blur} clamped to {safe_blur_limit} (crop {bw_px}x{bh_px} limit)")
-                b_blur = safe_blur_limit
-            # Label the current composited stream and split it
-            filter_parts[-1] += "[_bo_pre]"
-            filter_parts.append("[_bo_pre]split[_bo_main][_bo_copy]")
-            filter_parts.append(f"[_bo_copy]crop={bw_px}:{bh_px}:{bx_px}:{by_px},boxblur={b_blur}:2[_bo_blurred]")
-            filter_parts.append(f"[_bo_main][_bo_blurred]overlay={bx_px}:{by_px}")
-            log_fn(f"[EXPORT] ✓ Blur overlay: pos=({bx_px},{by_px}) size={bw_px}x{bh_px} blur={b_blur} fg={fg_w}x{fg_h} offset=({fg_x_off},{fg_y_off})")
+            # Clamp boxblur radius to respect FFmpeg constraints.
+            # Luma plane: radius <= min(w, h) / 2
+            # YUV420p chroma plane: radius <= min(w/2, h/2) / 2 = min(w, h) / 4
+            # Use the stricter chroma constraint for the shared radius.
+            safe_blur_limit = min(bw_px, bh_px) // 4
+            if safe_blur_limit < 1:
+                log_fn(f"[EXPORT] ⚠️ Blur overlay skipped: crop {bw_px}x{bh_px} too small for boxblur")
+            else:
+                if b_blur > safe_blur_limit:
+                    log_fn(f"[EXPORT] ⚠️ Blur overlay radius {b_blur} clamped to {safe_blur_limit} (crop {bw_px}x{bh_px} limit)")
+                    b_blur = safe_blur_limit
+                # Label the current composited stream and split it
+                filter_parts[-1] += "[_bo_pre]"
+                filter_parts.append("[_bo_pre]split[_bo_main][_bo_copy]")
+                filter_parts.append(f"[_bo_copy]crop={bw_px}:{bh_px}:{bx_px}:{by_px},boxblur={b_blur}:2[_bo_blurred]")
+                filter_parts.append(f"[_bo_main][_bo_blurred]overlay={bx_px}:{by_px}")
+                log_fn(f"[EXPORT] ✓ Blur overlay: pos=({bx_px},{by_px}) size={bw_px}x{bh_px} blur={b_blur} fg={fg_w}x{fg_h} offset=({fg_x_off},{fg_y_off})")
 
         # Apply captions/subtitles and effects for CPU and hybrid GPU pipelines.
         # In both cases, frames are in CPU memory at this point:
