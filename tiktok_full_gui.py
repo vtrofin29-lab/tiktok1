@@ -3084,10 +3084,10 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Clamp boxblur radius to respect YUV420p chroma plane limits.
             # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
             # boxblur radius <= min(chroma_w, chroma_h) / 2 = min(crop_w, crop_h) / 4.
-            max_blur_radius = max(2, min(bg_bw, bg_bh) // 4)
-            if bg_b_blur > max_blur_radius:
-                log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {max_blur_radius} (crop {bg_bw}x{bg_bh} limit)")
-                bg_b_blur = max_blur_radius
+            safe_blur_limit = max(2, min(bg_bw, bg_bh) // 4)
+            if bg_b_blur > safe_blur_limit:
+                log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {safe_blur_limit} (crop {bg_bw}x{bg_bh} limit)")
+                bg_b_blur = safe_blur_limit
             bg_spot_blur = (
                 f",format=yuv420p,split[_bgm][_bgc];"
                 f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
@@ -3295,10 +3295,10 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Clamp boxblur radius to respect YUV420p chroma plane limits.
             # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
             # boxblur radius <= min(chroma_w, chroma_h) / 2 = min(crop_w, crop_h) / 4.
-            max_blur_radius = max(2, min(bw_px, bh_px) // 4)
-            if b_blur > max_blur_radius:
-                log_fn(f"[EXPORT] ⚠️ Blur overlay radius {b_blur} clamped to {max_blur_radius} (crop {bw_px}x{bh_px} limit)")
-                b_blur = max_blur_radius
+            safe_blur_limit = max(2, min(bw_px, bh_px) // 4)
+            if b_blur > safe_blur_limit:
+                log_fn(f"[EXPORT] ⚠️ Blur overlay radius {b_blur} clamped to {safe_blur_limit} (crop {bw_px}x{bh_px} limit)")
+                b_blur = safe_blur_limit
             # Label the current composited stream and split it
             filter_parts[-1] += "[_bo_pre]"
             filter_parts.append(f"[_bo_pre]split[_bo_main][_bo_copy]")
