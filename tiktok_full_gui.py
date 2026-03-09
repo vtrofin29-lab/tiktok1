@@ -3058,6 +3058,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
+        # Mirror the background when mirror_video is enabled so it matches the foreground.
+        # Applied after downscale for efficiency (smaller image = faster flip).
+        bg_mirror = "hflip," if mirror_video else ""
         if gpu_filters and USE_HARDWARE_DECODING and not bg_needs_stream_loop:
             # GPU-accelerated decode + CPU Gaussian blur: high-quality blur path.
             # GPU handles fast decode via -hwaccel cuda, then hwdownload transfers frames
@@ -3070,6 +3073,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
                 f"scale={blur_down_w}:{blur_down_h}:flags=lanczos,"
+                f"{bg_mirror}"
                 f"gblur=sigma={blur_sigma},"
                 f"{eq_part}"
                 f"scale={bg_encode_w}:{bg_encode_h}:flags=lanczos,setsar=1:1"
@@ -3081,10 +3085,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
                 f"scale={blur_down_w}:{blur_down_h}:flags=lanczos,"
+                f"{bg_mirror}"
                 f"gblur=sigma={blur_sigma},"
                 f"{eq_part}"
                 f"scale={bg_encode_w}:{bg_encode_h}:flags=lanczos,setsar=1:1"
             )
+        if mirror_video:
+            log_fn("[EXPORT] ✓ Background mirror/flip applied in Pass 1")
         
         # ── Spot blur on background ──
         # If spot blur is enabled, also apply it to the blurred background so that
@@ -3878,13 +3885,13 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
             
             # Determine background source path
-            # Use original (uncropped) video for background blur - NOT the pre-rendered foreground.
-            # The foreground is already cropped/scaled; using it as bg would show wrong crop and bad blur.
-            bg_source_path = original_video_path if original_video_path and os.path.exists(original_video_path) else fg_video_path
-            if bg_source_path != fg_video_path:
-                log(f"[EXPORT] Using original video for background blur: {os.path.basename(bg_source_path)}")
-            else:
-                log("[EXPORT] ⚠️ No original video path available, using foreground as background source")
+            # Use the SAME foreground video as the background source to guarantee
+            # perfect frame-level timing sync. Using the original video would cause
+            # 1-2 second drift because of fps/duration mismatches between the
+            # speed-adjusted foreground and original video. The heavy blur makes any
+            # crop/scale differences invisible.
+            bg_source_path = fg_video_path
+            log("[EXPORT] Using foreground video as background source for perfect timing sync")
             
             # Export with FFmpeg filters
             ffmpeg_export_successful = _export_with_ffmpeg_filters(
