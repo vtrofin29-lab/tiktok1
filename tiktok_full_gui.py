@@ -2955,7 +2955,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 log_fn(f"[EXPORT] Video is being slowed down (factor={speed_factor:.4f}) - looping enabled")
         
         # Build background from video: scale to FILL canvas (preserving aspect ratio), apply blur and dim
-        # FFmpeg boxblur approximates Gaussian blur; halving the radius gives similar visual results.
+        # Using Gaussian blur (gblur) for smooth, high-quality background.
+        # box_blur_val is computed as a base reference for deriving the gblur sigma.
         # Minimum of 5 ensures visible blur even with small radius settings.
         box_blur_val = max(5, blur_radius // 2)
         # brightness adjustment: dim_factor 1.0 means no dimming (full brightness)
@@ -2967,7 +2968,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # ── TWO-PASS STRATEGY ──
         # Pass 1: Pre-render blurred background video to a temp file.
-        #         Heavy CPU filters (boxblur, scale, crop, eq) run here.
+        #         Heavy CPU filters (gblur, scale, crop, eq) run here.
         # Pass 2: Final encode uses two simple inputs (bg + fg) with just
         #         overlay + captions. GPU NVENC can encode at full speed
         #         because the filter chain is lightweight.
@@ -3008,11 +3009,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # This makes the blurred background match the foreground content area.
         #
         # Optimization: downscale-blur-upscale trick for much faster blur processing.
-        # Instead of boxblur=12 on 1080x1920 (2M pixels, ~1.25B ops/frame),
-        # downscale 4x → smaller blur → upscale back (~200x fewer operations).
-        blur_down_w = max(video_width // 4, 2) & ~1   # 1080→270, ensure even
-        blur_down_h = max(video_height // 4, 2) & ~1  # 1920→480, ensure even
-        small_blur = max(2, box_blur_val // 3)         # 12→4, proportionally reduced
+        # Instead of gblur on 1080x1920 (2M pixels), downscale 2x → blur on
+        # half-res → upscale back (~4x fewer operations, still fast).
+        # Using 2x (not 4x) downscale preserves more detail and reduces upscale
+        # artifacts. Combined with Gaussian blur (gblur) instead of boxblur,
+        # this produces a smooth, high-quality background.
+        blur_down_w = max(video_width // 2, 2) & ~1   # 1080→540, ensure even
+        blur_down_h = max(video_height // 2, 2) & ~1  # 1920→960, ensure even
+        blur_sigma = max(3, box_blur_val * 2 // 3)    # 12→8, Gaussian sigma for half-res
         # Encode background at blur_down resolution for ALL resolutions.
         # The blur already destroys detail above blur_down resolution, so encoding
         # at a higher resolution wastes GPU encoder cycles for no quality benefit.
@@ -3029,31 +3033,31 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
         if gpu_filters and USE_HARDWARE_DECODING and not needs_stream_loop:
-            # GPU-accelerated decode + CPU boxblur: identical quality to CPU-only path.
+            # GPU-accelerated decode + CPU Gaussian blur: high-quality blur path.
             # GPU handles fast decode via -hwaccel cuda, then hwdownload transfers frames
-            # to CPU where the same crop→scale→boxblur chain runs as the CPU path.
-            # NVENC handles encoding at the end. This ensures the blur looks identical
-            # to the CPU path while still benefiting from GPU decode/encode speed.
+            # to CPU where gblur (Gaussian) runs on the half-resolution image.
+            # gblur produces smoother, more natural results than boxblur.
+            # NVENC handles encoding at the end.
             bg_vf = (
                 f"{setpts_filter}hwdownload,format=nv12,"
                 f"{bg_crop_part}"
                 f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
-                f"scale={blur_down_w}:{blur_down_h},"
-                f"boxblur={small_blur}:{small_blur},"
+                f"scale={blur_down_w}:{blur_down_h}:flags=lanczos,"
+                f"gblur=sigma={blur_sigma},"
                 f"{eq_part}"
-                f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
+                f"scale={bg_encode_w}:{bg_encode_h}:flags=lanczos,setsar=1:1"
             )
-            log_fn(f"[EXPORT] Pass 1 using GPU decode + CPU boxblur={small_blur} (blur_down={blur_down_w}x{blur_down_h}, encode={bg_encode_w}x{bg_encode_h})")
+            log_fn(f"[EXPORT] Pass 1 using GPU decode + CPU gblur sigma={blur_sigma} (blur_down={blur_down_w}x{blur_down_h}, encode={bg_encode_w}x{bg_encode_h})")
         else:
             bg_vf = (
                 f"{setpts_filter}{bg_crop_part}"
                 f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
-                f"scale={blur_down_w}:{blur_down_h},"
-                f"boxblur={small_blur}:{small_blur},"
+                f"scale={blur_down_w}:{blur_down_h}:flags=lanczos,"
+                f"gblur=sigma={blur_sigma},"
                 f"{eq_part}"
-                f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
+                f"scale={bg_encode_w}:{bg_encode_h}:flags=lanczos,setsar=1:1"
             )
         
         # ── Spot blur on background ──
@@ -3108,7 +3112,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
         # Add filter threading for CPU filter processing.
-        # GPU path: GPU handles decode, CPU handles crop + scale + boxblur.
+        # GPU path: GPU handles decode, CPU handles crop + scale + gblur.
         # When GPU is active, use half CPU cores to keep CPU at ~50-60%.
         total_cores = os.cpu_count() or 4
         if use_gpu:
@@ -3123,10 +3127,10 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         else:
             bg_cmd.extend(["-i", bg_path, "-an", "-vf", bg_vf])
         
-        # Use NVENC for bg pre-render if available, else CPU ultrafast
-        # Background is blurred — use constqp with high QP for fastest encoding
+        # Use NVENC for bg pre-render if available, else CPU
+        # Higher quality encoding since blur_down is half-res (not quarter-res)
         if use_gpu:
-            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "constqp", "-qp", "30", "-b:v", "0", "-multipass", "0"])
+            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p4", "-rc", "constqp", "-qp", "23", "-b:v", "0", "-multipass", "0"])
         else:
             bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
         
@@ -3148,8 +3152,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
-        blur_mode = "GPU decode + CPU boxblur" if (gpu_filters and not needs_stream_loop) else f"CPU boxblur={small_blur}"
-        blur_detail = f"(downscale {video_width}→{blur_down_w}, boxblur={small_blur})"
+        blur_mode = "GPU decode + CPU gblur" if (gpu_filters and not needs_stream_loop) else f"CPU gblur sigma={blur_sigma}"
+        blur_detail = f"(downscale {video_width}→{blur_down_w}, gblur sigma={blur_sigma})"
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
         log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} {blur_detail}, encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
         log_fn(f"[EXPORT]   Command: {' '.join(bg_cmd)}")
@@ -3187,8 +3191,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Full GPU pipeline: hwupload both inputs → overlay_cuda
             # No captions/effects = pure GPU path
             fg_prep = f"[1:v]{setpts_filter}hwupload_cuda[fg_ready]"
-            # If background was encoded at reduced resolution, upscale before overlay
-            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}," if bg_needs_upscale else "[0:v]"
+            # If background was encoded at reduced resolution, upscale with lanczos before overlay
+            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}:flags=lanczos," if bg_needs_upscale else "[0:v]"
             filter_parts = [
                 fg_prep,
                 f"{bg_scale_prefix}hwupload_cuda[bg_cuda]",
@@ -3199,7 +3203,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 filter_parts[-1] += f",{effect_filter_str}"
                 log_fn("[EXPORT] ✓ GPU overlay + CPU effects")
             if bg_needs_upscale:
-                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
+                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} (lanczos) in Pass 2")
             log_fn("[EXPORT] ✓ Using GPU-accelerated overlay_cuda (full GPU pipeline)")
         elif use_gpu_hybrid:
             # Hybrid GPU pipeline: GPU overlay_cuda for bg+fg, then hwdownload for
@@ -3208,14 +3212,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # When fg_hwaccel_decode is true, [1:v] is already CUDA but hwupload_cuda
             # handles CUDA→CUDA as a no-op, so we keep it for compatibility.
             fg_prep = f"[1:v]{setpts_filter}hwupload_cuda[fg_ready]"
-            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}," if bg_needs_upscale else "[0:v]"
+            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}:flags=lanczos," if bg_needs_upscale else "[0:v]"
             filter_parts = [
                 fg_prep,
                 f"{bg_scale_prefix}hwupload_cuda[bg_cuda]",
                 "[bg_cuda][fg_ready]overlay_cuda=x=(W-w)/2:y=(H-h)/2,hwdownload,format=nv12"
             ]
             if bg_needs_upscale:
-                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
+                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} (lanczos) in Pass 2")
             if fg_hwaccel_decode:
                 log_fn("[EXPORT] ✓ Hybrid GPU pipeline: GPU decode fg → overlay_cuda → hwdownload → CPU captions")
             else:
@@ -3228,11 +3232,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             else:
                 fg_prep = f"[1:v]{setpts_filter}copy[fg_ready]"
             
-            # If background was encoded at reduced resolution, upscale before overlay
+            # If background was encoded at reduced resolution, upscale with lanczos before overlay
             if bg_needs_upscale:
-                bg_prep = f"[0:v]scale={video_width}:{video_height}[bg_up]"
+                bg_prep = f"[0:v]scale={video_width}:{video_height}:flags=lanczos[bg_up]"
                 filter_parts = [fg_prep, bg_prep, "[bg_up][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
-                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
+                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} (lanczos) in Pass 2")
             else:
                 # Combine: bg + fg overlay
                 filter_parts = [fg_prep, "[0:v][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
@@ -3656,7 +3660,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         pass
     
     # Background creation is deferred until needed (MoviePy fallback only).
-    # The primary FFmpeg export path creates the blurred background via native boxblur/eq filters,
+    # The primary FFmpeg export path creates the blurred background via native gblur/eq filters,
     # so this expensive per-frame MoviePy processing is skipped when FFmpeg export succeeds.
     bg_static = None  # Will be created lazily if MoviePy fallback is needed
 

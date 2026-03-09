@@ -632,11 +632,11 @@ def test_source_code_uses_two_pass_export():
         return False
     print("✓ Background is pre-rendered to temp file")
 
-    # Check that boxblur is in the bg pre-render
-    if 'boxblur=' not in export_fn_body:
-        print("✗ boxblur not found in pre-render")
+    # Check that gblur (Gaussian blur) is in the bg pre-render
+    if 'gblur=' not in export_fn_body:
+        print("✗ gblur not found in pre-render")
         return False
-    print("✓ boxblur filter present in pre-render pass")
+    print("✓ gblur (Gaussian blur) filter present in pre-render pass")
 
     # Check two-input approach: [0:v] for bg, [1:v] for fg
     if '[1:v]' not in export_fn_body:
@@ -763,7 +763,7 @@ def test_source_code_cuda_format_handling():
         print("✗ hwdownload must come before crop to avoid CUDA format error")
         return False
 
-    # Check bg pre-render also uses hwdownload,format=nv12 (GPU decode + CPU boxblur path)
+    # Check bg pre-render also uses hwdownload,format=nv12 (GPU decode + CPU gblur path)
     export_fn_start = content.find('def _export_with_ffmpeg_filters')
     next_fn2 = content.find('\ndef ', export_fn_start + 1)
     export_body = content[export_fn_start:next_fn2] if next_fn2 != -1 else content[export_fn_start:]
@@ -883,21 +883,21 @@ def test_bg_uses_downscale_blur_upscale():
         print("✗ Missing blur_down_w/blur_down_h - no downscale optimization")
         return False
 
-    # Should have small_blur calculation
-    has_small_blur = 'small_blur' in fn_body
-    if has_small_blur:
-        print("✓ small_blur variable found (reduced blur radius for downscaled frame)")
+    # Should have blur_sigma calculation (Gaussian blur sigma for half-resolution)
+    has_blur_sigma = 'blur_sigma' in fn_body
+    if has_blur_sigma:
+        print("✓ blur_sigma variable found (Gaussian blur sigma for downscaled frame)")
     else:
-        print("✗ Missing small_blur - blur radius not reduced for downscaled frame")
+        print("✗ Missing blur_sigma - Gaussian blur sigma not calculated for downscaled frame")
         return False
 
-    # The GPU bg_vf should use scale down before boxblur then scale up
-    # Pattern: crop → scale=blur_down → boxblur=small → scale=original
-    gpu_bg_section = fn_body[fn_body.find('if gpu_filters and not needs_stream_loop'):fn_body.find('bg_cmd = [')]
-    if 'boxblur={small_blur}' in gpu_bg_section:
-        print("✓ GPU path uses small_blur (downscaled blur)")
+    # The GPU bg_vf should use scale down before gblur then scale up
+    # Pattern: crop → scale=blur_down → gblur=sigma → scale=encode
+    gpu_bg_section = fn_body[fn_body.find('if gpu_filters and USE_HARDWARE_DECODING and not needs_stream_loop'):fn_body.find('bg_cmd = [')]
+    if 'gblur=sigma={blur_sigma}' in gpu_bg_section:
+        print("✓ GPU path uses gblur with blur_sigma (Gaussian blur on downscaled frame)")
     else:
-        print("✗ GPU path doesn't use small_blur")
+        print("✗ GPU path doesn't use gblur with blur_sigma")
         return False
 
     # Should NOT have boxblur={box_blur_val} directly on full resolution
