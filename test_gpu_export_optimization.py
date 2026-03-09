@@ -168,17 +168,24 @@ def test_pass1_filter_threads_always():
             assert 'bg_cmd.extend(["-filter_threads"' in src, (
                 "Pass 1 must add -filter_threads to bg_cmd"
             )
-            # Ensure it's not conditionally skipped for GPU path
-            # The old code had: if not gpu_filters: ... filter_threads
-            # The new code unconditionally adds filter_threads
+            # Ensure it's not conditionally skipped for GPU path.
+            # The old code had: if not gpu_filters: ... bg_cmd.extend(["-filter_threads" ...])
+            # The new code unconditionally adds filter_threads.
+            # Check that none of the 10 preceding lines contain 'if not gpu_filters:'.
             lines = src.split('\n')
             for i, line in enumerate(lines):
                 if 'bg_cmd.extend(["-filter_threads"' in line:
-                    # Check that this line is NOT inside an 'if not gpu_filters:' block
-                    # by looking at indentation vs the preceding 'if' statement
-                    assert 'not gpu_filters' not in lines[max(0, i-3):i+1][-1] if i > 0 else True, (
-                        "Pass 1 -filter_threads must not be gated on 'not gpu_filters'"
-                    )
+                    preceding = '\n'.join(lines[max(0, i-10):i])
+                    # Get the indentation of the filter_threads line
+                    ft_indent = len(line) - len(line.lstrip())
+                    # Check no 'if not gpu_filters:' guard exists at the same or
+                    # lower indentation level in the preceding lines
+                    for prev_line in lines[max(0, i-10):i]:
+                        if 'not gpu_filters' in prev_line:
+                            prev_indent = len(prev_line) - len(prev_line.lstrip())
+                            assert prev_indent >= ft_indent, (
+                                "Pass 1 -filter_threads must not be gated on 'not gpu_filters'"
+                            )
                     break
             print("✓ Pass 1 uses -filter_threads for all paths (GPU and CPU)")
             return
