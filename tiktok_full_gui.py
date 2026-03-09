@@ -3028,13 +3028,16 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
-        # GPU-accelerated blur: use scale_cuda downscale→upscale instead of CPU boxblur.
-        # Aggressive downscale destroys detail (like blur), then upscale interpolation
-        # creates smooth result — entire blur runs on GPU, no hwdownload needed for it.
+        # GPU-accelerated blur: multi-pass scale_cuda downscale→upscale for smooth,
+        # intense gaussian-like blur entirely on GPU. Two downscale→upscale cycles
+        # eliminate blocky artifacts that a single pass produces.
         # Blur factor: larger small_blur → more aggressive downscale → stronger blur
-        gpu_blur_factor = max(2, small_blur // 2)
-        gpu_tiny_w = max(blur_down_w // gpu_blur_factor, 4) & ~1  # e.g. 270//4=67→66
-        gpu_tiny_h = max(blur_down_h // gpu_blur_factor, 4) & ~1  # e.g. 480//4=120
+        gpu_blur_factor = max(3, small_blur)
+        gpu_tiny_w = max(blur_down_w // gpu_blur_factor, 4) & ~1  # e.g. 270//8=33→32
+        gpu_tiny_h = max(blur_down_h // gpu_blur_factor, 4) & ~1  # e.g. 480//8=60
+        # Intermediate resolution for second blur pass (half of blur_down)
+        gpu_mid_w = max(blur_down_w // 2, 4) & ~1   # e.g. 270//2=134
+        gpu_mid_h = max(blur_down_h // 2, 4) & ~1   # e.g. 480//2=240
         # Pre-check if spot blur will be active (needs CPU filters after hwdownload)
         has_bg_spot_blur = (effect_settings or {}).get('blur_overlay_enabled', False)
         # Determine if any CPU-only filters are needed after GPU blur
@@ -3042,26 +3045,31 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         bg_full_gpu = False  # True when entire pipeline stays on GPU (no hwdownload)
         if gpu_filters and not needs_stream_loop:
             if needs_cpu_post:
-                # Hybrid: GPU blur via scale_cuda, then hwdownload for CPU post-processing
+                # Hybrid: GPU multi-pass blur via scale_cuda, then hwdownload for CPU post-processing
+                # Two downscale→upscale cycles: tiny→mid (smooth) → tiny→encode (smooth)
                 bg_vf = (
                     f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h},"
                     f"scale_cuda={gpu_tiny_w}:{gpu_tiny_h},"
-                    f"scale_cuda={bg_encode_w}:{bg_encode_h},"
+                    f"scale_cuda={gpu_mid_w}:{gpu_mid_h}:interp_algo=lanczos,"
+                    f"scale_cuda={gpu_tiny_w}:{gpu_tiny_h},"
+                    f"scale_cuda={bg_encode_w}:{bg_encode_h}:interp_algo=lanczos,"
                     f"hwdownload,format=nv12,"
                     f"{bg_crop_part}"
                     f"{eq_part}"
                     f"setsar=1:1"
                 )
-                log_fn(f"[EXPORT] Pass 1 using GPU scale_cuda blur → CPU post-process (tiny={gpu_tiny_w}x{gpu_tiny_h}, encode={bg_encode_w}x{bg_encode_h})")
+                log_fn(f"[EXPORT] Pass 1 using GPU multi-pass blur → CPU post-process (tiny={gpu_tiny_w}x{gpu_tiny_h}, mid={gpu_mid_w}x{gpu_mid_h}, encode={bg_encode_w}x{bg_encode_h})")
             else:
-                # Full GPU pipeline: blur + encode on GPU, no hwdownload at all!
+                # Full GPU pipeline: multi-pass blur + encode on GPU, no hwdownload at all!
                 bg_full_gpu = True
                 bg_vf = (
                     f"{setpts_filter}scale_cuda={bg_target_w}:{bg_target_h},"
                     f"scale_cuda={gpu_tiny_w}:{gpu_tiny_h},"
-                    f"scale_cuda={bg_encode_w}:{bg_encode_h}"
+                    f"scale_cuda={gpu_mid_w}:{gpu_mid_h}:interp_algo=lanczos,"
+                    f"scale_cuda={gpu_tiny_w}:{gpu_tiny_h},"
+                    f"scale_cuda={bg_encode_w}:{bg_encode_h}:interp_algo=lanczos"
                 )
-                log_fn(f"[EXPORT] Pass 1 using full GPU blur pipeline (scale_cuda only, tiny={gpu_tiny_w}x{gpu_tiny_h}, encode={bg_encode_w}x{bg_encode_h})")
+                log_fn(f"[EXPORT] Pass 1 using full GPU multi-pass blur pipeline (tiny={gpu_tiny_w}x{gpu_tiny_h}, mid={gpu_mid_w}x{gpu_mid_h}, encode={bg_encode_w}x{bg_encode_h})")
         else:
             bg_vf = (
                 f"{setpts_filter}{bg_crop_part}"
@@ -3174,7 +3182,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         else:
             bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
-        blur_mode = "full GPU (scale_cuda)" if bg_full_gpu else ("GPU blur + CPU post" if (gpu_filters and not needs_stream_loop) else f"CPU boxblur={small_blur}")
+        blur_mode = "full GPU multi-pass" if bg_full_gpu else ("GPU multi-pass + CPU post" if (gpu_filters and not needs_stream_loop) else f"CPU boxblur={small_blur}")
         blur_tiny = gpu_tiny_w if (gpu_filters and not needs_stream_loop) else blur_down_w
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
         log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} (downscale {video_width}→{blur_tiny}), encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
