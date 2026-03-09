@@ -3041,7 +3041,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # NVENC handles encoding at the end. This ensures the blur looks identical
             # to the CPU path while still benefiting from GPU decode/encode speed.
             bg_vf = (
-                f"{setpts_filter}hwdownload,format=yuv420p,"
+                f"{setpts_filter}hwdownload,format=nv12,"
                 f"{bg_crop_part}"
                 f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
