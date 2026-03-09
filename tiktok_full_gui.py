@@ -3033,7 +3033,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # creates smooth result — entire blur runs on GPU, no hwdownload needed for it.
         # Blur factor: larger small_blur → more aggressive downscale → stronger blur
         gpu_blur_factor = max(2, small_blur // 2)
-        gpu_tiny_w = max(blur_down_w // gpu_blur_factor, 4) & ~1  # e.g. 270//4=68
+        gpu_tiny_w = max(blur_down_w // gpu_blur_factor, 4) & ~1  # e.g. 270//4=67→66
         gpu_tiny_h = max(blur_down_h // gpu_blur_factor, 4) & ~1  # e.g. 480//4=120
         # Pre-check if spot blur will be active (needs CPU filters after hwdownload)
         has_bg_spot_blur = (effect_settings or {}).get('blur_overlay_enabled', False)
@@ -3175,8 +3175,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
         blur_mode = "full GPU (scale_cuda)" if bg_full_gpu else ("GPU blur + CPU post" if (gpu_filters and not needs_stream_loop) else f"CPU boxblur={small_blur}")
+        blur_tiny = gpu_tiny_w if (gpu_filters and not needs_stream_loop) else blur_down_w
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
-        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} (downscale {video_width}→{gpu_tiny_w if (gpu_filters and not needs_stream_loop) else blur_down_w}), encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
+        log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} (downscale {video_width}→{blur_tiny}), encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
         log_fn(f"[EXPORT]   Command: {' '.join(bg_cmd)}")
         bg_timeout = max(300, int((bg_duration_limit or 60) * 5))  # 5x video duration, min 5 min
         bg_result = subprocess.run(bg_cmd, capture_output=True, text=True, timeout=bg_timeout)
