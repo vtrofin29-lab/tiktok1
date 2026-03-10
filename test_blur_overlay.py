@@ -146,8 +146,9 @@ def test_blur_overlay_prescale_before_blur():
         if isinstance(node, ast.FunctionDef) and node.name == "_export_with_ffmpeg_filters":
             src = ast.get_source_segment(source, node)
             # Must add format=yuv420p BEFORE the split/crop/blur chain
-            # Find the FOREGROUND blur overlay section (second occurrence of blur_overlay_enabled).
-            # The first occurrence is the background crop-above-zoom section (Pass 1).
+            # Find the FOREGROUND blur overlay section (Pass 2) — second occurrence
+            # of blur_overlay_enabled. The first occurrence is the background
+            # crop-above-zoom section (Pass 1).
             first_idx = src.find("blur_overlay_enabled")
             assert first_idx != -1, "Must have blur_overlay_enabled in export function"
             blur_section_start = src.find("blur_overlay_enabled", first_idx + 1)
