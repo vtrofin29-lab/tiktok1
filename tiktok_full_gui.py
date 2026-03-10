@@ -6934,111 +6934,123 @@ class App:
             except Exception:
                 pass
 
-    def _draw_caption_indicator_on_preview(self, composed, h, top_y, bottom_y, offset):
-        """Draw the caption position indicator and SAMPLE TEXT on the mini preview canvas.
-        
-        Args:
-            composed: The composed PIL image
-            h: Canvas height
-            top_y: Top crop line Y position
-            bottom_y: Bottom crop line Y position
-            offset: Caption Y offset value
+    def _calc_caption_y_for_preview(self, h, offset):
+        """Calculate the caption baseline Y position on the preview canvas.
+
+        A bottom margin (8 % of canvas height, min 30 px) mirrors the padding
+        that the real export caption image has below its text, so the preview
+        text never sits flush against the bottom edge.
+        """
+        preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
+        bottom_margin = max(30, int(h * 0.08))
+        caption_baseline_from_bottom = int(-offset * preview_ratio)
+        caption_y = (h - bottom_margin) - caption_baseline_from_bottom
+        caption_y = max(5, min(h - bottom_margin, caption_y))
+        return caption_y
+
+    def _draw_caption_text_on_pil_image(self, composed, caption_y):
+        """Draw sample caption text directly on the PIL image for accurate preview.
+
+        Renders text as part of the image itself (same engine as export),
+        so it is never clipped by tkinter canvas widget boundaries.
         """
         try:
-            # DELETE old caption indicator items first to prevent stacking
-            self.mini_canvas.delete("caption_line")
-            self.mini_canvas.delete("caption_box")
-            self.mini_canvas.delete("caption_label")
-            self.mini_canvas.delete("caption_sample")
-            self.mini_canvas.delete("caption_sample_stroke")
-            
-            # Calculate where caption will appear on the preview
-            # offset: negative = move up, positive = move down
-            # In actual video: y = HEIGHT - caption_height + offset
-            # In preview: caption_y = h - (scaled distance from bottom)
-            # distance_from_bottom in video = HEIGHT - (HEIGHT - caption_height + offset) = caption_height - offset
-            # For indicator baseline (bottom of caption): distance_from_bottom = -offset (approximately, ignoring caption height)
-            preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
-            caption_baseline_from_bottom = int(-offset * preview_ratio)  # Negative offset means higher (less from bottom)
-            caption_y = h - caption_baseline_from_bottom
-            
-            # DO NOT clamp to crop lines - show actual caption position even if outside crop area
-            # Only clamp to canvas boundaries (0 to h)
-            caption_y = max(5, min(h - 5, caption_y))
-            
-            # Draw green dashed line showing caption baseline - PERMANENT
-            self.mini_canvas.create_line(0, caption_y, composed.width, caption_y, 
-                                        fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
-            
-            # Get current caption settings for the SAMPLE TEXT preview
             font_size = globals().get('CAPTION_FONT_SIZE', 56)
             text_color = globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255))
             stroke_color = globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 255))
-            stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)  # Get actual stroke width
-            words_per_caption = globals().get('WORDS_PER_GROUP', 2)  # Get words per caption
-            font_family = globals().get('LOADED_FONT_FAMILY', None) or globals().get('CAPTION_FONT_PREFERRED', 'Arial')
-            
-            # Scale font size for mini preview (mini canvas is much smaller than 1920px)
-            # Mini canvas height is about 380px vs 1920px actual
-            scaled_font_size = max(10, int(font_size * preview_ratio))
-            
-            # Scale stroke width for mini preview (proportional to font size scaling)
-            scaled_stroke_width = max(1, int(stroke_width * preview_ratio))
-            
-            # Convert RGB tuple to hex color
+            stroke_width_val = globals().get('CAPTION_STROKE_WIDTH', 3)
+            words_per_caption = globals().get('WORDS_PER_GROUP', 2)
+            font_path = globals().get('LOADED_FONT_PATH', None)
+
+            h = composed.height
+            preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
+            scaled_font_size = max(8, int(font_size * preview_ratio))
+            scaled_stroke = max(1, int(stroke_width_val * preview_ratio))
+
+            # Load font at preview-scaled size using the same font as export
+            pil_font = None
             try:
-                text_hex = '#%02x%02x%02x' % (text_color[0], text_color[1], text_color[2])
+                if font_path and os.path.isfile(str(font_path)):
+                    pil_font = ImageFont.truetype(str(font_path), scaled_font_size)
             except Exception:
-                text_hex = '#FFFFFF'  # Default white
-            
-            try:
-                stroke_hex = '#%02x%02x%02x' % (stroke_color[0], stroke_color[1], stroke_color[2])
-            except Exception:
-                stroke_hex = '#000000'  # Default black
-            
-            # Create font tuple for tkinter canvas
-            # Use the loaded font family name, tkinter handles unknown fonts gracefully
-            canvas_font = (font_family if font_family else "Arial", scaled_font_size, "bold")
-            
-            # Generate sample text based on words per caption setting (max 3 words)
+                pass
+            if pil_font is None:
+                try:
+                    pil_font = ImageFont.truetype("DejaVuSans-Bold.ttf", scaled_font_size)
+                except Exception:
+                    try:
+                        pil_font = ImageFont.truetype("DejaVuSans.ttf", scaled_font_size)
+                    except Exception:
+                        pil_font = ImageFont.load_default()
+
+            # Generate sample text
             word_list = ["WORD", "ONE", "TWO"]
             sample_words = word_list[:min(words_per_caption, len(word_list))]
             sample_text = " ".join(sample_words)
-            
-            text_x = composed.width // 2
-            # Use anchor="s" (south/bottom) so text grows upward from the baseline,
-            # preventing bottom clipping when font size increases
-            text_y = caption_y
-            
-            # Draw stroke (outline) effect by drawing text at the outer boundary only
-            # This is more efficient than drawing at every pixel of the stroke width
-            stroke_offsets = [
-                (-scaled_stroke_width, -scaled_stroke_width), (-scaled_stroke_width, scaled_stroke_width),
-                (scaled_stroke_width, -scaled_stroke_width), (scaled_stroke_width, scaled_stroke_width),
-                (-scaled_stroke_width, 0), (scaled_stroke_width, 0),
-                (0, -scaled_stroke_width), (0, scaled_stroke_width)
-            ]
-            
-            for dx, dy in stroke_offsets:
-                self.mini_canvas.create_text(text_x + dx, text_y + dy, 
-                                            text=sample_text, anchor="s",
-                                            fill=stroke_hex, font=canvas_font, 
-                                            tags="caption_sample_stroke")
-            
-            # Draw main caption text
-            self.mini_canvas.create_text(text_x, text_y, 
-                                        text=sample_text, anchor="s",
-                                        fill=text_hex, font=canvas_font, 
-                                        tags="caption_sample")
-            
-            # Draw small info label below the baseline (clamped to canvas)
+
+            # Create transparent overlay for text compositing
+            img_rgba = composed.convert("RGBA")
+            txt_layer = Image.new("RGBA", img_rgba.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(txt_layer)
+
+            # Get text dimensions for centering
+            bbox = draw.textbbox((0, 0), sample_text, font=pil_font)
+            text_w = bbox[2] - bbox[0]
+            text_h = bbox[3] - bbox[1]
+
+            # Center horizontally; bottom of text sits at caption_y
+            text_x = (composed.width - text_w) // 2
+            text_y = caption_y - text_h - scaled_stroke
+
+            # Prepare colors (ensure 4-tuple RGBA)
+            text_fill = (int(text_color[0]), int(text_color[1]), int(text_color[2]), 255)
+            stroke_fill = (int(stroke_color[0]), int(stroke_color[1]), int(stroke_color[2]), 255)
+
+            # Draw text with stroke using Pillow's built-in stroke support
+            try:
+                draw.text((text_x, text_y), sample_text, font=pil_font,
+                          fill=text_fill, stroke_width=scaled_stroke, stroke_fill=stroke_fill)
+            except TypeError:
+                # Fallback for older Pillow without stroke_width parameter
+                for dx in range(-scaled_stroke, scaled_stroke + 1):
+                    for dy in range(-scaled_stroke, scaled_stroke + 1):
+                        if abs(dx) + abs(dy) <= scaled_stroke * 2:
+                            draw.text((text_x + dx, text_y + dy), sample_text,
+                                      font=pil_font, fill=stroke_fill)
+                draw.text((text_x, text_y), sample_text, font=pil_font, fill=text_fill)
+
+            return Image.alpha_composite(img_rgba, txt_layer)
+
+        except Exception:
+            return composed
+
+    def _draw_caption_indicator_on_preview(self, composed, h, top_y, bottom_y, offset):
+        """Draw the caption position indicator line and info label on the canvas.
+
+        The sample text is rendered on the PIL image (via _draw_caption_text_on_pil_image)
+        before it reaches the canvas, so only the green guide line and info label are
+        drawn here as canvas overlays.
+        """
+        try:
+            self.mini_canvas.delete("caption_line")
+            self.mini_canvas.delete("caption_label")
+
+            caption_y = self._calc_caption_y_for_preview(h, offset)
+
+            # Draw green dashed line showing caption baseline
+            self.mini_canvas.create_line(0, caption_y, composed.width, caption_y,
+                                        fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
+
+            # Info label
+            font_size = globals().get('CAPTION_FONT_SIZE', 56)
+            words_per_caption = globals().get('WORDS_PER_GROUP', 2)
             info_text = f"Y: {offset}px | Size: {font_size}px | Words: {words_per_caption}"
             label_y = min(h - 2, caption_y + 12)
-            self.mini_canvas.create_text(text_x, label_y, 
+            self.mini_canvas.create_text(composed.width // 2, label_y,
                                         text=info_text, anchor="s",
-                                        fill="#00FF00", font=("Arial", 8), 
+                                        fill="#00FF00", font=("Arial", 8),
                                         tags="caption_label")
-                
+
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -7051,12 +7063,21 @@ class App:
         """Helper to redraw the entire mini canvas with crop lines and caption indicator.
         
         This ensures the caption indicator is ALWAYS drawn on every mini preview update.
+        Caption sample text is rendered on the PIL image (not as canvas overlay)
+        so it is never clipped by the canvas widget boundaries.
         """
         try:
-            photo = ImageTk.PhotoImage(composed)
             h = composed.height
             top_y = int(round(h * top_pct))
             bottom_y = int(round(h * (1.0 - bottom_pct)))
+            y_offset = globals().get('CAPTION_Y_OFFSET', 0)
+
+            # Render caption sample text on the PIL image BEFORE creating PhotoImage.
+            # This avoids canvas clipping and matches the export rendering engine.
+            caption_y = self._calc_caption_y_for_preview(h, y_offset)
+            composed_with_text = self._draw_caption_text_on_pil_image(composed, caption_y)
+
+            photo = ImageTk.PhotoImage(composed_with_text)
             
             # Clear and redraw canvas
             self.mini_canvas.delete("all")
