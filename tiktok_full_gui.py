@@ -6964,7 +6964,7 @@ class App:
 
             h = composed.height
             preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
-            scaled_font_size = max(8, int(font_size * preview_ratio))
+            scaled_font_size = max(10, int(font_size * preview_ratio))
             scaled_stroke = max(1, int(stroke_width_val * preview_ratio))
 
             # Load font at preview-scaled size using the same font as export
