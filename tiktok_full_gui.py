@@ -1801,8 +1801,28 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
     return removed
 
 def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
-    import torch    # lazy import — heavy module, only loaded when transcription is needed
-    import whisper  # lazy import — heavy module, only loaded when transcription is needed
+    # Lazy import — heavy modules, only loaded when transcription is needed.
+    # Wrapped in try/except because torch can crash during init on broken
+    # installations (DLL errors, CUDA library mismatches on Windows, etc.).
+    try:
+        import torch
+    except Exception as e:
+        msg = (f"PyTorch nu poate fi încărcat: {e}\n"
+               "Reinstalează PyTorch:\n"
+               "  pip uninstall torch torchvision torchaudio\n"
+               "  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+        if log:
+            log(f"[whisper] ❌ {msg}")
+        raise RuntimeError(msg) from e
+    try:
+        import whisper
+    except Exception as e:
+        msg = (f"Whisper nu poate fi încărcat: {e}\n"
+               "Reinstalează whisper:\n"
+               "  pip install --upgrade openai-whisper")
+        if log:
+            log(f"[whisper] ❌ {msg}")
+        raise RuntimeError(msg) from e
     last_exc = None
     
     # Detect GPU availability for Whisper with improved detection
