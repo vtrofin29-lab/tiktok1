@@ -3097,50 +3097,61 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             log_fn("[EXPORT] ✓ Background mirror/flip applied in Pass 1")
         
         # ── Spot blur on background ──
-        # If spot blur is enabled, also apply it to the blurred background so that
-        # the covered area is hidden on both the foreground and background layers.
-        # This requires -filter_complex (split → crop+boxblur → overlay).
-        # Coordinates are relative to bg_encode resolution (may be half of video_width
-        # for 4K to reduce GPU load).
+        # When spot blur is enabled, crop the background to the area ABOVE the
+        # spot blur region and zoom to fill. This completely hides the spot blur
+        # area from the background — no blurred trace is visible.
+        # Fallback: if the spot blur is too close to the top (not enough area to
+        # crop above), use the old split→crop→boxblur→overlay approach.
         bg_spot_blur = ""
         bg_blur_ov = effect_settings or {}
         if bg_blur_ov.get('blur_overlay_enabled', False):
-            bx_pct = float(bg_blur_ov.get('blur_overlay_x', 10))
             by_pct = float(bg_blur_ov.get('blur_overlay_y', 10))
-            bw_pct = float(bg_blur_ov.get('blur_overlay_w', 20))
-            bh_pct = float(bg_blur_ov.get('blur_overlay_h', 15))
-            b_intensity = int(bg_blur_ov.get('blur_overlay_intensity', 20))
             # Background fills the entire canvas after crop+scale, so coordinates
             # are relative to the encode resolution. The crop removes the same
             # top/bottom as the foreground, so Y must be adjusted for the crop.
             bg_keep = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
-            bg_bx = min(max(0, int(bg_encode_w * bx_pct / 100.0)), max(0, bg_encode_w - 2)) & ~1
             bg_by = min(max(0, int(bg_encode_h * (by_pct / 100.0 - crop_top_ratio) / bg_keep)), max(0, bg_encode_h - 2)) & ~1
-            bg_bw = max(2, int(bg_encode_w * bw_pct / 100.0)) & ~1
-            bg_bh = max(2, int(bg_encode_h * bh_pct / (100.0 * bg_keep))) & ~1
-            if bg_bx + bg_bw > bg_encode_w:
-                bg_bw = max(2, (bg_encode_w - bg_bx) & ~1)
-            if bg_by + bg_bh > bg_encode_h:
-                bg_bh = max(2, (bg_encode_h - bg_by) & ~1)
-            bg_b_blur = max(2, b_intensity)
-            # Clamp boxblur radius to respect FFmpeg constraints.
-            # Luma plane: radius <= min(w, h) / 2
-            # YUV420p chroma plane: radius <= min(w/2, h/2) / 2 = min(w, h) / 4
-            # Use the stricter chroma constraint for the shared radius.
-            safe_blur_limit = min(bg_bw, bg_bh) // 4
-            if safe_blur_limit < 1:
-                log_fn(f"[EXPORT] ⚠️ Background spot blur skipped: crop {bg_bw}x{bg_bh} too small for boxblur")
+            # Crop background to the area above the spot blur, then zoom to fill.
+            crop_above_h = max(2, bg_by) & ~1
+            min_crop_h = max(2, int(bg_encode_h * 0.15)) & ~1
+            if crop_above_h >= min_crop_h:
+                # Enough area above spot blur — crop and zoom to fill the
+                # entire background canvas, hiding the blur region entirely.
+                bg_vf += (f",crop=iw:{crop_above_h}:0:0,"
+                          f"scale={bg_encode_w}:{bg_encode_h}:flags=lanczos,setsar=1:1")
+                log_fn(f"[EXPORT] ✓ Background crops above spot blur at y={bg_by}: "
+                       f"keeping top {crop_above_h}px, zooming to fill {bg_encode_w}x{bg_encode_h}")
             else:
-                if bg_b_blur > safe_blur_limit:
-                    log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {safe_blur_limit} (crop {bg_bw}x{bg_bh} limit)")
-                    bg_b_blur = safe_blur_limit
-                bg_spot_blur = (
-                    f",format=yuv420p,split[_bgm][_bgc];"
-                    f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
-                    f"boxblur={bg_b_blur}:2[_bgb];"
-                    f"[_bgm][_bgb]overlay={bg_bx}:{bg_by}"
-                )
-                log_fn(f"[EXPORT] ✓ Background spot blur: pos=({bg_bx},{bg_by}) size={bg_bw}x{bg_bh} blur={bg_b_blur}")
+                # Spot blur too near top — not enough area to crop above.
+                # Fall back to boxblur overlay so the area is still hidden.
+                bx_pct = float(bg_blur_ov.get('blur_overlay_x', 10))
+                bw_pct = float(bg_blur_ov.get('blur_overlay_w', 20))
+                bh_pct = float(bg_blur_ov.get('blur_overlay_h', 15))
+                b_intensity = int(bg_blur_ov.get('blur_overlay_intensity', 20))
+                bg_bx = min(max(0, int(bg_encode_w * bx_pct / 100.0)), max(0, bg_encode_w - 2)) & ~1
+                bg_bw = max(2, int(bg_encode_w * bw_pct / 100.0)) & ~1
+                bg_bh = max(2, int(bg_encode_h * bh_pct / (100.0 * bg_keep))) & ~1
+                if bg_bx + bg_bw > bg_encode_w:
+                    bg_bw = max(2, (bg_encode_w - bg_bx) & ~1)
+                if bg_by + bg_bh > bg_encode_h:
+                    bg_bh = max(2, (bg_encode_h - bg_by) & ~1)
+                bg_b_blur = max(2, b_intensity)
+                # Clamp boxblur radius to respect FFmpeg constraints.
+                # YUV420p chroma constraint: radius <= min(w, h) / 4.
+                safe_blur_limit = min(bg_bw, bg_bh) // 4
+                if safe_blur_limit < 1:
+                    log_fn(f"[EXPORT] ⚠️ Background spot blur skipped: crop {bg_bw}x{bg_bh} too small for boxblur")
+                else:
+                    if bg_b_blur > safe_blur_limit:
+                        log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {safe_blur_limit} (crop {bg_bw}x{bg_bh} limit)")
+                        bg_b_blur = safe_blur_limit
+                    bg_spot_blur = (
+                        f",format=yuv420p,split[_bgm][_bgc];"
+                        f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
+                        f"boxblur={bg_b_blur}:2[_bgb];"
+                        f"[_bgm][_bgb]overlay={bg_bx}:{bg_by}"
+                    )
+                    log_fn(f"[EXPORT] ✓ Background spot blur fallback: pos=({bg_bx},{bg_by}) size={bg_bw}x{bg_bh} blur={bg_b_blur}")
 
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         # GPU hardware decoding for background pre-render.
