@@ -7238,6 +7238,12 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
+
+            # Also refresh TikTok preview so font size change is immediately visible
+            try:
+                self.on_tiktok_preview_refresh()
+            except Exception:
+                pass
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -7287,6 +7293,12 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
+
+            # Also refresh TikTok preview so words-per-caption change is visible
+            try:
+                self.on_tiktok_preview_refresh()
+            except Exception:
+                pass
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -8411,16 +8423,18 @@ class App:
                 if not isinstance(cap_img, Image.Image):
                     cap_img = Image.fromarray(cap_img)
                 cap_img = cap_img.convert('RGBA')
-                # Position: FFmpeg uses y = h - th + y_offset for text top
-                # PIL image includes padding above and below text that FFmpeg's th doesn't.
-                # Below the text: padding_y(24) + 2*extra_bottom_margin + 4px of padding.
-                # We shift the image down by this amount so the visible text aligns with FFmpeg.
+                # Position: FFmpeg uses y = h - th + y_offset for text top.
+                # PIL caption image includes extra padding that FFmpeg's th doesn't.
+                # We compensate with bottom_pad so the visible text aligns with
+                # the FFmpeg position, then clamp so no part is clipped by paste().
                 font_size = globals().get('CAPTION_FONT_SIZE', 56)
                 extra_bottom_margin = int(font_size * 0.35)
                 bottom_pad = 24 + 2 * extra_bottom_margin + 4  # padding below text in PIL image
                 cap_x = (WIDTH - cap_img.width) // 2
                 cap_y = HEIGHT - cap_img.height + y_off + bottom_pad
-                cap_y = max(0, cap_y)
+                # Clamp so the ENTIRE caption image stays within the canvas.
+                # Without this, paste() silently clips the bottom of the text.
+                cap_y = max(0, min(cap_y, HEIGHT - cap_img.height))
                 canvas_rgba = canvas.convert('RGBA')
                 canvas_rgba.paste(cap_img, (cap_x, cap_y), cap_img)
                 canvas = canvas_rgba.convert('RGB')
