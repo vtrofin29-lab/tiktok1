@@ -97,13 +97,13 @@ def test_pytorch_cu130_in_requirements():
     print("✓ requirements.txt includes cu130 nightly URL")
 
 
-def test_nvenc_preset_is_p1_fastest():
-    """NVENC preset must be p1 (fastest) for maximum export speed."""
+def test_nvenc_preset_is_p4_quality():
+    """NVENC preset must be p4 (CapCut-like quality/speed balance)."""
     source = _load_source()
-    assert 'NVENC_PRESET_SPEED = "p1"' in source, (
-        "NVENC_PRESET_SPEED must be p1 (fastest preset)"
+    assert 'NVENC_PRESET_SPEED = "p4"' in source, (
+        "NVENC_PRESET_SPEED must be p4 (CapCut-like quality/speed balance)"
     )
-    print("✓ NVENC preset is p1 (fastest)")
+    print("✓ NVENC preset is p4 (CapCut-like quality)")
 
 
 def test_get_export_settings_exists():

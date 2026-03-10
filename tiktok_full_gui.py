@@ -1136,7 +1136,7 @@ BG_BRIGHTNESS_BOOST = 0.08  # +8% brightness compensation for NV12/format conver
 USE_GPU_IF_AVAILABLE = True
 PREFERRED_NVENC_CODEC = "h264_nvenc"
 USE_HARDWARE_DECODING = True  # Enable GPU-accelerated decoding
-NVENC_PRESET_SPEED = "p1"  # p1=fastest, p7=slowest/best quality. Using p1 for maximum export speed
+NVENC_PRESET_SPEED = "p4"  # p1=fastest, p7=slowest/best quality. p4 = CapCut-like quality/speed balance
 
 CAPTION_RAISE = 420
 CAPTION_Y_OFFSET = 0  # Vertical offset in pixels (negative = move up, positive = move down)
@@ -1611,11 +1611,11 @@ def ffmpeg_gpu_filters_available():
         return False
 
 def get_export_settings():
-    audio_bitrate = "192k"
-    threads = 4  # Use 4 threads for better CPU utilization (was 0/auto)
-    libx264_params = ["-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]  # Changed from slow to ultrafast
+    audio_bitrate = "256k"
+    threads = 0  # Auto-detect threads for optimal CPU utilization
+    libx264_params = ["-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-movflags", "+faststart"]
     libx264_codec = "libx264"
-    nvenc_params = ["-rc", "constqp", "-qp", "22", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-multipass", "0", "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
+    nvenc_params = ["-rc", "constqp", "-qp", "20", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-multipass", "fullres", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-movflags", "+faststart"]
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
@@ -1632,14 +1632,14 @@ def reencode_with_libx264(input_path, output_path, log=None):
     
     # Use NVENC if available, otherwise use faster CPU preset
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
-        cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "constqp", "-qp", "22", "-b:v", "0", 
-                   "-preset", NVENC_PRESET_SPEED, "-multipass", "0",
-                   "-pix_fmt", "yuv420p", "-profile:v", "high"])
+        cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "constqp", "-qp", "20", "-b:v", "0", 
+                   "-preset", NVENC_PRESET_SPEED, "-multipass", "fullres",
+                   "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2"])
     else:
-        cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", 
-                   "-pix_fmt", "yuv420p", "-profile:v", "high"])
+        cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18", 
+                   "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2"])
     
-    cmd.extend(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path])
+    cmd.extend(["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", output_path])
     
     if log: log(f"[ffmpeg] Re-encoding to: {output_path} (GPU={'NVENC' if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC) else 'No'})")
     try:
@@ -2260,23 +2260,26 @@ def _make_ffmpeg_params_for_codec(codec):
     - NVENC encoding below (works!)
     """
     if codec in ("h264_nvenc", "hevc_nvenc"):
-        # GPU encoding with NVENC - optimized for maximum speed
+        # GPU encoding with NVENC - CapCut-like H.264 High quality
         return [
-            "-rc", "constqp",          # Constant QP for fastest encoding
-            "-qp", "22",               # Quality level (lower = better, 22 is good balance)
+            "-rc", "constqp",          # Constant QP for consistent quality
+            "-qp", "20",               # Quality level (lower = better, 20 = high quality)
             "-b:v", "0",               # Let QP control quality
-            "-preset", NVENC_PRESET_SPEED,  # p1 for max speed (configurable)
-            "-multipass", "0",         # Disable multipass for fastest encoding
+            "-preset", NVENC_PRESET_SPEED,  # p4 for quality/speed balance
+            "-multipass", "fullres",   # Full-resolution multipass for better quality
             "-pix_fmt", "yuv420p",     # Standard pixel format
-            "-profile:v", "high",      # H.264 High profile
+            "-profile:v", "high",      # H.264 High profile (same as CapCut)
+            "-level", "4.2",           # Level 4.2 for broad compatibility
             "-movflags", "+faststart"  # Web streaming optimization
         ]
     else:
-        # CPU encoding with libx264 - fallback option
+        # CPU encoding with libx264 - CapCut-like H.264 High quality
         return [
-            "-preset", "ultrafast",    # Fastest CPU preset
-            "-crf", "20",              # Constant quality
+            "-preset", "medium",       # Medium preset for quality/speed balance
+            "-crf", "18",              # High quality (CapCut-like, lower = better)
             "-pix_fmt", "yuv420p",     # Standard pixel format
+            "-profile:v", "high",      # H.264 High profile (same as CapCut)
+            "-level", "4.2",           # Level 4.2 for broad compatibility
             "-movflags", "+faststart"  # Web streaming optimization
         ]
 
@@ -3484,29 +3487,33 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         cmd.extend([
             "-shortest",
             "-c:a", "aac",
-            "-b:a", "192k",
+            "-b:a", "256k",
         ])
         
         # Add video encoding parameters - GPU NVENC or CPU libx264
+        # CapCut-like H.264 High profile quality settings
         if use_gpu:
             log_fn(f"[EXPORT] ✓ GPU NVENC encoding: {nvenc_codec}, preset={NVENC_PRESET_SPEED}")
             cmd.extend([
                 "-c:v", nvenc_codec,
                 "-rc", "constqp",
-                "-qp", "22",
+                "-qp", "20",
                 "-b:v", "0",
                 "-preset", NVENC_PRESET_SPEED,
-                "-multipass", "0",
+                "-multipass", "fullres",
                 "-pix_fmt", "yuv420p",
-                "-profile:v", "high"
+                "-profile:v", "high",
+                "-level", "4.2"
             ])
         else:
             log_fn("[EXPORT] Using CPU encoding (libx264)...")
             cmd.extend([
                 "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-crf", "20",
+                "-preset", "medium",
+                "-crf", "18",
                 "-pix_fmt", "yuv420p",
+                "-profile:v", "high",
+                "-level", "4.2",
                 "-threads", "0"
             ])
         
@@ -4065,7 +4072,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     fps=FPS,
                     codec=codec_name,
                     audio_codec="aac",
-                    audio_bitrate="192k",
+                    audio_bitrate="256k",
                     threads=threads_setting,
                     ffmpeg_params=ffmpeg_params,
                     verbose=False,
