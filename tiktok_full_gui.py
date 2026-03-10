@@ -3112,7 +3112,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             bg_keep = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
             bg_by = min(max(0, int(bg_encode_h * (by_pct / 100.0 - crop_top_ratio) / bg_keep)), max(0, bg_encode_h - 2)) & ~1
             # Crop background to the area above the spot blur, then zoom to fill.
-            crop_above_h = max(2, bg_by) & ~1
+            # When bg_by is very small (blur near top), crop_above_h will be
+            # below min_crop_h and the fallback boxblur path is used instead.
+            crop_above_h = bg_by & ~1  # even-align for YUV420p
             min_crop_h = max(2, int(bg_encode_h * 0.15)) & ~1
             if crop_above_h >= min_crop_h:
                 # Enough area above spot blur — crop and zoom to fill the
