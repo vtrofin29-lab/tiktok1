@@ -7006,7 +7006,9 @@ class App:
             sample_text = " ".join(sample_words)
             
             text_x = composed.width // 2
-            text_y = caption_y - scaled_font_size // 2
+            # Use anchor="s" (south/bottom) so text grows upward from the baseline,
+            # preventing bottom clipping when font size increases
+            text_y = caption_y
             
             # Draw stroke (outline) effect by drawing text at the outer boundary only
             # This is more efficient than drawing at every pixel of the stroke width
@@ -7019,20 +7021,21 @@ class App:
             
             for dx, dy in stroke_offsets:
                 self.mini_canvas.create_text(text_x + dx, text_y + dy, 
-                                            text=sample_text, 
+                                            text=sample_text, anchor="s",
                                             fill=stroke_hex, font=canvas_font, 
                                             tags="caption_sample_stroke")
             
             # Draw main caption text
             self.mini_canvas.create_text(text_x, text_y, 
-                                        text=sample_text, 
+                                        text=sample_text, anchor="s",
                                         fill=text_hex, font=canvas_font, 
                                         tags="caption_sample")
             
-            # Draw small info label below the sample text
+            # Draw small info label below the baseline (clamped to canvas)
             info_text = f"Y: {offset}px | Size: {font_size}px | Words: {words_per_caption}"
-            self.mini_canvas.create_text(text_x, caption_y + 10, 
-                                        text=info_text, 
+            label_y = min(h - 2, caption_y + 12)
+            self.mini_canvas.create_text(text_x, label_y, 
+                                        text=info_text, anchor="s",
                                         fill="#00FF00", font=("Arial", 8), 
                                         tags="caption_label")
                 
