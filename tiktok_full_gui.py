@@ -1157,6 +1157,10 @@ CREATED_OUTPUTS = set()
 # Worker threads check this event at key checkpoints and abort early.
 _queue_stop_event = threading.Event()
 
+# Active FFmpeg subprocess — tracked so the Stop button can kill it immediately.
+_active_ffmpeg_proc = None
+_active_ffmpeg_lock = threading.Lock()
+
 # ----------------- FONT / DIACRITICS / UTIL -----------------
 FONT_CANDIDATES = ["Bangers-Regular.ttf", "Bangers.ttf", "bangers.ttf", "Bangers.otf", "Bangers-Regular.otf"]
 
@@ -2720,6 +2724,47 @@ def _build_ffmpeg_effect_filters(effect_settings, log_fn=None):
     return ""
 
 
+def _run_ffmpeg_with_stop_check(cmd, timeout, log_fn, label="FFmpeg"):
+    """Run an FFmpeg subprocess, polling for completion while checking the stop event.
+    
+    Uses subprocess.Popen so the process can be killed immediately when the
+    user presses the Stop button.  Returns a subprocess.CompletedProcess-like
+    object with returncode, stdout, and stderr.
+    """
+    global _active_ffmpeg_proc
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    with _active_ffmpeg_lock:
+        _active_ffmpeg_proc = proc
+    try:
+        # Poll every 0.5 s so the stop event is noticed quickly
+        deadline = time.time() + timeout
+        while True:
+            try:
+                stdout, stderr = proc.communicate(timeout=0.5)
+                # Process finished normally
+                result = subprocess.CompletedProcess(cmd, proc.returncode,
+                                                     stdout.decode("utf-8", errors="replace"),
+                                                     stderr.decode("utf-8", errors="replace"))
+                return result
+            except subprocess.TimeoutExpired:
+                pass
+
+            if _queue_stop_event.is_set():
+                log_fn(f"[{label}] ⏹ Stop requested — killing FFmpeg process...")
+                proc.kill()
+                proc.wait(timeout=10)
+                raise InterruptedError(f"{label} stopped by user")
+
+            if time.time() > deadline:
+                proc.kill()
+                proc.wait(timeout=10)
+                raise subprocess.TimeoutExpired(cmd, timeout)
+    finally:
+        with _active_ffmpeg_lock:
+            if _active_ffmpeg_proc is proc:
+                _active_ffmpeg_proc = None
+
+
 def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None, blur_radius=None, dim_factor=None, bg_scale_extra=None, crop_top_ratio=None, crop_bottom_ratio=None, caption_y_offset=None, force_cpu=False):
     """
     Fast export using pure FFmpeg complex filters.
@@ -2748,6 +2793,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         True if successful, False otherwise
     """
     try:
+        # Early abort if stop was requested before we even start
+        if _queue_stop_event.is_set():
+            log_fn("[EXPORT] ⏹ Export aborted — stop was requested")
+            return False
+        
         log_fn("[EXPORT] ═══════════════════════════════════════════════════")
         log_fn("[EXPORT] Using fast FFmpeg filter-based export...")
         log_fn(f"[EXPORT] Building filter chain for {len(caption_segments)} caption segments...")
@@ -3246,7 +3296,15 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} {blur_detail}, encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
         log_fn(f"[EXPORT]   Command: {' '.join(bg_cmd)}")
         bg_timeout = max(300, int((bg_duration_limit or 60) * 5))  # 5x video duration, min 5 min
-        bg_result = subprocess.run(bg_cmd, capture_output=True, text=True, timeout=bg_timeout)
+        try:
+            bg_result = _run_ffmpeg_with_stop_check(bg_cmd, bg_timeout, log_fn, label="BG-RENDER")
+        except InterruptedError:
+            try:
+                import shutil
+                shutil.rmtree(bg_temp_dir)
+            except Exception:
+                pass
+            return False
         if bg_result.returncode != 0:
             log_fn(f"[EXPORT] ⚠️ Background pre-render failed: {bg_result.stderr}")
             try:
@@ -3256,6 +3314,16 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 pass
             return False
         log_fn("[EXPORT] ✓ Background pre-rendered successfully")
+        
+        # Check stop event between Pass 1 and Pass 2
+        if _queue_stop_event.is_set():
+            log_fn("[EXPORT] ⏹ Export aborted between passes — stop was requested")
+            try:
+                import shutil
+                shutil.rmtree(bg_temp_dir)
+            except Exception:
+                pass
+            return False
         
         # ── Pass 2: Final encode ──
         # Two inputs: [0:v]=bg (pre-rendered blurred), [1:v]=fg (original), [2:a]=audio
@@ -3576,12 +3644,15 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         # Run FFmpeg
         final_timeout = max(600, int((output_duration or 60) * 5))  # 5x duration, min 10 min
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=final_timeout
-        )
+        try:
+            result = _run_ffmpeg_with_stop_check(cmd, final_timeout, log_fn, label="FINAL-ENCODE")
+        except InterruptedError:
+            try:
+                import shutil
+                shutil.rmtree(bg_temp_dir)
+            except Exception:
+                pass
+            return False
         
         # Clean up background temp file
         try:
@@ -4344,16 +4415,36 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     old_is_4k = globals().get('IS_4K_MODE', False)
     old_width = globals().get('WIDTH', 1080)
     old_height = globals().get('HEIGHT', 1920)
+    old_caption_font_size = globals().get('CAPTION_FONT_SIZE', 56)
+    old_caption_stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)
     if use_4k:
         globals()['IS_4K_MODE'] = True
         globals()['WIDTH'] = 2160
         globals()['HEIGHT'] = 3840
+        # Sync font globals so any fallback path also uses 4K-appropriate values
+        if caption_font_size is not None:
+            globals()['CAPTION_FONT_SIZE'] = caption_font_size
+        elif globals().get('CAPTION_FONT_SIZE', 56) < 80:
+            # Font size global looks like HD default — scale up for 4K
+            globals()['CAPTION_FONT_SIZE'] = 112
+        if caption_stroke_width is not None:
+            globals()['CAPTION_STROKE_WIDTH'] = caption_stroke_width
+        else:
+            globals()['CAPTION_STROKE_WIDTH'] = max(1, int(globals().get('CAPTION_FONT_SIZE', 112) * 0.05))
         log("[RESOLUTION] Job set to 4K mode (2160x3840)")
     else:
         globals()['IS_4K_MODE'] = False
         globals()['WIDTH'] = 1080
         globals()['HEIGHT'] = 1920
+        if caption_font_size is not None:
+            globals()['CAPTION_FONT_SIZE'] = caption_font_size
+        if caption_stroke_width is not None:
+            globals()['CAPTION_STROKE_WIDTH'] = caption_stroke_width
         log("[RESOLUTION] Job set to HD mode (1080x1920)")
+    
+    log(f"[CAPTION] Font size: {caption_font_size if caption_font_size is not None else globals().get('CAPTION_FONT_SIZE', 56)}px, "
+        f"Y offset: {caption_y_offset if caption_y_offset is not None else globals().get('CAPTION_Y_OFFSET', 0)}px, "
+        f"Stroke: {caption_stroke_width if caption_stroke_width is not None else globals().get('CAPTION_STROKE_WIDTH', 3)}px")
     
     try:
         load_preferred_font_cached(preferred_font or CAPTION_FONT_PREFERRED, CAPTION_FONT_SIZE, log=log)
@@ -4829,11 +4920,13 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     except Exception:
         pass
     
-    # Restore IS_4K_MODE, WIDTH, HEIGHT
+    # Restore IS_4K_MODE, WIDTH, HEIGHT, CAPTION_FONT_SIZE, CAPTION_STROKE_WIDTH
     try:
         globals()['IS_4K_MODE'] = old_is_4k
         globals()['WIDTH'] = old_width
         globals()['HEIGHT'] = old_height
+        globals()['CAPTION_FONT_SIZE'] = old_caption_font_size
+        globals()['CAPTION_STROKE_WIDTH'] = old_caption_stroke_width
     except Exception:
         pass
 
@@ -8141,9 +8234,17 @@ class App:
 
     def stop_queue(self):
         _queue_stop_event.set()
+        # Kill any running FFmpeg process immediately
+        with _active_ffmpeg_lock:
+            proc = _active_ffmpeg_proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         self.stop_queue_btn.config(state="disabled")
         self.log_widget.config(state="normal")
-        self.log_widget.insert(tk.END, "\n⏹ Stop requested — finishing current job then stopping...\n")
+        self.log_widget.insert(tk.END, "\n⏹ Stop requested — killing current FFmpeg process...\n")
         self.log_widget.config(state="disabled")
         self.log_widget.see(tk.END)
 
