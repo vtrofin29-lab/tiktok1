@@ -251,8 +251,8 @@ def test_on_run_single_enables_stop_button():
     assert func_start != -1, "on_run_single method should exist"
     func_end = source.find("\n    def ", func_start + 1)
     func_body = source[func_start:func_end]
-    assert 'stop_queue_btn' in func_body and 'normal' in func_body, \
-        "on_run_single should enable the stop button (stop_queue_btn state normal)"
+    assert 'stop_queue_btn.config(state="normal")' in func_body, \
+        "on_run_single should enable the stop button (stop_queue_btn.config(state='normal'))"
 
 
 def test_on_run_single_clears_stop_event():
@@ -275,9 +275,9 @@ def test_on_run_single_disables_run_buttons():
     func_start = source.find("def on_run_single(self):")
     func_end = source.find("\n    def ", func_start + 1)
     func_body = source[func_start:func_end]
-    assert 'run_queue_btn' in func_body and 'disabled' in func_body, \
+    assert 'run_queue_btn.config(state="disabled")' in func_body, \
         "on_run_single should disable run_queue_btn"
-    assert 'run_single_btn' in func_body and 'disabled' in func_body, \
+    assert 'run_single_btn.config(state="disabled")' in func_body, \
         "on_run_single should disable run_single_btn"
 
 
