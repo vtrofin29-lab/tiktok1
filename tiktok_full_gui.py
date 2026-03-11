@@ -1696,9 +1696,10 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
         vparams = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22"]  # Changed from veryfast to ultrafast
     
     # Add threading for faster demux/mux and filter processing.
+    # Use all cores (max 8) for filter threads; -threads 0 lets FFmpeg auto-detect.
     total_cores = os.cpu_count() or 4
-    fg_threads = max(2, min(total_cores, 8))
-    cmd.extend(["-filter_threads", str(fg_threads)])
+    fg_filter_threads = max(2, min(total_cores, 8))
+    cmd.extend(["-filter_threads", str(fg_filter_threads)])
     cmd.extend(vparams + ["-threads", "0", "-pix_fmt", "yuv420p", out_path])
     
     if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc}, hwaccel={USE_HARDWARE_DECODING and use_nvenc})")
