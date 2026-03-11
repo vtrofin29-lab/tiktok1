@@ -2207,16 +2207,18 @@ def extract_and_scale_frame(video_path, time_sec=None, desired_width=360):
     else:
         clip = VideoFileClip(video_path)
         created_clip = True
-    if time_sec is None:
-        t = min(max(0.001, clip.duration / 2.0), clip.duration - 0.001)
-    else:
-        t = min(max(0.0, float(time_sec)), max(0.001, clip.duration - 0.001))
-    frame = clip.get_frame(t)
-    if created_clip:
-        try:
-            clip.close()
-        except Exception:
-            pass
+    try:
+        if time_sec is None:
+            t = min(max(0.001, clip.duration / 2.0), clip.duration - 0.001)
+        else:
+            t = min(max(0.0, float(time_sec)), max(0.001, clip.duration - 0.001))
+        frame = clip.get_frame(t)
+    finally:
+        if created_clip:
+            try:
+                clip.close()
+            except Exception:
+                pass
     img = Image.fromarray(frame).convert("RGB")
     w, h = img.size
     if w <= 0:
@@ -7539,10 +7541,23 @@ class App:
                     self._preview_clip = VideoFileClip(path)
                     dur = self._preview_clip.duration
                 except Exception:
-                    # fallback if caching fails
-                    clip = VideoFileClip(path)
-                    dur = clip.duration
-                    clip.close()
+                    # VideoFileClip failed (corrupt file or FFmpeg issue).
+                    # Use ffprobe to get duration without reading frames.
+                    self._preview_clip = None
+                    dur = None
+                    try:
+                        import subprocess
+                        probe_result = subprocess.run(
+                            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                             "-of", "default=noprint_wrappers=1:nokey=1", path],
+                            capture_output=True, text=True, timeout=10
+                        )
+                        if probe_result.returncode == 0 and probe_result.stdout.strip():
+                            dur = float(probe_result.stdout.strip())
+                    except Exception:
+                        pass
+                    if dur is None:
+                        dur = 1.0  # safe fallback
                 try:
                     self.time_scale.to = max(0.1, dur)
                     self.time_scale.set(min(self.time_var.get(), self.time_scale.to))
