@@ -188,8 +188,11 @@ def test_ffmpeg_retry_loop_no_retry_on_stop():
 
     assert 'except InterruptedError' in retry_section, \
         "FFmpeg retry loop should catch InterruptedError separately to prevent retrying stopped jobs"
-    assert 'raise' in retry_section[retry_section.find('except InterruptedError'):
-                                     retry_section.find('except InterruptedError') + 200], \
+    # Find the InterruptedError handler and check it re-raises before the next except
+    handler_start = retry_section.find('except InterruptedError')
+    next_except = retry_section.find('except ', handler_start + len('except InterruptedError'))
+    handler_body = retry_section[handler_start:next_except] if next_except != -1 else retry_section[handler_start:]
+    assert 'raise' in handler_body, \
         "InterruptedError handler should re-raise to abort the job immediately"
 
 
