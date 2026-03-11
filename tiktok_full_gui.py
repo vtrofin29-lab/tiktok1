@@ -1153,6 +1153,10 @@ CROP_SETTINGS_FILE = "crop_settings.json"
 
 CREATED_OUTPUTS = set()
 
+# Global stop event — set by the Stop button to cancel queue/single processing.
+# Worker threads check this event at key checkpoints and abort early.
+_queue_stop_event = threading.Event()
+
 # ----------------- FONT / DIACRITICS / UTIL -----------------
 FONT_CANDIDATES = ["Bangers-Regular.ttf", "Bangers.ttf", "bangers.ttf", "Bangers.otf", "Bangers-Regular.otf"]
 
@@ -5239,6 +5243,10 @@ def _run_video_job(job, job_index, total_jobs, q, pre_generated_voice=None):
     """Run a single video processing job (Phase 2 of parallel pipeline)."""
     def log(s):
         q.put(str(s))
+    # Check stop event before starting this job
+    if _queue_stop_event.is_set():
+        log(f"\n⏹ SKIPPING JOB {job_index}/{total_jobs} — stop requested")
+        return
     log(f"\n===== START JOB {job_index}/{total_jobs} =====")
     # Release Whisper model before export to free GPU memory for NVENC encoding.
     # When pre_generated_voice is provided (multi-job pipeline), no transcription is needed
@@ -5281,9 +5289,15 @@ def queue_worker(jobs, q):
     if not any_ai_voice or len(jobs) <= 1:
         # No AI voice jobs or single job — use simple sequential processing
         for i, job in enumerate(jobs, start=1):
+            if _queue_stop_event.is_set():
+                log(f"\n⏹ QUEUE STOPPED after {i-1}/{len(jobs)} jobs")
+                break
             _run_video_job(job, i, len(jobs), q)
         # Final cleanup: release Whisper model to free GPU memory
         _release_whisper_model(log=log)
+        if _queue_stop_event.is_set():
+            log("[QUEUE_STOPPED]")
+            return
         log("[QUEUE_DONE]")
         return
     
@@ -5365,6 +5379,11 @@ def queue_worker(jobs, q):
     processed_count = 0
     
     while processed_count < total:
+        # Check stop event
+        if _queue_stop_event.is_set():
+            log(f"\n⏹ QUEUE STOPPED after {processed_count}/{total} jobs")
+            break
+        
         # Find the first unprocessed job whose voice is ready
         ready_idx = None
         
@@ -5375,8 +5394,8 @@ def queue_worker(jobs, q):
                 break
         
         if ready_idx is None:
-            # No voice is ready yet — wait for the shared signal
-            any_voice_ready.wait()
+            # No voice is ready yet — wait for the shared signal (with timeout to check stop)
+            any_voice_ready.wait(timeout=1.0)
             any_voice_ready.clear()
             # Now scan to find which one(s) finished
             for idx in range(total):
@@ -5415,12 +5434,20 @@ def queue_worker(jobs, q):
     # Final cleanup: release Whisper model to free GPU memory
     _release_whisper_model(log=log)
     
-    log("")
-    log("━"*60)
-    log("[QUEUE] ✅ ALL JOBS COMPLETE (interleaved voice pipeline)")
-    log("━"*60)
-    log("")
-    log("[QUEUE_DONE]")
+    if _queue_stop_event.is_set():
+        log("")
+        log("━"*60)
+        log("[QUEUE] ⏹ QUEUE STOPPED BY USER")
+        log("━"*60)
+        log("")
+        log("[QUEUE_STOPPED]")
+    else:
+        log("")
+        log("━"*60)
+        log("[QUEUE] ✅ ALL JOBS COMPLETE (interleaved voice pipeline)")
+        log("━"*60)
+        log("")
+        log("[QUEUE_DONE]")
 
 # ----------------- GUI: responsive layout with PanedWindow -----------------
 def seconds_to_hms(sec: float) -> str:
@@ -6242,6 +6269,9 @@ class App:
         ttk.Button(job_btns, text="Remove Selected", style='Danger.TButton', command=self.remove_job).pack(side="left", padx=4)
         self.run_queue_btn = ttk.Button(job_btns, text="▶ Run Queue", style='Success.TButton', command=self.run_queue)
         self.run_queue_btn.pack(side="left", padx=4)
+        self.stop_queue_btn = ttk.Button(job_btns, text="⏹ Stop", style='Danger.TButton', command=self.stop_queue)
+        self.stop_queue_btn.pack(side="left", padx=4)
+        self.stop_queue_btn.config(state="disabled")
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
@@ -8099,13 +8129,23 @@ class App:
         if not self.jobs:
             messagebox.showerror("Empty queue", "Nu ai niciun job în listă")
             return
+        _queue_stop_event.clear()
         self.run_queue_btn.config(state="disabled")
         self.run_single_btn.config(state="disabled")
+        self.stop_queue_btn.config(state="normal")
         self.log_widget.config(state="normal")
         self.log_widget.delete("1.0", tk.END)
         self.log_widget.config(state="disabled")
         t = threading.Thread(target=queue_worker, args=(list(self.jobs), self.q), daemon=True)
         t.start()
+
+    def stop_queue(self):
+        _queue_stop_event.set()
+        self.stop_queue_btn.config(state="disabled")
+        self.log_widget.config(state="normal")
+        self.log_widget.insert(tk.END, "\n⏹ Stop requested — finishing current job then stopping...\n")
+        self.log_widget.config(state="disabled")
+        self.log_widget.see(tk.END)
 
     def on_mini_refresh_clicked(self):
         self._mini_update_worker_async()
@@ -9036,8 +9076,18 @@ class App:
                 if msg == "[QUEUE_DONE]":
                     self.run_queue_btn.config(state="normal")
                     self.run_single_btn.config(state="normal")
+                    self.stop_queue_btn.config(state="disabled")
                     self.log_widget.config(state="normal")
                     self.log_widget.insert(tk.END, "\n✔ ALL JOBS FINISHED\n")
+                    self.log_widget.config(state="disabled")
+                    self.log_widget.see(tk.END)
+                    continue
+                if msg == "[QUEUE_STOPPED]":
+                    self.run_queue_btn.config(state="normal")
+                    self.run_single_btn.config(state="normal")
+                    self.stop_queue_btn.config(state="disabled")
+                    self.log_widget.config(state="normal")
+                    self.log_widget.insert(tk.END, "\n⏹ QUEUE STOPPED BY USER\n")
                     self.log_widget.config(state="disabled")
                     self.log_widget.see(tk.END)
                     continue

@@ -174,6 +174,92 @@ def test_browse_video_uses_ffprobe_fallback():
     print("✓ browse_video uses ffprobe fallback for corrupt videos")
 
 
+def test_stop_queue_event_exists():
+    """A global _queue_stop_event (threading.Event) must exist for stop signaling."""
+    source = _load_source()
+    assert "_queue_stop_event = threading.Event()" in source, (
+        "Missing global _queue_stop_event = threading.Event()"
+    )
+    print("✓ _queue_stop_event global threading.Event exists")
+
+
+def test_stop_queue_button_exists():
+    """A ⏹ Stop button must exist next to the Run Queue button."""
+    source = _load_source()
+    assert 'text="⏹ Stop"' in source or "text='⏹ Stop'" in source, (
+        "Missing Stop button in the UI"
+    )
+    assert "stop_queue_btn" in source, (
+        "Missing stop_queue_btn attribute"
+    )
+    assert "def stop_queue" in source, (
+        "Missing stop_queue method"
+    )
+    print("✓ Stop button and stop_queue method exist in UI")
+
+
+def test_queue_worker_checks_stop_event():
+    """queue_worker must check _queue_stop_event to allow early termination."""
+    source = _load_source()
+    lines = source.splitlines()
+
+    in_fn = False
+    found_stop_check = False
+    found_stopped_signal = False
+    for i, line in enumerate(lines):
+        if "def queue_worker" in line:
+            in_fn = True
+        elif in_fn and not line.startswith(" ") and line.strip().startswith("def "):
+            break
+        if in_fn:
+            if "_queue_stop_event.is_set()" in line:
+                found_stop_check = True
+            if "[QUEUE_STOPPED]" in line:
+                found_stopped_signal = True
+
+    assert found_stop_check, "queue_worker must check _queue_stop_event.is_set()"
+    assert found_stopped_signal, "queue_worker must emit [QUEUE_STOPPED] signal"
+    print("✓ queue_worker checks stop event and emits [QUEUE_STOPPED]")
+
+
+def test_run_video_job_checks_stop_event():
+    """_run_video_job must check stop event before processing."""
+    source = _load_source()
+    lines = source.splitlines()
+
+    in_fn = False
+    found_stop_check = False
+    for i, line in enumerate(lines):
+        if "def _run_video_job" in line:
+            in_fn = True
+        elif in_fn and not line.startswith(" ") and line.strip().startswith("def "):
+            break
+        if in_fn and "_queue_stop_event.is_set()" in line:
+            found_stop_check = True
+
+    assert found_stop_check, "_run_video_job must check _queue_stop_event.is_set()"
+    print("✓ _run_video_job checks stop event before starting")
+
+
+def test_poll_queue_handles_stopped_signal():
+    """poll_queue must handle [QUEUE_STOPPED] message to re-enable buttons."""
+    source = _load_source()
+    lines = source.splitlines()
+
+    in_fn = False
+    found_stopped_handler = False
+    for i, line in enumerate(lines):
+        if "def poll_queue" in line:
+            in_fn = True
+        elif in_fn and line.strip().startswith("def ") and not line.startswith(" " * 4 + " "):
+            break
+        if in_fn and "[QUEUE_STOPPED]" in line:
+            found_stopped_handler = True
+
+    assert found_stopped_handler, "poll_queue must handle [QUEUE_STOPPED] signal"
+    print("✓ poll_queue handles [QUEUE_STOPPED] to re-enable buttons")
+
+
 if __name__ == "__main__":
     test_preview_has_try_finally_for_video_clip()
     test_preview_catches_oserror()
@@ -181,6 +267,11 @@ if __name__ == "__main__":
     test_preview_logs_user_friendly_message()
     test_extract_and_scale_frame_uses_try_finally()
     test_browse_video_uses_ffprobe_fallback()
+    test_stop_queue_event_exists()
+    test_stop_queue_button_exists()
+    test_queue_worker_checks_stop_event()
+    test_run_video_job_checks_stop_event()
+    test_poll_queue_handles_stopped_signal()
     print("\n" + "=" * 60)
-    print("✓ ALL 6 TESTS PASSED - Preview error handling verified!")
+    print("✓ ALL 11 TESTS PASSED - Preview error handling & stop button verified!")
     print("=" * 60)
