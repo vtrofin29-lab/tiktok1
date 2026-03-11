@@ -46,7 +46,7 @@ def test_pass1_hwaccel_gated_on_gpu_filters():
         if isinstance(node, ast.FunctionDef) and node.name == "_export_with_ffmpeg_filters":
             src = ast.get_source_segment(source, node)
             # Must check gpu_filters before adding hwaccel
-            assert "gpu_filters and not needs_stream_loop" in src, (
+            assert "gpu_filters and not bg_needs_stream_loop" in src, (
                 "Pass 1 -hwaccel cuda must be gated on gpu_filters"
             )
             print("✓ Pass 1 gates -hwaccel cuda on gpu_filters")

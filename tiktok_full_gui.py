@@ -1695,7 +1695,11 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
         codec = "libx264"
         vparams = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22"]  # Changed from veryfast to ultrafast
     
-    cmd.extend(vparams + ["-pix_fmt", "yuv420p", out_path])
+    # Add threading for faster demux/mux and filter processing.
+    total_cores = os.cpu_count() or 4
+    fg_threads = max(2, min(total_cores, 8))
+    cmd.extend(["-filter_threads", str(fg_threads)])
+    cmd.extend(vparams + ["-threads", "0", "-pix_fmt", "yuv420p", out_path])
     
     if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc}, hwaccel={USE_HARDWARE_DECODING and use_nvenc})")
     try:
@@ -3196,6 +3200,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # When spot blur is enabled on the background, we need -filter_complex
         # because the split→crop→overlay graph requires named streams.
         if bg_spot_blur:
+            bg_cmd.extend(["-filter_complex_threads", str(cpu_threads)])
             bg_cmd.extend(["-i", bg_path, "-an", "-filter_complex", bg_vf + bg_spot_blur])
         else:
             bg_cmd.extend(["-i", bg_path, "-an", "-vf", bg_vf])
@@ -3203,9 +3208,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Use NVENC for bg pre-render if available, else CPU
         # Higher quality encoding since blur_down is half-res (not quarter-res)
         if use_gpu:
-            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p4", "-rc", "constqp", "-qp", "23", "-b:v", "0", "-multipass", "0"])
+            # Use fastest NVENC preset (p1) for background — content is heavily blurred,
+            # so the quality difference between p1 and p4 is invisible.
+            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "constqp", "-qp", "23", "-b:v", "0", "-multipass", "0"])
         else:
-            bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
+            bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-threads", "0"])
         
         # Limit bg to same duration as output
         bg_duration_limit = None
