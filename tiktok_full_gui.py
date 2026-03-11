@@ -4331,16 +4331,22 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         tts_language = tts_lang_synced
     
     # Set 4K mode if requested
-    # NOTE: Using global state for IS_4K_MODE. This is safe because:
+    # NOTE: Using global state for IS_4K_MODE, WIDTH, HEIGHT. This is safe because:
     # 1. Jobs are processed sequentially (one at a time) via queue_worker
     # 2. Single jobs via on_run_single run in separate threads but don't overlap
-    # 3. The old value is saved and restored in the finally block
+    # 3. The old values are saved and restored in the finally block
     old_is_4k = globals().get('IS_4K_MODE', False)
+    old_width = globals().get('WIDTH', 1080)
+    old_height = globals().get('HEIGHT', 1920)
     if use_4k:
         globals()['IS_4K_MODE'] = True
+        globals()['WIDTH'] = 2160
+        globals()['HEIGHT'] = 3840
         log("[RESOLUTION] Job set to 4K mode (2160x3840)")
     else:
         globals()['IS_4K_MODE'] = False
+        globals()['WIDTH'] = 1080
+        globals()['HEIGHT'] = 1920
         log("[RESOLUTION] Job set to HD mode (1080x1920)")
     
     try:
@@ -4817,9 +4823,11 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     except Exception:
         pass
     
-    # Restore IS_4K_MODE
+    # Restore IS_4K_MODE, WIDTH, HEIGHT
     try:
         globals()['IS_4K_MODE'] = old_is_4k
+        globals()['WIDTH'] = old_width
+        globals()['HEIGHT'] = old_height
     except Exception:
         pass
 
