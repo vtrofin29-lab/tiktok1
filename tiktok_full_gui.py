@@ -5395,7 +5395,7 @@ def queue_worker(jobs, q):
         
         if ready_idx is None:
             # No voice is ready yet — wait for the shared signal (with timeout to check stop)
-            any_voice_ready.wait(timeout=1.0)
+            any_voice_ready.wait(timeout=0.2)
             any_voice_ready.clear()
             # Now scan to find which one(s) finished
             for idx in range(total):
