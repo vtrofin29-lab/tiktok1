@@ -1615,7 +1615,7 @@ def get_export_settings():
     threads = 0  # Auto-detect threads for optimal CPU utilization
     libx264_params = ["-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-movflags", "+faststart"]
     libx264_codec = "libx264"
-    nvenc_params = ["-rc", "constqp", "-qp", "20", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-multipass", "fullres", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-movflags", "+faststart"]
+    nvenc_params = ["-rc", "constqp", "-qp", "20", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-multipass", "fullres", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-threads", "0", "-movflags", "+faststart"]
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
@@ -1634,7 +1634,8 @@ def reencode_with_libx264(input_path, output_path, log=None):
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "constqp", "-qp", "20", "-b:v", "0", 
                    "-preset", NVENC_PRESET_SPEED, "-multipass", "fullres",
-                   "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2"])
+                   "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2",
+                   "-threads", "0"])
     else:
         cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18", 
                    "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2"])
@@ -3211,7 +3212,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if use_gpu:
             # Use fastest NVENC preset (p1) for background — content is heavily blurred,
             # so the quality difference between p1 and p4 is invisible.
-            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "constqp", "-qp", "23", "-b:v", "0", "-multipass", "0"])
+            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "constqp", "-qp", "23", "-b:v", "0", "-multipass", "0", "-threads", "0"])
         else:
             bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-threads", "0"])
         
@@ -3544,7 +3545,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 "-multipass", "fullres",
                 "-pix_fmt", "yuv420p",
                 "-profile:v", "high",
-                "-level", "4.2"
+                "-level", "4.2",
+                "-threads", "0"
             ])
         else:
             log_fn("[EXPORT] Using CPU encoding (libx264)...")
