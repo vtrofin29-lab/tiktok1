@@ -8370,14 +8370,33 @@ class App:
             
             # Load video clip at current time
             from moviepy.editor import VideoFileClip
-            video_clip = VideoFileClip(video_path)
-            
-            # Get frame at current time
-            if current_time > video_clip.duration:
-                current_time = 0.0
-            
-            frame = video_clip.get_frame(current_time)
-            video_clip.close()
+            video_clip = None
+            try:
+                video_clip = VideoFileClip(video_path)
+                
+                # Get frame at current time
+                if current_time > video_clip.duration:
+                    current_time = 0.0
+                
+                frame = video_clip.get_frame(current_time)
+            except (OSError, IOError, Exception) as ve:
+                # Video file may be corrupt, locked, or FFmpeg cannot decode it
+                print(f"[TIKTOK-PREVIEW] Cannot read video: {ve}")
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[PREVIEW] Cannot read video file: {os.path.basename(video_path)}\n")
+                    self.log_widget.insert('end', "[PREVIEW] Ensure the file is a valid video and FFmpeg is up to date.\n")
+                    self.log_widget.see('end')
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
+                return
+            finally:
+                if video_clip is not None:
+                    try:
+                        video_clip.close()
+                    except Exception:
+                        pass
             
             # Get crop settings
             crop_top_ratio = float(self.top_percent_var.get()) / 100.0
