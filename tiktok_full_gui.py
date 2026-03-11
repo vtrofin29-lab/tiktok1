@@ -8379,7 +8379,7 @@ class App:
                     current_time = 0.0
                 
                 frame = video_clip.get_frame(current_time)
-            except (OSError, IOError, Exception) as ve:
+            except (OSError, Exception) as ve:
                 # Video file may be corrupt, locked, or FFmpeg cannot decode it
                 print(f"[TIKTOK-PREVIEW] Cannot read video: {ve}")
                 try:

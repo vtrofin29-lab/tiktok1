@@ -18,7 +18,7 @@ def test_preview_has_try_finally_for_video_clip():
     lines = source.splitlines()
 
     in_preview_fn = False
-    found_try = False
+    found_video_clip_init = False
     found_finally = False
     found_close = False
     for i, line in enumerate(lines):
@@ -28,13 +28,13 @@ def test_preview_has_try_finally_for_video_clip():
             break
         if in_preview_fn:
             if "video_clip = None" in line:
-                found_try = True
+                found_video_clip_init = True
             if "finally:" in line:
                 found_finally = True
             if "video_clip.close()" in line:
                 found_close = True
 
-    assert found_try, "on_tiktok_preview_refresh must initialize video_clip = None before try"
+    assert found_video_clip_init, "on_tiktok_preview_refresh must initialize video_clip = None before try"
     assert found_finally, "on_tiktok_preview_refresh must have finally block to close clip"
     assert found_close, "on_tiktok_preview_refresh must call video_clip.close() in finally"
     print("✓ on_tiktok_preview_refresh uses try/finally for safe clip cleanup")
