@@ -144,6 +144,101 @@ def test_no_subprocess_run_for_main_ffmpeg():
         f"Expected at least 2 _run_ffmpeg_with_stop_check calls (bg+final), found {len(stop_check_calls)}"
 
 
+def test_fg_prerender_uses_stop_check():
+    """pre_render_foreground_ffmpeg must use _run_ffmpeg_with_stop_check, not subprocess.check_call."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def pre_render_foreground_ffmpeg(")
+    func_end = source.find("\ndef ", func_start + 1)
+    func_body = source[func_start:func_end]
+
+    assert '_run_ffmpeg_with_stop_check(' in func_body, \
+        "pre_render_foreground_ffmpeg should use _run_ffmpeg_with_stop_check"
+    assert 'subprocess.check_call(' not in func_body, \
+        "pre_render_foreground_ffmpeg should NOT use subprocess.check_call (not stoppable)"
+    assert 'InterruptedError' in func_body, \
+        "pre_render_foreground_ffmpeg should handle InterruptedError and re-raise it"
+
+
+def test_reencode_uses_stop_check():
+    """reencode_with_libx264 must use _run_ffmpeg_with_stop_check, not subprocess.check_call."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def reencode_with_libx264(")
+    func_end = source.find("\ndef ", func_start + 1)
+    func_body = source[func_start:func_end]
+
+    assert '_run_ffmpeg_with_stop_check(' in func_body, \
+        "reencode_with_libx264 should use _run_ffmpeg_with_stop_check"
+    assert 'subprocess.check_call(' not in func_body, \
+        "reencode_with_libx264 should NOT use subprocess.check_call (not stoppable)"
+
+
+def test_ffmpeg_retry_loop_no_retry_on_stop():
+    """The FFmpeg retry loop should NOT retry when InterruptedError is raised (stop requested)."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    # Find the retry loop section
+    retry_start = source.find("MAX_FFMPEG_RETRIES = 2")
+    retry_end = source.find("# FFmpeg failed after all retries", retry_start)
+    retry_section = source[retry_start:retry_end]
+
+    assert 'except InterruptedError' in retry_section, \
+        "FFmpeg retry loop should catch InterruptedError separately to prevent retrying stopped jobs"
+    assert 'raise' in retry_section[retry_section.find('except InterruptedError'):
+                                     retry_section.find('except InterruptedError') + 200], \
+        "InterruptedError handler should re-raise to abort the job immediately"
+
+
+def test_stop_check_before_fg_prerender():
+    """process_single_job should check stop event before foreground pre-render."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    # Find the pre-render call
+    prerender_call = source.find("pre_render_foreground_ffmpeg(video_path, temp_fg")
+    # Check that there's a stop event check in the 500 chars before
+    pre_section = source[max(0, prerender_call - 500):prerender_call]
+    assert '_queue_stop_event.is_set()' in pre_section, \
+        "Stop event should be checked before calling pre_render_foreground_ffmpeg"
+
+
+def test_stop_check_in_export_retry_loop():
+    """The FFmpeg export retry loop should check stop event at the start of each iteration."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    retry_start = source.find("MAX_FFMPEG_RETRIES = 2")
+    retry_body_start = source.find("try:", retry_start)
+    # Get the first 500 chars of the try body
+    early_try = source[retry_body_start:retry_body_start + 500]
+    assert '_queue_stop_event.is_set()' in early_try, \
+        "Export retry loop should check stop event early in each iteration"
+
+
+def test_no_check_call_in_export_functions():
+    """No subprocess.check_call should be used in FFmpeg encoding functions (only stoppable Popen)."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    # Check pre_render_foreground_ffmpeg
+    func1_start = source.find("def pre_render_foreground_ffmpeg(")
+    func1_end = source.find("\ndef ", func1_start + 1)
+    func1 = source[func1_start:func1_end]
+    assert 'subprocess.check_call(' not in func1, \
+        "pre_render_foreground_ffmpeg must not use subprocess.check_call"
+    
+    # Check reencode_with_libx264
+    func2_start = source.find("def reencode_with_libx264(")
+    func2_end = source.find("\ndef ", func2_start + 1)
+    func2 = source[func2_start:func2_end]
+    assert 'subprocess.check_call(' not in func2, \
+        "reencode_with_libx264 must not use subprocess.check_call"
+
+
 if __name__ == "__main__":
     tests = [
         test_active_ffmpeg_proc_global_exists,
@@ -156,6 +251,12 @@ if __name__ == "__main__":
         test_process_single_job_syncs_font_globals_for_4k,
         test_process_single_job_restores_font_globals,
         test_no_subprocess_run_for_main_ffmpeg,
+        test_fg_prerender_uses_stop_check,
+        test_reencode_uses_stop_check,
+        test_ffmpeg_retry_loop_no_retry_on_stop,
+        test_stop_check_before_fg_prerender,
+        test_stop_check_in_export_retry_loop,
+        test_no_check_call_in_export_functions,
     ]
     
     passed = 0

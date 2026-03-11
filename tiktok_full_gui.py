@@ -1656,10 +1656,20 @@ def reencode_with_libx264(input_path, output_path, log=None):
     
     if log: log(f"[ffmpeg] Re-encoding to: {output_path} (GPU={'NVENC' if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC) else 'No'})")
     try:
-        subprocess.check_call(cmd)
+        _log_fn = log if log else (lambda s: None)
+        result = _run_ffmpeg_with_stop_check(cmd, 600, _log_fn, label="RE-ENCODE")
+        if result.returncode != 0:
+            if log: log(f"[ffmpeg] Re-encode failed (return code {result.returncode}).")
+            return False
         if log: log("[ffmpeg] Re-encode completed.")
         return True
-    except subprocess.CalledProcessError as e:
+    except InterruptedError:
+        if log: log("[ffmpeg] ⏹ Re-encode stopped by user.")
+        raise
+    except subprocess.TimeoutExpired:
+        if log: log("[ffmpeg] Re-encode timed out after 600s.")
+        return False
+    except Exception as e:
         if log: log(f"[ffmpeg] Re-encode failed: {e}")
         return False
 
@@ -1717,14 +1727,21 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
     
     if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc}, hwaccel={USE_HARDWARE_DECODING and use_nvenc})")
     try:
-        subprocess.check_call(cmd)
+        _log_fn = log if log else (lambda s: None)
+        result = _run_ffmpeg_with_stop_check(cmd, 600, _log_fn, label="FG-PRERENDER")
+        if result.returncode != 0:
+            if log:
+                log(f"[ffmpeg] Pre-render FAILED (return code {result.returncode}).")
+                if result.stderr:
+                    log(result.stderr[:500])
+            return False
         if log: log(f"[ffmpeg] Pre-render completed: {out_path}")
         return True
-    except subprocess.CalledProcessError as e:
-        if log:
-            log(f"[ffmpeg] Pre-render FAILED (return code {e.returncode}).")
-            log(" ".join(cmd))
-            log(str(e))
+    except InterruptedError:
+        if log: log("[ffmpeg] ⏹ Pre-render stopped by user.")
+        raise
+    except subprocess.TimeoutExpired:
+        if log: log("[ffmpeg] Pre-render timed out after 600s.")
         return False
     except Exception as e:
         if log: log(f"[ffmpeg] Pre-render exception: {e}")
@@ -3991,6 +4008,11 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     for ffmpeg_attempt in range(MAX_FFMPEG_RETRIES):
         try:
             import tempfile
+            # Check stop event before starting export attempt
+            if _queue_stop_event.is_set():
+                log("[EXPORT] ⏹ Stop requested — aborting export")
+                raise InterruptedError("Export stopped by user")
+            
             # On second attempt, force CPU-only mode as fallback
             use_cpu_fallback = (ffmpeg_attempt > 0)
             if ffmpeg_attempt == 0:
@@ -4007,6 +4029,11 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             audio_clip.write_audiofile(audio_temp_path, fps=44100, codec='mp3', verbose=False, logger=None)
             log(f"[EXPORT] Audio saved to: {audio_temp_path}")
             
+            # Check stop event after audio save
+            if _queue_stop_event.is_set():
+                log("[EXPORT] ⏹ Stop requested — aborting export")
+                raise InterruptedError("Export stopped by user")
+            
             # Get foreground video path - use pre-rendered path if available
             fg_video_path = None
             if pre_rendered_fg_path and os.path.exists(pre_rendered_fg_path):
@@ -4020,6 +4047,10 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 fg_video_path = os.path.join(temp_dir, "foreground.mp4")
                 log(f"[EXPORT] No pre-rendered foreground - saving to: {fg_video_path}")
                 fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
+                # Check stop event after foreground save
+                if _queue_stop_event.is_set():
+                    log("[EXPORT] ⏹ Stop requested — aborting export")
+                    raise InterruptedError("Export stopped by user")
             
             # Determine background source path
             # Use the SAME foreground video as the background source to guarantee
@@ -4071,6 +4102,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 last_ffmpeg_error = "FFmpeg returned non-zero exit code (check log above for stderr details)"
                 log(f"[EXPORT] ⚠️ FFmpeg export failed (attempt {ffmpeg_attempt + 1}/{MAX_FFMPEG_RETRIES}) - see FFmpeg stderr output above")
                 
+        except InterruptedError:
+            log("[EXPORT] ⏹ Export stopped by user — not retrying")
+            raise
         except Exception as e:
             last_ffmpeg_error = str(e)
             log(f"[EXPORT] ⚠️ FFmpeg export exception (attempt {ffmpeg_attempt + 1}/{MAX_FFMPEG_RETRIES}): {e}")
@@ -4591,6 +4625,10 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
 
         temp_dir = tempfile.mkdtemp(prefix="tiktok_prerender_")
         temp_fg = os.path.join(temp_dir, "fg_prerender.mp4")
+        # Check stop event before starting the lengthy foreground pre-render
+        if _queue_stop_event.is_set():
+            log("⏹ Stop requested — skipping foreground pre-render")
+            raise InterruptedError("Stopped by user before foreground pre-render")
         log(f"Attempting ffmpeg pre-render -> {os.path.basename(temp_fg)} (nvenc={use_nvenc})")
         prer_ok = pre_render_foreground_ffmpeg(video_path, temp_fg, crop_x, crop_y, crop_w, crop_h, scale_w, scale_h, FPS, use_nvenc, log)
 
