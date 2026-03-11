@@ -1102,7 +1102,11 @@ CAPTION_PADDING = 200
 CAPTION_TEXT_COLOR = (255, 255, 255, 255)
 CAPTION_STROKE_COLOR = (0, 0, 0, 150)
 # Stroke width (pixels) for caption border
-CAPTION_STROKE_WIDTH = max(1, int(CAPTION_FONT_SIZE * 0.05))
+STROKE_WIDTH_RATIO = 0.05
+CAPTION_STROKE_WIDTH = max(1, int(CAPTION_FONT_SIZE * STROKE_WIDTH_RATIO))
+# 4K resolution doubles font size: if the current global looks like an HD default, scale up.
+DEFAULT_4K_FONT_SIZE = 112
+HD_FONT_SIZE_THRESHOLD = 80
 
 # Video zoom scale (user-controllable)
 VIDEO_ZOOM_SCALE = 1.0  # 1.0 = auto-fit, <1.0 = zoom out, >1.0 = zoom in
@@ -2732,7 +2736,8 @@ def _run_ffmpeg_with_stop_check(cmd, timeout, log_fn, label="FFmpeg"):
     object with returncode, stdout, and stderr.
     """
     global _active_ffmpeg_proc
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, errors="replace")
     with _active_ffmpeg_lock:
         _active_ffmpeg_proc = proc
     try:
@@ -2742,10 +2747,7 @@ def _run_ffmpeg_with_stop_check(cmd, timeout, log_fn, label="FFmpeg"):
             try:
                 stdout, stderr = proc.communicate(timeout=0.5)
                 # Process finished normally
-                result = subprocess.CompletedProcess(cmd, proc.returncode,
-                                                     stdout.decode("utf-8", errors="replace"),
-                                                     stderr.decode("utf-8", errors="replace"))
-                return result
+                return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
             except subprocess.TimeoutExpired:
                 pass
 
@@ -4424,13 +4426,13 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         # Sync font globals so any fallback path also uses 4K-appropriate values
         if caption_font_size is not None:
             globals()['CAPTION_FONT_SIZE'] = caption_font_size
-        elif globals().get('CAPTION_FONT_SIZE', 56) < 80:
+        elif globals().get('CAPTION_FONT_SIZE', 56) < HD_FONT_SIZE_THRESHOLD:
             # Font size global looks like HD default — scale up for 4K
-            globals()['CAPTION_FONT_SIZE'] = 112
+            globals()['CAPTION_FONT_SIZE'] = DEFAULT_4K_FONT_SIZE
         if caption_stroke_width is not None:
             globals()['CAPTION_STROKE_WIDTH'] = caption_stroke_width
         else:
-            globals()['CAPTION_STROKE_WIDTH'] = max(1, int(globals().get('CAPTION_FONT_SIZE', 112) * 0.05))
+            globals()['CAPTION_STROKE_WIDTH'] = max(1, int(globals().get('CAPTION_FONT_SIZE', DEFAULT_4K_FONT_SIZE) * STROKE_WIDTH_RATIO))
         log("[RESOLUTION] Job set to 4K mode (2160x3840)")
     else:
         globals()['IS_4K_MODE'] = False

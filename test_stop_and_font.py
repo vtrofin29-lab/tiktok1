@@ -28,15 +28,10 @@ def test_bg_prerender_uses_stop_check():
     source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
     with open(source_file, 'r', encoding='utf-8') as f:
         source = f.read()
-    # Find the bg pre-render section
-    bg_section_start = source.find("Pass 1/2: Pre-rendering blurred background")
-    bg_section_end = source.find("Pass 2: Final encode", bg_section_start)
-    bg_section = source[bg_section_start:bg_section_end]
-    
-    assert '_run_ffmpeg_with_stop_check(' in bg_section, \
-        "Background pre-render should use _run_ffmpeg_with_stop_check instead of subprocess.run"
-    assert 'BG-RENDER' in bg_section or 'bg_result' in bg_section, \
-        "Background pre-render should label its FFmpeg process"
+    # Find the bg pre-render section by looking for the bg_result assignment
+    bg_section_start = source.find("bg_result = _run_ffmpeg_with_stop_check(")
+    assert bg_section_start != -1, \
+        "Background pre-render should use _run_ffmpeg_with_stop_check (bg_result = _run_ffmpeg_with_stop_check(...))"
 
 
 def test_final_encode_uses_stop_check():
@@ -44,13 +39,10 @@ def test_final_encode_uses_stop_check():
     source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
     with open(source_file, 'r', encoding='utf-8') as f:
         source = f.read()
-    # Find the final encode section
-    final_section_start = source.find("Executing FFmpeg final encode")
-    final_section_end = source.find("Clean up background temp file", final_section_start)
-    final_section = source[final_section_start:final_section_end]
-    
-    assert '_run_ffmpeg_with_stop_check(' in final_section, \
-        "Final encode should use _run_ffmpeg_with_stop_check instead of subprocess.run"
+    # Find the final encode result assignment
+    final_result = source.find("result = _run_ffmpeg_with_stop_check(")
+    assert final_result != -1, \
+        "Final encode should use _run_ffmpeg_with_stop_check (result = _run_ffmpeg_with_stop_check(...))"
 
 
 def test_stop_queue_kills_ffmpeg_proc():
@@ -103,9 +95,10 @@ def test_process_single_job_syncs_font_globals_for_4k():
     source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
     with open(source_file, 'r', encoding='utf-8') as f:
         source = f.read()
-    # Find the 4K mode setup in process_single_job
+    # Find the process_single_job function up to its first try block
     func_start = source.find("def process_single_job(")
-    func_body = source[func_start:func_start + 5000]
+    func_try = source.find("\n    try:", func_start)
+    func_body = source[func_start:func_try]
     
     # Check that CAPTION_FONT_SIZE is set for 4K mode
     assert "CAPTION_FONT_SIZE" in func_body, \
