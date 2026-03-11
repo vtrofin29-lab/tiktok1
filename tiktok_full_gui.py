@@ -7141,6 +7141,11 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
+            # Refresh the mini preview so the caption indicator updates immediately
+            try:
+                self.update_mini_preview_immediate()
+            except Exception:
+                pass
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -8235,8 +8240,29 @@ class App:
                 'blur_overlay_h': job.get("blur_overlay_h", 15.0),
                 'blur_overlay_intensity': job.get("blur_overlay_intensity", 20)
             }
+            # Enable stop button and disable run buttons (same as run_queue)
+            _queue_stop_event.clear()
+            self.run_queue_btn.config(state="disabled")
+            self.run_single_btn.config(state="disabled")
+            self.stop_queue_btn.config(state="normal")
+            # Clear log
+            self.log_widget.config(state="normal")
+            self.log_widget.delete("1.0", tk.END)
+            self.log_widget.config(state="disabled")
+            # Wrapper that sends [SINGLE_DONE] when the job finishes
+            single_kwargs = {"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en'), "caption_text_color": job.get("caption_text_color"), "caption_stroke_color": job.get("caption_stroke_color"), "caption_stroke_width": job.get("caption_stroke_width"), "caption_font_size": job.get("caption_font_size"), "caption_y_offset": job.get("caption_y_offset")}
+            def _single_job_wrapper():
+                try:
+                    process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"), **single_kwargs)
+                except Exception as exc:
+                    q.put(f"[SINGLE JOB ERROR] {exc}\n")
+                finally:
+                    if _queue_stop_event.is_set():
+                        q.put("[QUEUE_STOPPED]")
+                    else:
+                        q.put("[SINGLE_DONE]")
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en'), "caption_text_color": job.get("caption_text_color"), "caption_stroke_color": job.get("caption_stroke_color"), "caption_stroke_width": job.get("caption_stroke_width"), "caption_font_size": job.get("caption_font_size"), "caption_y_offset": job.get("caption_y_offset")}, daemon=True)
+            t = threading.Thread(target=_single_job_wrapper, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')

@@ -242,6 +242,72 @@ def test_no_check_call_in_export_functions():
         "reencode_with_libx264 must not use subprocess.check_call"
 
 
+def test_on_run_single_enables_stop_button():
+    """on_run_single must enable the stop button so the user can stop single job processing."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def on_run_single(self):")
+    assert func_start != -1, "on_run_single method should exist"
+    func_end = source.find("\n    def ", func_start + 1)
+    func_body = source[func_start:func_end]
+    assert 'stop_queue_btn' in func_body and 'normal' in func_body, \
+        "on_run_single should enable the stop button (stop_queue_btn state normal)"
+
+
+def test_on_run_single_clears_stop_event():
+    """on_run_single must clear _queue_stop_event before starting a job."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def on_run_single(self):")
+    func_end = source.find("\n    def ", func_start + 1)
+    func_body = source[func_start:func_end]
+    assert '_queue_stop_event.clear()' in func_body, \
+        "on_run_single should clear _queue_stop_event before starting"
+
+
+def test_on_run_single_disables_run_buttons():
+    """on_run_single must disable run buttons to prevent concurrent jobs."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def on_run_single(self):")
+    func_end = source.find("\n    def ", func_start + 1)
+    func_body = source[func_start:func_end]
+    assert 'run_queue_btn' in func_body and 'disabled' in func_body, \
+        "on_run_single should disable run_queue_btn"
+    assert 'run_single_btn' in func_body and 'disabled' in func_body, \
+        "on_run_single should disable run_single_btn"
+
+
+def test_on_run_single_sends_done_signal():
+    """on_run_single thread must send [SINGLE_DONE] or [QUEUE_STOPPED] when finished."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def on_run_single(self):")
+    func_end = source.find("\n    def ", func_start + 1)
+    func_body = source[func_start:func_end]
+    assert '[SINGLE_DONE]' in func_body, \
+        "on_run_single should send [SINGLE_DONE] signal when job finishes"
+    assert '[QUEUE_STOPPED]' in func_body, \
+        "on_run_single should send [QUEUE_STOPPED] signal when stop was requested"
+
+
+def test_on_4k_toggle_refreshes_preview():
+    """on_4k_toggle must refresh the mini preview after changing 4K settings."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def on_4k_toggle(self):")
+    assert func_start != -1, "on_4k_toggle method should exist"
+    func_end = source.find("\n    def ", func_start + 1)
+    func_body = source[func_start:func_end]
+    assert 'update_mini_preview_immediate' in func_body, \
+        "on_4k_toggle should call update_mini_preview_immediate() to refresh the preview"
+
+
 if __name__ == "__main__":
     tests = [
         test_active_ffmpeg_proc_global_exists,
@@ -260,6 +326,11 @@ if __name__ == "__main__":
         test_stop_check_before_fg_prerender,
         test_stop_check_in_export_retry_loop,
         test_no_check_call_in_export_functions,
+        test_on_run_single_enables_stop_button,
+        test_on_run_single_clears_stop_event,
+        test_on_run_single_disables_run_buttons,
+        test_on_run_single_sends_done_signal,
+        test_on_4k_toggle_refreshes_preview,
     ]
     
     passed = 0
