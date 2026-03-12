@@ -261,6 +261,42 @@ def test_caption_indicator_shows_resolution_mode():
         "Caption indicator should display 'HD' when in HD mode"
 
 
+def test_build_capcut_meta_has_minor_version():
+    """_build_capcut_meta must set minor_version=512 (matching real CapCut ftyp)."""
+    source = _read_source()
+    func_start = source.find("def _build_capcut_meta(")
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'minor_version=512' in func_body, \
+        "_build_capcut_meta should set minor_version=512 metadata"
+
+
+def test_build_capcut_meta_has_compatible_brands():
+    """_build_capcut_meta must set compatible_brands=isomiso2avc1mp41."""
+    source = _read_source()
+    func_start = source.find("def _build_capcut_meta(")
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'compatible_brands=isomiso2avc1mp41' in func_body, \
+        "_build_capcut_meta should set compatible_brands=isomiso2avc1mp41"
+
+
+def test_stop_check_proc_wait_has_timeout_protection():
+    """_run_ffmpeg_with_stop_check must catch TimeoutExpired from proc.wait() after kill."""
+    source = _read_source()
+    func_start = source.find("def _run_ffmpeg_with_stop_check(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    # After proc.kill(), proc.wait(timeout=10) should be wrapped in try/except
+    kill_pos = func_body.find("proc.kill()")
+    assert kill_pos != -1
+    # Find the section after first proc.kill() for stop path
+    stop_section = func_body[kill_pos:kill_pos + 200]
+    assert "except subprocess.TimeoutExpired" in stop_section, \
+        "proc.wait() after proc.kill() must be protected by try/except TimeoutExpired"
+
+
 if __name__ == "__main__":
     # Run with pytest or unittest
     import pytest

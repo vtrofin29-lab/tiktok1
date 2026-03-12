@@ -1685,13 +1685,16 @@ def _build_capcut_artwork():
 
 def _build_capcut_meta(include_audio_handler=True):
     """Build CapCut-authentic metadata flags for FFmpeg export commands.
-    Matches real CapCut export fingerprint: isom brand, BT.709 color,
-    creation timestamp, standard handler names, and CapCut-specific tags.
+    Matches real CapCut export fingerprint: isom brand, minor_version 512,
+    compatible_brands isomiso2avc1mp41, BT.709 color, creation timestamp,
+    standard handler names, and CapCut-specific tags.
     """
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
     meta = [
         "-map_metadata", "-1",
         "-brand", "isom",
+        "-metadata", "minor_version=512",
+        "-metadata", "compatible_brands=isomiso2avc1mp41",
         "-metadata", f"creation_time={now_utc}",
         "-metadata:s:v:0", "handler_name=VideoHandler",
         "-metadata", "Hw=1",
@@ -2857,12 +2860,18 @@ def _run_ffmpeg_with_stop_check(cmd, timeout, log_fn, label="FFmpeg"):
             if _queue_stop_event.is_set():
                 log_fn(f"[{label}] ⏹ Stop requested — killing FFmpeg process...")
                 proc.kill()
-                proc.wait(timeout=10)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
                 raise InterruptedError(f"{label} stopped by user")
 
             if time.time() > deadline:
                 proc.kill()
-                proc.wait(timeout=10)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
                 raise subprocess.TimeoutExpired(cmd, timeout)
     finally:
         with _active_ffmpeg_lock:
