@@ -4619,10 +4619,12 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     
     # Determine audio gains - prefer per-job parameter over global
     if voice_gain is None:
-        voice_gain = globals().get('VOICE_GAIN', 2.5)
+        voice_gain = globals().get('VOICE_GAIN', VOICE_GAIN)
     if music_gain is None:
-        music_gain = globals().get('MUSIC_GAIN', 0.18)
-    # Apply per-job gains to globals so compose functions pick them up
+        music_gain = globals().get('MUSIC_GAIN', MUSIC_GAIN)
+    # Apply per-job gains to globals so compose functions pick them up.
+    # This is safe because jobs are processed sequentially (same pattern as
+    # IS_4K_MODE, WIDTH, HEIGHT globals set below).
     globals()['VOICE_GAIN'] = voice_gain
     globals()['MUSIC_GAIN'] = music_gain
     
