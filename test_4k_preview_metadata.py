@@ -424,8 +424,8 @@ def test_whisper_skips_external_translate_when_builtin():
     func_body = source[func_start:func_end]
     assert "_use_whisper_translate" in func_body, \
         "Should track whether Whisper built-in translation was used"
-    assert "skipping external translation" in func_body.lower() or "skip" in func_body.lower(), \
-        "Should skip external translation when Whisper already translated"
+    assert "skipping external translation" in func_body.lower(), \
+        "Should log skipping external translation when Whisper already translated"
 
 
 def test_translate_segments_batch_approach():

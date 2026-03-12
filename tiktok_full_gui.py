@@ -239,10 +239,11 @@ def translate_segments(segments, target_language='en', log=None):
     combined = _SEP.join(originals)
     
     batch_ok = False
+    _SEP_STRIPPED = _SEP.strip()
     try:
         translated_combined = translate_text(combined, target_language, log=None)
-        if translated_combined and _SEP.strip() in translated_combined:
-            parts = [p.strip() for p in translated_combined.split(_SEP.strip())]
+        if translated_combined and _SEP_STRIPPED in translated_combined:
+            parts = [p.strip() for p in translated_combined.split(_SEP_STRIPPED)]
             if len(parts) == len(segments):
                 batch_ok = True
                 translated = []
