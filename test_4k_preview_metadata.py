@@ -64,7 +64,7 @@ def test_make_ffmpeg_params_has_capcut_metadata():
     func_body = source[func_start:func_end]
     assert 'map_metadata' in func_body, \
         "_make_ffmpeg_params_for_codec should strip source metadata"
-    assert 'encoder=CapCut' in func_body or 'encoder=CapCut' in func_body, \
+    assert 'encoder=CapCut' in func_body, \
         "_make_ffmpeg_params_for_codec should set encoder to CapCut"
     assert 'CapCut Video Handler' in func_body, \
         "_make_ffmpeg_params_for_codec should set video handler to CapCut"
