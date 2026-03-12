@@ -1642,6 +1642,7 @@ def _build_capcut_artwork():
     music_id1 = str(uuid.uuid4())
     music_id2 = str(uuid.uuid4())
     video_id = str(uuid.uuid4())
+    # CapCut effect IDs are 19-digit numbers in the 73xx-74xx range
     effect_id1 = str(random.randint(7300000000000000000, 7499999999999999999))
     effect_id2 = str(random.randint(7300000000000000000, 7499999999999999999))
     vs_val = random.randint(30, 60)
@@ -1661,7 +1662,7 @@ def _build_capcut_artwork():
             "is_use_graph_chart": 0,
             "is_use_jichuang_mode_in_ai_writer": 0,
             "is_use_relight": 0,
-            "is_use_vc_sing_clone": 1,
+            "is_use_vc_sing_clone": 1,  # always 1 in real CapCut exports
             "is_use_voice_clone": "0",
             "motion_blur_cnt": 0,
             "musicId": f"{music_id1},{music_id2}",
