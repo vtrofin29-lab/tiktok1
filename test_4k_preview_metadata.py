@@ -297,6 +297,21 @@ def test_stop_check_proc_wait_has_timeout_protection():
         "proc.wait() after proc.kill() must be protected by try/except TimeoutExpired"
 
 
+def test_movflags_use_metadata_tags():
+    """All movflags must include use_metadata_tags so FFmpeg writes custom
+    metadata (Artwork, Hw, Bitrate, etc.) to the MP4 container."""
+    source = _read_source()
+    # Find all movflags occurrences
+    movflags_pattern = re.compile(r'"-movflags",\s*"([^"]+)"')
+    matches = movflags_pattern.findall(source)
+    assert len(matches) >= 5, f"Expected at least 5 movflags, found {len(matches)}"
+    for flag_value in matches:
+        assert "use_metadata_tags" in flag_value, \
+            f"movflags '{flag_value}' must include use_metadata_tags for custom MP4 metadata"
+        assert "faststart" in flag_value, \
+            f"movflags '{flag_value}' must include faststart for web streaming"
+
+
 if __name__ == "__main__":
     # Run with pytest or unittest
     import pytest

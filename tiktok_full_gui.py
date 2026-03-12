@@ -1628,9 +1628,9 @@ def ffmpeg_gpu_filters_available():
 def get_export_settings():
     audio_bitrate = "256k"
     threads = 0  # Auto-detect threads for optimal CPU utilization
-    libx264_params = ["-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-movflags", "+faststart"]
+    libx264_params = ["-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-movflags", "+faststart+use_metadata_tags"]
     libx264_codec = "libx264"
-    nvenc_params = ["-rc", "constqp", "-qp", "20", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-multipass", "fullres", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-threads", "0", "-movflags", "+faststart"]
+    nvenc_params = ["-rc", "constqp", "-qp", "20", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-multipass", "fullres", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-threads", "0", "-movflags", "+faststart+use_metadata_tags"]
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
@@ -1736,7 +1736,7 @@ def reencode_with_libx264(input_path, output_path, log=None):
         cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18", 
                    "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2"])
     
-    cmd.extend(["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"]
+    cmd.extend(["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart+use_metadata_tags"]
                + _CAPCUT_COLOR_FLAGS + _build_capcut_meta() + [output_path])
     
     if log: log(f"[ffmpeg] Re-encoding to: {output_path} (GPU={'NVENC' if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC) else 'No'})")
@@ -1809,7 +1809,7 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
     fg_filter_threads = max(2, min(total_cores, 8))
     cmd.extend(["-filter_threads", str(fg_filter_threads)])
     cmd.extend(vparams + ["-threads", "0", "-pix_fmt", "yuv420p",
-               "-movflags", "+faststart"]
+               "-movflags", "+faststart+use_metadata_tags"]
                + _CAPCUT_COLOR_FLAGS + _build_capcut_meta(include_audio_handler=False) + [out_path])
     
     if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc}, hwaccel={USE_HARDWARE_DECODING and use_nvenc})")
@@ -2416,7 +2416,7 @@ def _make_ffmpeg_params_for_codec(codec):
             "-pix_fmt", "yuv420p",     # Standard pixel format
             "-profile:v", "high",      # H.264 High profile (same as CapCut)
             "-level", "4.2",           # Level 4.2 for broad compatibility
-            "-movflags", "+faststart"  # Web streaming optimization
+            "-movflags", "+faststart+use_metadata_tags"  # Web streaming optimization + custom metadata tags
         ] + _capcut_meta
     else:
         # CPU encoding with libx264 - CapCut-like H.264 High quality
@@ -2426,7 +2426,7 @@ def _make_ffmpeg_params_for_codec(codec):
             "-pix_fmt", "yuv420p",     # Standard pixel format
             "-profile:v", "high",      # H.264 High profile (same as CapCut)
             "-level", "4.2",           # Level 4.2 for broad compatibility
-            "-movflags", "+faststart"  # Web streaming optimization
+            "-movflags", "+faststart+use_metadata_tags"  # Web streaming optimization + custom metadata tags
         ] + _capcut_meta
 
 # ----------------- FFmpeg Fast Export Functions -----------------
@@ -3748,7 +3748,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 "-threads", "0"
             ])
         
-        cmd.extend(["-movflags", "+faststart"]
+        cmd.extend(["-movflags", "+faststart+use_metadata_tags"]
                    + _CAPCUT_COLOR_FLAGS + _build_capcut_meta() + [output_path])
         
         log_fn("[EXPORT] Executing FFmpeg final encode...")
