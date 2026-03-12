@@ -1652,7 +1652,13 @@ def reencode_with_libx264(input_path, output_path, log=None):
         cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18", 
                    "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2"])
     
-    cmd.extend(["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart", output_path])
+    cmd.extend(["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart",
+               "-map_metadata", "-1",
+               "-metadata", "encoder=CapCut",
+               "-metadata", "comment=Made with CapCut",
+               "-metadata:s:v:0", "handler_name=CapCut Video Handler",
+               "-metadata:s:a:0", "handler_name=CapCut Sound Handler",
+               output_path])
     
     if log: log(f"[ffmpeg] Re-encoding to: {output_path} (GPU={'NVENC' if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC) else 'No'})")
     try:
@@ -2316,6 +2322,14 @@ def _make_ffmpeg_params_for_codec(codec):
     - pre_render_foreground_ffmpeg() uses -hwaccel cuda for foreground (works!)
     - NVENC encoding below (works!)
     """
+    # CapCut metadata tags
+    _capcut_meta = [
+        "-map_metadata", "-1",
+        "-metadata", "encoder=CapCut",
+        "-metadata", "comment=Made with CapCut",
+        "-metadata:s:v:0", "handler_name=CapCut Video Handler",
+        "-metadata:s:a:0", "handler_name=CapCut Sound Handler",
+    ]
     if codec in ("h264_nvenc", "hevc_nvenc"):
         # GPU encoding with NVENC - CapCut-like H.264 High quality
         return [
@@ -2328,7 +2342,7 @@ def _make_ffmpeg_params_for_codec(codec):
             "-profile:v", "high",      # H.264 High profile (same as CapCut)
             "-level", "4.2",           # Level 4.2 for broad compatibility
             "-movflags", "+faststart"  # Web streaming optimization
-        ]
+        ] + _capcut_meta
     else:
         # CPU encoding with libx264 - CapCut-like H.264 High quality
         return [
@@ -2338,7 +2352,7 @@ def _make_ffmpeg_params_for_codec(codec):
             "-profile:v", "high",      # H.264 High profile (same as CapCut)
             "-level", "4.2",           # Level 4.2 for broad compatibility
             "-movflags", "+faststart"  # Web streaming optimization
-        ]
+        ] + _capcut_meta
 
 # ----------------- FFmpeg Fast Export Functions -----------------
 
@@ -3655,6 +3669,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         cmd.extend([
             "-movflags", "+faststart",
+            "-map_metadata", "-1",
+            "-metadata", "encoder=CapCut",
+            "-metadata", "comment=Made with CapCut",
+            "-metadata:s:v:0", "handler_name=CapCut Video Handler",
+            "-metadata:s:a:0", "handler_name=CapCut Sound Handler",
             output_path
         ])
         
@@ -7158,15 +7177,21 @@ class App:
     def _calc_caption_y_for_preview(self, h, offset):
         """Calculate the caption baseline Y position on the preview canvas.
 
-        A bottom margin (8 % of canvas height, min 30 px) mirrors the padding
-        that the real export caption image has below its text, so the preview
-        text never sits flush against the bottom edge.
+        Mirrors the exact FFmpeg drawtext formula:
+            y = h - text_h + y_offset - y_correction
+        where y_correction = fontsize * 0.08.
+
+        In preview coordinates, the bottom of the text sits at:
+            preview_y = h + (offset * preview_ratio) - small_correction
+        This matches the export so the user sees the real caption position.
         """
         preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
-        bottom_margin = max(30, int(h * 0.08))
+        font_size = globals().get('CAPTION_FONT_SIZE', 56)
+        # Match FFmpeg y_correction = fontsize * 0.08, scaled to preview
+        y_correction = max(2, int(font_size * 0.08 * preview_ratio))
         caption_baseline_from_bottom = int(-offset * preview_ratio)
-        caption_y = (h - bottom_margin) - caption_baseline_from_bottom
-        caption_y = max(5, min(h - bottom_margin, caption_y))
+        caption_y = (h - y_correction) - caption_baseline_from_bottom
+        caption_y = max(5, min(h - 2, caption_y))
         return caption_y
 
     def _draw_caption_text_on_pil_image(self, composed, caption_y):
@@ -7262,10 +7287,11 @@ class App:
             self.mini_canvas.create_line(0, caption_y, composed.width, caption_y,
                                         fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
 
-            # Info label
+            # Info label — include resolution mode so user sees the difference
             font_size = globals().get('CAPTION_FONT_SIZE', 56)
             words_per_caption = globals().get('WORDS_PER_GROUP', 2)
-            info_text = f"Y: {offset}px | Size: {font_size}px | Words: {words_per_caption}"
+            res_tag = "4K" if globals().get('IS_4K_MODE', False) else "HD"
+            info_text = f"{res_tag} | Y: {offset}px | Size: {font_size}px | Words: {words_per_caption}"
             label_y = min(h - 2, caption_y + 12)
             self.mini_canvas.create_text(composed.width // 2, label_y,
                                         text=info_text, anchor="s",
