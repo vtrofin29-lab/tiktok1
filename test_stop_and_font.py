@@ -308,6 +308,35 @@ def test_on_4k_toggle_refreshes_preview():
         "on_4k_toggle should call update_mini_preview_immediate() to refresh the preview"
 
 
+def test_process_single_job_catches_interrupted_error_cleanly():
+    """process_single_job must catch InterruptedError before generic Exception
+    so that user-initiated stops don't show ugly tracebacks."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    # Find the process_single_job function
+    fn_start = source.find("def process_single_job(")
+    assert fn_start != -1, "process_single_job function must exist"
+    fn_body = source[fn_start:]
+    # The main try/except block should have InterruptedError before Exception.
+    # Look for the pattern: except InterruptedError followed by except Exception
+    # within the function body (search for consecutive except blocks).
+    import re
+    # Find all "except InterruptedError" and "except Exception" at the same indent
+    # The main try block uses 4-space indent for except clauses
+    ie_matches = list(re.finditer(r'^    except InterruptedError', fn_body, re.MULTILINE))
+    assert len(ie_matches) >= 1, \
+        "process_single_job must have an 'except InterruptedError' handler at top-level try"
+    ie_pos = ie_matches[0].start()
+    # Find the generic except Exception that follows
+    ex_matches = list(re.finditer(r'^    except Exception', fn_body, re.MULTILINE))
+    assert len(ex_matches) >= 1, \
+        "process_single_job must have an 'except Exception' handler at top-level try"
+    ex_pos = ex_matches[0].start()
+    assert ie_pos < ex_pos, \
+        "InterruptedError handler must appear BEFORE generic Exception handler"
+
+
 if __name__ == "__main__":
     tests = [
         test_active_ffmpeg_proc_global_exists,
@@ -331,6 +360,7 @@ if __name__ == "__main__":
         test_on_run_single_disables_run_buttons,
         test_on_run_single_sends_done_signal,
         test_on_4k_toggle_refreshes_preview,
+        test_process_single_job_catches_interrupted_error_cleanly,
     ]
     
     passed = 0

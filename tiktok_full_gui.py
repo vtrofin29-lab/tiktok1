@@ -4920,6 +4920,9 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             log(f"Job finished successfully. Output: {output_path}")
         else:
             log("Job finished with errors.")
+    except InterruptedError:
+        q.put("\n⏹ QUEUE STOPPED BY USER")
+        raise
     except Exception as e:
         q.put(f"Exception: {e}")
         import traceback
