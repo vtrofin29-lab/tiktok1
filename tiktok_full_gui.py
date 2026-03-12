@@ -1040,6 +1040,7 @@ MIN_FG_HEIGHT_RATIO = 0.35  # Foreground fills at least 35% of canvas height (67
 
 VOICE_GAIN = 5.0  # Default: 5.0x louder for strong voice clarity
 MUSIC_GAIN = 0.25  # Default: 0.25x quieter for subtle background music
+FFMPEG_OUTPUT_VOLUME_BOOST = 2.0  # Overall audio boost applied in FFmpeg to ensure adequate output volume
 CAPTION_FONT_PREFERRED = "Bangers"
 CAPTION_FONT_SIZE = 56
 
@@ -3711,7 +3712,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # MoviePy → WAV → FFmpeg pipeline.  The voice/music balance is already baked
         # into the mixed audio via MoviePy's volumex(); this 2× overall boost
         # ensures the output is at a comfortable listening level.
-        filter_parts.append("[2:a]volume=2.0[aout]")
+        filter_parts.append(f"[2:a]volume={FFMPEG_OUTPUT_VOLUME_BOOST}[aout]")
         
         # Join all filter parts with semicolons
         filter_chain = ";".join(filter_parts)
