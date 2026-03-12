@@ -4572,13 +4572,14 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                 _cur_y = globals().get('CAPTION_Y_OFFSET', 0)
                 if _cur_y != 0:
                     caption_y_offset = _cur_y * 2
-        # Scale stroke width
+        # Scale stroke width (use resolved font size from globals to avoid None)
+        _resolved_fs = globals().get('CAPTION_FONT_SIZE', DEFAULT_4K_FONT_SIZE)
         if caption_stroke_width is not None:
             if _hd_auto_scaled:
-                caption_stroke_width = max(1, int(caption_font_size * STROKE_WIDTH_RATIO))
+                caption_stroke_width = max(1, int(_resolved_fs * STROKE_WIDTH_RATIO))
             globals()['CAPTION_STROKE_WIDTH'] = caption_stroke_width
         else:
-            globals()['CAPTION_STROKE_WIDTH'] = max(1, int(globals().get('CAPTION_FONT_SIZE', DEFAULT_4K_FONT_SIZE) * STROKE_WIDTH_RATIO))
+            globals()['CAPTION_STROKE_WIDTH'] = max(1, int(_resolved_fs * STROKE_WIDTH_RATIO))
         log("[RESOLUTION] Job set to 4K mode (2160x3840)")
     else:
         globals()['IS_4K_MODE'] = False
