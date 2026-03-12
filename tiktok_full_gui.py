@@ -107,6 +107,8 @@ import tempfile
 import shutil
 import json
 import gc
+import uuid
+import random
 from datetime import datetime, timezone
 
 import tkinter as tk
@@ -1633,10 +1635,57 @@ def get_export_settings():
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
 
+def _build_capcut_artwork():
+    """Generate CapCut-authentic Artwork JSON metadata with randomized IDs.
+    Matches real CapCut export artwork metadata structure.
+    """
+    music_id1 = str(uuid.uuid4())
+    music_id2 = str(uuid.uuid4())
+    video_id = str(uuid.uuid4())
+    effect_id1 = str(random.randint(7300000000000000000, 7499999999999999999))
+    effect_id2 = str(random.randint(7300000000000000000, 7499999999999999999))
+    vs_val = random.randint(30, 60)
+    sp_val = random.choice([0, 1, 2])
+    ef_val = random.choice([0, 1, 2])
+    ft_val = random.choice([0, 1, 2])
+    artwork = {
+        "data": {
+            "editType": "default",
+            "infoStickerId": "",
+            "is_ai_lyric": 0,
+            "is_aimusic_mv": 0,
+            "is_use_ai_image_generation": 0,
+            "is_use_ai_video_generation": 0,
+            "is_use_aimusic_bgm": 0,
+            "is_use_aimusic_vocal": 0,
+            "is_use_graph_chart": 0,
+            "is_use_jichuang_mode_in_ai_writer": 0,
+            "is_use_relight": 0,
+            "is_use_vc_sing_clone": 1,
+            "is_use_voice_clone": "0",
+            "motion_blur_cnt": 0,
+            "musicId": f"{music_id1},{music_id2}",
+            "os": "windows",
+            "product": "vicut",
+            "stickerId": "",
+            "videoEffectId": f"{effect_id1},{effect_id2}",
+            "videoId": video_id,
+            "videoParams": {
+                "be": 0, "ef": ef_val, "ft": ft_val, "ma": 0,
+                "me": 0, "mu": 0, "re": 0, "sp": sp_val,
+                "st": 0, "te": 0, "tx": 0, "v": 0, "vs": vs_val,
+            },
+        },
+        "source_platform": "desktop",
+        "source_type": "vicut",
+    }
+    return json.dumps(artwork, separators=(",", ":"))
+
+
 def _build_capcut_meta(include_audio_handler=True):
     """Build CapCut-authentic metadata flags for FFmpeg export commands.
     Matches real CapCut export fingerprint: isom brand, BT.709 color,
-    creation timestamp, and standard handler names.
+    creation timestamp, standard handler names, and CapCut-specific tags.
     """
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
     meta = [
@@ -1644,6 +1693,12 @@ def _build_capcut_meta(include_audio_handler=True):
         "-brand", "isom",
         "-metadata", f"creation_time={now_utc}",
         "-metadata:s:v:0", "handler_name=VideoHandler",
+        "-metadata", "Hw=1",
+        "-metadata", "Bitrate=28000000",
+        "-metadata", "Maxrate=0",
+        "-metadata", "Te Is Reencode=1",
+        "-metadata", "Mp 4 Data Incomplete=false",
+        "-metadata", f"Artwork={_build_capcut_artwork()}",
     ]
     if include_audio_handler:
         meta.extend(["-metadata:s:a:0", "handler_name=SoundHandler"])

@@ -111,6 +111,74 @@ def test_metadata_strips_source_before_adding():
         "-map_metadata should appear before handler_name metadata"
 
 
+def test_build_capcut_meta_has_hw():
+    """_build_capcut_meta must set Hw=1 (CapCut hardware tag)."""
+    source = _read_source()
+    func_start = source.find("def _build_capcut_meta(")
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'Hw=1' in func_body, \
+        "_build_capcut_meta should set Hw=1 metadata"
+
+
+def test_build_capcut_meta_has_bitrate():
+    """_build_capcut_meta must set Bitrate=28000000."""
+    source = _read_source()
+    func_start = source.find("def _build_capcut_meta(")
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'Bitrate=28000000' in func_body, \
+        "_build_capcut_meta should set Bitrate=28000000 metadata"
+
+
+def test_build_capcut_meta_has_te_is_reencode():
+    """_build_capcut_meta must set 'Te Is Reencode=1'."""
+    source = _read_source()
+    func_start = source.find("def _build_capcut_meta(")
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'Te Is Reencode=1' in func_body, \
+        "_build_capcut_meta should set 'Te Is Reencode=1' metadata"
+
+
+def test_build_capcut_meta_has_mp4_data_incomplete():
+    """_build_capcut_meta must set 'Mp 4 Data Incomplete=false'."""
+    source = _read_source()
+    func_start = source.find("def _build_capcut_meta(")
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'Mp 4 Data Incomplete=false' in func_body, \
+        "_build_capcut_meta should set 'Mp 4 Data Incomplete=false' metadata"
+
+
+def test_build_capcut_meta_has_artwork():
+    """_build_capcut_meta must include Artwork JSON metadata."""
+    source = _read_source()
+    func_start = source.find("def _build_capcut_meta(")
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'Artwork=' in func_body, \
+        "_build_capcut_meta should set Artwork metadata"
+    assert '_build_capcut_artwork' in func_body, \
+        "_build_capcut_meta should call _build_capcut_artwork()"
+
+
+def test_build_capcut_artwork_exists():
+    """_build_capcut_artwork helper function must exist and return valid JSON."""
+    source = _read_source()
+    assert 'def _build_capcut_artwork(' in source, \
+        "_build_capcut_artwork helper function must be defined"
+    func_start = source.find("def _build_capcut_artwork(")
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'source_platform' in func_body, \
+        "_build_capcut_artwork should include source_platform"
+    assert 'vicut' in func_body, \
+        "_build_capcut_artwork should include vicut product"
+    assert 'videoParams' in func_body, \
+        "_build_capcut_artwork should include videoParams"
+
+
 # ---------- Metadata usage in FFmpeg commands ----------
 
 def test_make_ffmpeg_params_uses_capcut_meta():
