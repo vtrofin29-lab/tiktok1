@@ -173,7 +173,7 @@ def test_no_mp42_brand_remaining():
     meta_lines = [line for line in source.split('\n')
                   if 'mp42' in line and not line.strip().startswith('#')]
     assert len(meta_lines) == 0, \
-        f"No code lines should reference mp42 brand (found: {meta_lines[:3]})"
+        f"No code lines should reference mp42 brand (found {len(meta_lines)} occurrences: {meta_lines})"
 
 
 # ---------- Caption indicator info label tests ----------
