@@ -1654,10 +1654,9 @@ def reencode_with_libx264(input_path, output_path, log=None):
     
     cmd.extend(["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart",
                "-map_metadata", "-1",
-               "-metadata", "encoder=CapCut",
-               "-metadata", "comment=Made with CapCut",
-               "-metadata:s:v:0", "handler_name=CapCut Video Handler",
-               "-metadata:s:a:0", "handler_name=CapCut Sound Handler",
+               "-brand", "mp42",
+               "-metadata:s:v:0", "handler_name=VideoHandler",
+               "-metadata:s:a:0", "handler_name=SoundHandler",
                output_path])
     
     if log: log(f"[ffmpeg] Re-encoding to: {output_path} (GPU={'NVENC' if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC) else 'No'})")
@@ -1729,7 +1728,12 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
     total_cores = os.cpu_count() or 4
     fg_filter_threads = max(2, min(total_cores, 8))
     cmd.extend(["-filter_threads", str(fg_filter_threads)])
-    cmd.extend(vparams + ["-threads", "0", "-pix_fmt", "yuv420p", out_path])
+    cmd.extend(vparams + ["-threads", "0", "-pix_fmt", "yuv420p",
+               "-movflags", "+faststart",
+               "-map_metadata", "-1",
+               "-brand", "mp42",
+               "-metadata:s:v:0", "handler_name=VideoHandler",
+               out_path])
     
     if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc}, hwaccel={USE_HARDWARE_DECODING and use_nvenc})")
     try:
@@ -2322,13 +2326,13 @@ def _make_ffmpeg_params_for_codec(codec):
     - pre_render_foreground_ffmpeg() uses -hwaccel cuda for foreground (works!)
     - NVENC encoding below (works!)
     """
-    # CapCut metadata tags
+    # CapCut metadata tags – match real CapCut export fingerprint:
+    # major_brand=mp42, handler names without "CapCut" prefix, no comment field.
     _capcut_meta = [
         "-map_metadata", "-1",
-        "-metadata", "encoder=CapCut",
-        "-metadata", "comment=Made with CapCut",
-        "-metadata:s:v:0", "handler_name=CapCut Video Handler",
-        "-metadata:s:a:0", "handler_name=CapCut Sound Handler",
+        "-brand", "mp42",
+        "-metadata:s:v:0", "handler_name=VideoHandler",
+        "-metadata:s:a:0", "handler_name=SoundHandler",
     ]
     if codec in ("h264_nvenc", "hevc_nvenc"):
         # GPU encoding with NVENC - CapCut-like H.264 High quality
@@ -3670,10 +3674,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         cmd.extend([
             "-movflags", "+faststart",
             "-map_metadata", "-1",
-            "-metadata", "encoder=CapCut",
-            "-metadata", "comment=Made with CapCut",
-            "-metadata:s:v:0", "handler_name=CapCut Video Handler",
-            "-metadata:s:a:0", "handler_name=CapCut Sound Handler",
+            "-brand", "mp42",
+            "-metadata:s:v:0", "handler_name=VideoHandler",
+            "-metadata:s:a:0", "handler_name=SoundHandler",
             output_path
         ])
         

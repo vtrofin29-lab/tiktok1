@@ -56,7 +56,7 @@ def test_calc_caption_y_uses_preview_ratio():
 # ---------- CapCut metadata tests ----------
 
 def test_make_ffmpeg_params_has_capcut_metadata():
-    """_make_ffmpeg_params_for_codec must include CapCut metadata."""
+    """_make_ffmpeg_params_for_codec must include authentic CapCut metadata."""
     source = _read_source()
     func_start = source.find("def _make_ffmpeg_params_for_codec(")
     assert func_start != -1
@@ -64,16 +64,16 @@ def test_make_ffmpeg_params_has_capcut_metadata():
     func_body = source[func_start:func_end]
     assert 'map_metadata' in func_body, \
         "_make_ffmpeg_params_for_codec should strip source metadata"
-    assert 'encoder=CapCut' in func_body, \
-        "_make_ffmpeg_params_for_codec should set encoder to CapCut"
-    assert 'CapCut Video Handler' in func_body, \
-        "_make_ffmpeg_params_for_codec should set video handler to CapCut"
-    assert 'CapCut Sound Handler' in func_body, \
-        "_make_ffmpeg_params_for_codec should set audio handler to CapCut"
+    assert 'brand' in func_body and 'mp42' in func_body, \
+        "_make_ffmpeg_params_for_codec should set major_brand to mp42 (CapCut default)"
+    assert 'handler_name=VideoHandler' in func_body, \
+        "_make_ffmpeg_params_for_codec should set video handler (CapCut style)"
+    assert 'handler_name=SoundHandler' in func_body, \
+        "_make_ffmpeg_params_for_codec should set audio handler (CapCut style)"
 
 
 def test_reencode_has_capcut_metadata():
-    """reencode_with_libx264 must include CapCut metadata in the FFmpeg command."""
+    """reencode_with_libx264 must include authentic CapCut metadata in the FFmpeg command."""
     source = _read_source()
     func_start = source.find("def reencode_with_libx264(")
     assert func_start != -1
@@ -81,14 +81,14 @@ def test_reencode_has_capcut_metadata():
     func_body = source[func_start:func_end]
     assert 'map_metadata' in func_body, \
         "reencode_with_libx264 should strip source metadata"
-    assert 'encoder=CapCut' in func_body, \
-        "reencode_with_libx264 should set encoder to CapCut"
-    assert 'CapCut Video Handler' in func_body, \
-        "reencode_with_libx264 should set video handler to CapCut"
+    assert 'brand' in func_body and 'mp42' in func_body, \
+        "reencode_with_libx264 should set major_brand to mp42 (CapCut default)"
+    assert 'handler_name=VideoHandler' in func_body, \
+        "reencode_with_libx264 should set video handler (CapCut style)"
 
 
 def test_final_encode_has_capcut_metadata():
-    """The final FFmpeg export command must include CapCut metadata."""
+    """The final FFmpeg export command must include authentic CapCut metadata."""
     source = _read_source()
     # Find the final encode section (around the FINAL-ENCODE label)
     final_section = source.find('label="FINAL-ENCODE"')
@@ -98,12 +98,12 @@ def test_final_encode_has_capcut_metadata():
     cmd_section = source[search_start:final_section]
     assert 'map_metadata' in cmd_section, \
         "Final export command should strip source metadata"
-    assert 'encoder=CapCut' in cmd_section, \
-        "Final export command should set encoder to CapCut"
-    assert 'CapCut Video Handler' in cmd_section, \
-        "Final export command should set video handler to CapCut"
-    assert 'CapCut Sound Handler' in cmd_section, \
-        "Final export command should set audio handler to CapCut"
+    assert 'brand' in cmd_section and 'mp42' in cmd_section, \
+        "Final export command should set major_brand to mp42 (CapCut default)"
+    assert 'handler_name=VideoHandler' in cmd_section, \
+        "Final export command should set video handler (CapCut style)"
+    assert 'handler_name=SoundHandler' in cmd_section, \
+        "Final export command should set audio handler (CapCut style)"
 
 
 def test_metadata_strips_source_before_adding():
@@ -113,9 +113,24 @@ def test_metadata_strips_source_before_adding():
     func_end = source.find("\ndef ", func_start + 10)
     func_body = source[func_start:func_end]
     map_pos = func_body.find("map_metadata")
-    encoder_pos = func_body.find("encoder=CapCut")
-    assert map_pos < encoder_pos, \
-        "-map_metadata should appear before encoder=CapCut"
+    handler_pos = func_body.find("handler_name=VideoHandler")
+    assert map_pos < handler_pos, \
+        "-map_metadata should appear before handler_name metadata"
+
+
+def test_prerender_has_capcut_metadata():
+    """pre_render_foreground_ffmpeg must include CapCut metadata."""
+    source = _read_source()
+    func_start = source.find("def pre_render_foreground_ffmpeg(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'map_metadata' in func_body, \
+        "pre_render_foreground_ffmpeg should strip source metadata"
+    assert 'brand' in func_body and 'mp42' in func_body, \
+        "pre_render_foreground_ffmpeg should set major_brand to mp42"
+    assert 'handler_name=VideoHandler' in func_body, \
+        "pre_render_foreground_ffmpeg should set video handler"
 
 
 # ---------- Caption indicator info label tests ----------
