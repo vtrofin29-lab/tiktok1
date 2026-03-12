@@ -192,3 +192,84 @@ def test_reset_defaults_syncs_volume_globals():
         r'on_voice_gain_changed.*str.*VOICE_GAIN', source)
     assert len(reset_pattern) >= 1, \
         "Reset to defaults should call on_voice_gain_changed to sync globals"
+
+
+def test_audio_intermediate_uses_wav():
+    """Audio temp file should use WAV (lossless) instead of MP3 to preserve volume."""
+    source = _read_source()
+    # Should write to .wav file
+    assert 'audio.wav' in source, \
+        "Audio intermediate should use WAV format (audio.wav) for lossless volume preservation"
+    # Should NOT use codec='mp3' for the audio temp file
+    # Find the write_audiofile call in the export section
+    export_section = source[source.find('Save audio to temp file'):]
+    if export_section:
+        write_call = export_section[:export_section.find('\n\n')]
+        assert "codec='mp3'" not in write_call, \
+            "Audio intermediate should not use MP3 codec (lossy compression reduces volume)"
+
+
+def test_ffmpeg_audio_volume_boost():
+    """FFmpeg export should include audio volume boost filter for adequate output levels."""
+    source = _read_source()
+    # The filter_parts should include an audio volume filter
+    assert '[2:a]volume=' in source, \
+        "FFmpeg export should include audio volume filter for output level boost"
+    assert '[aout]' in source, \
+        "FFmpeg audio filter should output to [aout] label"
+
+
+def test_ffmpeg_maps_filtered_audio():
+    """FFmpeg export should map the filtered audio output, not raw input."""
+    source = _read_source()
+    # Should map [aout] (filtered audio) instead of 2:a (raw input)
+    export_fn = source[source.find('def _export_with_ffmpeg_filters'):]
+    if export_fn:
+        # Find the cmd.extend section with -map
+        assert '"[aout]"' in export_fn, \
+            "FFmpeg command should map [aout] (volume-boosted audio)"
+
+
+def test_voice_gain_default_is_5():
+    """VOICE_GAIN default should be exactly 5.0 for strong voice clarity."""
+    source = _read_source()
+    match = re.search(r'^VOICE_GAIN\s*=\s*([0-9.]+)', source, re.MULTILINE)
+    assert match is not None, "VOICE_GAIN constant should exist"
+    gain = float(match.group(1))
+    assert gain >= 5.0, f"VOICE_GAIN default should be >= 5.0, got {gain}"
+
+
+def test_music_gain_default_is_025():
+    """MUSIC_GAIN default should be 0.25 for audible background music."""
+    source = _read_source()
+    match = re.search(r'^MUSIC_GAIN\s*=\s*([0-9.]+)', source, re.MULTILINE)
+    assert match is not None, "MUSIC_GAIN constant should exist"
+    gain = float(match.group(1))
+    assert gain >= 0.25, f"MUSIC_GAIN default should be >= 0.25, got {gain}"
+
+
+def test_voice_slider_max_is_20():
+    """Voice volume slider max should be 20.0 for high amplification headroom."""
+    source = _read_source()
+    voice_scale_pattern = re.search(
+        r'voice_gain_scale\s*=\s*tk\.Scale\([^)]*to=([0-9.]+)', source)
+    assert voice_scale_pattern is not None, "Voice gain scale should exist"
+    max_val = float(voice_scale_pattern.group(1))
+    assert max_val >= 20.0, f"Voice slider max should be >= 20.0, got {max_val}"
+
+
+def test_music_slider_max_is_5():
+    """Music volume slider max should be 5.0 for more range."""
+    source = _read_source()
+    music_scale_pattern = re.search(
+        r'music_gain_scale\s*=\s*tk\.Scale\([^)]*to=([0-9.]+)', source)
+    assert music_scale_pattern is not None, "Music gain scale should exist"
+    max_val = float(music_scale_pattern.group(1))
+    assert max_val >= 5.0, f"Music slider max should be >= 5.0, got {max_val}"
+
+
+def test_audio_gain_debug_logging():
+    """Audio processing should log the actual gain values being applied."""
+    source = _read_source()
+    assert '[AUDIO] Applying voice gain:' in source, \
+        "Audio processing should log voice gain values for debugging"

@@ -1038,8 +1038,8 @@ CROP_BOTTOM_RATIO = 0.35
 # If the width-scaled foreground would be shorter than this, it scales up more (zooms in, clips sides).
 MIN_FG_HEIGHT_RATIO = 0.35  # Foreground fills at least 35% of canvas height (672px on 1920px canvas)
 
-VOICE_GAIN = 2.5  # Default: 2.5x louder for better voice clarity
-MUSIC_GAIN = 0.18  # Default: 0.18x quieter for subtle background music
+VOICE_GAIN = 5.0  # Default: 5.0x louder for strong voice clarity
+MUSIC_GAIN = 0.25  # Default: 0.25x quieter for subtle background music
 CAPTION_FONT_PREFERRED = "Bangers"
 CAPTION_FONT_SIZE = 56
 
@@ -3706,6 +3706,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Label the filter output for mapping
         filter_parts[-1] += "[vout]"
         
+        # Add audio volume boost filter — applies the pre-mixed volume levels
+        # faithfully to the final output, compensating for any signal loss in the
+        # MoviePy → WAV → FFmpeg pipeline.  The voice/music balance is already baked
+        # into the mixed audio via MoviePy's volumex(); this 2× overall boost
+        # ensures the output is at a comfortable listening level.
+        filter_parts.append("[2:a]volume=2.0[aout]")
+        
         # Join all filter parts with semicolons
         filter_chain = ";".join(filter_parts)
         
@@ -3787,7 +3794,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         cmd.extend([
             "-filter_complex", filter_chain,
             "-map", "[vout]",
-            "-map", "2:a",                # Audio from input 2
+            "-map", "[aout]",             # Audio from filter graph (volume-boosted)
         ])
         
         # Explicit duration limit prevents hanging (critical with -filter_complex)
@@ -4198,9 +4205,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             
             temp_dir = tempfile.mkdtemp(prefix="tiktok_ffmpeg_export_")
             
-            # Save audio to temp file
-            audio_temp_path = os.path.join(temp_dir, "audio.mp3")
-            audio_clip.write_audiofile(audio_temp_path, fps=44100, codec='mp3', verbose=False, logger=None)
+            # Save audio to temp file (WAV for lossless volume preservation)
+            audio_temp_path = os.path.join(temp_dir, "audio.wav")
+            audio_clip.write_audiofile(audio_temp_path, fps=44100, verbose=False, logger=None)
             log(f"[EXPORT] Audio saved to: {audio_temp_path}")
             
             # Check stop event after audio save
@@ -4860,6 +4867,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         if voice_path and os.path.exists(voice_path):
             if _queue_stop_event.is_set():
                 raise InterruptedError("Stopped by user before audio processing")
+            log(f"[AUDIO] Applying voice gain: {VOICE_GAIN:.1f}x (music gain: {MUSIC_GAIN:.2f}x)")
             voice_clip = AudioFileClip(voice_path).volumex(VOICE_GAIN)
             music_clip = AudioFileClip(music_path)
             target_duration = voice_clip.duration
@@ -6213,7 +6221,7 @@ class App:
         # --- Voice Volume Control ---
         ttk.Label(left_frame, text="Voice volume:").grid(row=row, column=0, sticky="e")
         self.voice_gain_var = tk.DoubleVar(value=VOICE_GAIN)
-        self.voice_gain_scale = tk.Scale(left_frame, from_=0.0, to=6.0, resolution=0.1, orient='horizontal', length=120, showvalue=0, variable=self.voice_gain_var, command=self.on_voice_gain_changed)
+        self.voice_gain_scale = tk.Scale(left_frame, from_=0.0, to=20.0, resolution=0.1, orient='horizontal', length=120, showvalue=0, variable=self.voice_gain_var, command=self.on_voice_gain_changed)
         self.voice_gain_scale.grid(row=row, column=1, padx=(6,0))
         self.voice_gain_label = ttk.Label(left_frame, text=f"{self.voice_gain_var.get():.1f}x")
         self.voice_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
@@ -6222,7 +6230,7 @@ class App:
         # --- Music Volume Control ---
         ttk.Label(left_frame, text="Music volume:").grid(row=row, column=0, sticky="e")
         self.music_gain_var = tk.DoubleVar(value=MUSIC_GAIN)
-        self.music_gain_scale = tk.Scale(left_frame, from_=0.0, to=3.0, resolution=0.05, orient='horizontal', length=120, showvalue=0, variable=self.music_gain_var, command=self.on_music_gain_changed)
+        self.music_gain_scale = tk.Scale(left_frame, from_=0.0, to=5.0, resolution=0.05, orient='horizontal', length=120, showvalue=0, variable=self.music_gain_var, command=self.on_music_gain_changed)
         self.music_gain_scale.grid(row=row, column=1, padx=(6,0))
         self.music_gain_label = ttk.Label(left_frame, text=f"{self.music_gain_var.get():.2f}x")
         self.music_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
