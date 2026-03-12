@@ -312,6 +312,71 @@ def test_movflags_use_metadata_tags():
             f"movflags '{flag_value}' must include faststart for web streaming"
 
 
+# ---------- 4K caption auto-scaling tests ----------
+
+def test_4k_setup_auto_scales_hd_font_size():
+    """process_single_job 4K block must auto-scale HD font sizes (<80) to 4K."""
+    source = _read_source()
+    func_start = source.find("def process_single_job(")
+    assert func_start != -1
+    func_body = source[func_start:func_start + 5000]
+    # When use_4k is True, font sizes below HD_FONT_SIZE_THRESHOLD should be doubled
+    assert "caption_font_size < HD_FONT_SIZE_THRESHOLD" in func_body, \
+        "4K setup should check per-job font_size against HD_FONT_SIZE_THRESHOLD"
+    assert "caption_font_size * 2" in func_body or "caption_font_size *2" in func_body, \
+        "4K setup should double HD font size for 4K"
+
+
+def test_4k_setup_auto_scales_y_offset():
+    """process_single_job 4K block must auto-scale HD y_offset when font is HD-scaled."""
+    source = _read_source()
+    func_start = source.find("def process_single_job(")
+    assert func_start != -1
+    func_body = source[func_start:func_start + 5000]
+    # When HD auto-scaling is detected, y_offset should also be doubled
+    assert "caption_y_offset * 2" in func_body or "caption_y_offset *2" in func_body, \
+        "4K setup should double HD y_offset when HD auto-scaling is applied"
+
+
+def test_4k_setup_tracks_hd_auto_scaling():
+    """process_single_job 4K block must track whether HD auto-scaling was applied."""
+    source = _read_source()
+    func_start = source.find("def process_single_job(")
+    assert func_start != -1
+    func_body = source[func_start:func_start + 5000]
+    # Should use a flag to track HD auto-scaling for y_offset coordination
+    assert "_hd_auto_scaled" in func_body, \
+        "4K setup should track HD auto-scaling with _hd_auto_scaled flag"
+
+
+def test_4k_setup_scales_y_offset_from_global():
+    """When per-job y_offset is None and HD auto-scaling applies, global y_offset should be scaled."""
+    source = _read_source()
+    func_start = source.find("def process_single_job(")
+    assert func_start != -1
+    func_body = source[func_start:func_start + 5000]
+    # Should handle the case where caption_y_offset is None but global CAPTION_Y_OFFSET is HD
+    assert "CAPTION_Y_OFFSET" in func_body, \
+        "4K setup should read CAPTION_Y_OFFSET global for fallback y_offset scaling"
+
+
+def test_4k_setup_does_not_scale_already_4k_values():
+    """4K setup should NOT scale values that are already in 4K range (font >= 80)."""
+    source = _read_source()
+    func_start = source.find("def process_single_job(")
+    assert func_start != -1
+    # Find the 4K setup block
+    _4k_block_start = source.find("if use_4k:", func_start)
+    assert _4k_block_start != -1
+    _4k_block = source[_4k_block_start:_4k_block_start + 1500]
+    # The auto-scaling should only happen when _hd_auto_scaled is True
+    # which is only set when font size < HD_FONT_SIZE_THRESHOLD
+    assert "_hd_auto_scaled = False" in _4k_block, \
+        "4K setup should default _hd_auto_scaled to False"
+    assert "if _hd_auto_scaled" in _4k_block, \
+        "Y-offset scaling should be gated by _hd_auto_scaled flag"
+
+
 if __name__ == "__main__":
     # Run with pytest or unittest
     import pytest

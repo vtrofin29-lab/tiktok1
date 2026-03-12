@@ -4550,13 +4550,32 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         globals()['IS_4K_MODE'] = True
         globals()['WIDTH'] = 2160
         globals()['HEIGHT'] = 3840
-        # Sync font globals so any fallback path also uses 4K-appropriate values
+        # Auto-scale caption parameters from HD to 4K when values look like HD defaults.
+        # When queued from HD UI or loaded from an HD preset, font/offset/stroke are
+        # in 1080×1920 pixel space and must be doubled for 2160×3840.
+        _hd_auto_scaled = False
         if caption_font_size is not None:
+            if caption_font_size < HD_FONT_SIZE_THRESHOLD:
+                # Per-job font size looks like HD value — scale up for 4K
+                caption_font_size = caption_font_size * 2
+                _hd_auto_scaled = True
             globals()['CAPTION_FONT_SIZE'] = caption_font_size
         elif globals().get('CAPTION_FONT_SIZE', 56) < HD_FONT_SIZE_THRESHOLD:
             # Font size global looks like HD default — scale up for 4K
             globals()['CAPTION_FONT_SIZE'] = DEFAULT_4K_FONT_SIZE
+            _hd_auto_scaled = True
+        # Scale caption Y offset when HD auto-scaling was applied
+        if _hd_auto_scaled:
+            if caption_y_offset is not None and caption_y_offset != 0:
+                caption_y_offset = caption_y_offset * 2
+            elif caption_y_offset is None:
+                _cur_y = globals().get('CAPTION_Y_OFFSET', 0)
+                if _cur_y != 0:
+                    caption_y_offset = _cur_y * 2
+        # Scale stroke width
         if caption_stroke_width is not None:
+            if _hd_auto_scaled:
+                caption_stroke_width = max(1, int(caption_font_size * STROKE_WIDTH_RATIO))
             globals()['CAPTION_STROKE_WIDTH'] = caption_stroke_width
         else:
             globals()['CAPTION_STROKE_WIDTH'] = max(1, int(globals().get('CAPTION_FONT_SIZE', DEFAULT_4K_FONT_SIZE) * STROKE_WIDTH_RATIO))
