@@ -337,6 +337,95 @@ def test_process_single_job_catches_interrupted_error_cleanly():
         "InterruptedError handler must appear BEFORE generic Exception handler"
 
 
+def test_queue_worker_catches_interrupted_error():
+    """queue_worker must wrap _run_video_job in try/except InterruptedError to prevent thread crash."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def queue_worker(jobs, q):")
+    assert func_start != -1, "queue_worker function should exist"
+    func_end = source.find("\ndef ", func_start + 1)
+    func_body = source[func_start:func_end]
+    # Must have try/except around _run_video_job calls
+    assert 'except InterruptedError' in func_body, \
+        "queue_worker must catch InterruptedError from _run_video_job to prevent thread crash"
+
+
+def test_single_job_wrapper_handles_interrupted_error_separately():
+    """_single_job_wrapper must handle InterruptedError before generic Exception."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def on_run_single(self):")
+    assert func_start != -1, "on_run_single method should exist"
+    func_end = source.find("\n    def ", func_start + 1)
+    func_body = source[func_start:func_end]
+    # Must have separate InterruptedError handler in the wrapper
+    assert 'except InterruptedError' in func_body, \
+        "_single_job_wrapper should handle InterruptedError separately from generic Exception"
+    # Verify InterruptedError handler comes before Exception handler
+    ie_pos = func_body.find('except InterruptedError')
+    ex_pos = func_body.find('except Exception', ie_pos + 1)
+    assert ie_pos < ex_pos, \
+        "InterruptedError handler must appear before generic Exception handler in _single_job_wrapper"
+
+
+def test_stop_check_before_transcription():
+    """Stop event should be checked before calling transcribe_captions."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    # Find the first transcribe_captions call in process_single_job
+    func_start = source.find("def process_single_job(")
+    func_body = source[func_start:]
+    transcribe_call = func_body.find('transcribe_captions(')
+    # Check that there's a stop event check before it (within 500 chars)
+    pre_section = func_body[max(0, transcribe_call - 500):transcribe_call]
+    assert '_queue_stop_event.is_set()' in pre_section, \
+        "Stop event should be checked before calling transcribe_captions"
+
+
+def test_stop_check_before_tts_generation():
+    """Stop event should be checked before calling replace_voice_with_tts."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def process_single_job(")
+    func_body = source[func_start:]
+    tts_call = func_body.find('replace_voice_with_tts(')
+    if tts_call != -1:
+        pre_section = func_body[max(0, tts_call - 800):tts_call]
+        assert '_queue_stop_event.is_set()' in pre_section, \
+            "Stop event should be checked before calling replace_voice_with_tts"
+
+
+def test_stop_check_before_compose():
+    """Stop event should be checked before calling _compose_with_pref_font."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def process_single_job(")
+    func_body = source[func_start:]
+    compose_call = func_body.find('_compose_with_pref_font(')
+    pre_section = func_body[max(0, compose_call - 300):compose_call]
+    assert '_queue_stop_event.is_set()' in pre_section, \
+        "Stop event should be checked before calling _compose_with_pref_font"
+
+
+def test_stop_check_before_audio_processing():
+    """Stop event should be checked before audio processing in process_single_job."""
+    source_file = os.path.join(os.path.dirname(__file__), "tiktok_full_gui.py")
+    with open(source_file, 'r', encoding='utf-8') as f:
+        source = f.read()
+    func_start = source.find("def process_single_job(")
+    func_body = source[func_start:]
+    # Find the audio processing section (AudioFileClip for voice)
+    audio_section = func_body.find('AudioFileClip(voice_path).volumex')
+    pre_section = func_body[max(0, audio_section - 300):audio_section]
+    assert '_queue_stop_event.is_set()' in pre_section, \
+        "Stop event should be checked before audio processing starts"
+
+
 if __name__ == "__main__":
     tests = [
         test_active_ffmpeg_proc_global_exists,
@@ -361,6 +450,12 @@ if __name__ == "__main__":
         test_on_run_single_sends_done_signal,
         test_on_4k_toggle_refreshes_preview,
         test_process_single_job_catches_interrupted_error_cleanly,
+        test_queue_worker_catches_interrupted_error,
+        test_single_job_wrapper_handles_interrupted_error_separately,
+        test_stop_check_before_transcription,
+        test_stop_check_before_tts_generation,
+        test_stop_check_before_compose,
+        test_stop_check_before_audio_processing,
     ]
     
     passed = 0

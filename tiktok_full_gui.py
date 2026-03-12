@@ -4747,6 +4747,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
 
         # Handle audio based on whether we have a voice file
         if voice_path and os.path.exists(voice_path):
+            if _queue_stop_event.is_set():
+                raise InterruptedError("Stopped by user before audio processing")
             voice_clip = AudioFileClip(voice_path).volumex(VOICE_GAIN)
             music_clip = AudioFileClip(music_path)
             target_duration = voice_clip.duration
@@ -4758,6 +4760,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             # Transcribe captions ONLY if AI voice replacement is NOT enabled
             # If AI voice is enabled, we'll transcribe from the TTS audio later
+            if _queue_stop_event.is_set():
+                raise InterruptedError("Stopped by user before caption transcription")
             if not use_ai_voice:
                 log("[CAPTION] Transcribing captions from original voice...")
                 caption_segments = transcribe_captions(
@@ -4853,6 +4857,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             # Inline voice generation (normal path or fallback from failed pre-generated)
             if not tts_successfully_applied and not pre_generated_voice:
                 if caption_segments:
+                    if _queue_stop_event.is_set():
+                        raise InterruptedError("Stopped by user before TTS voice generation")
                     log("")
                     log("━"*60)
                     log("[AI VOICE] 🎵 GENERATING AI VOICE REPLACEMENT")
@@ -4888,6 +4894,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                             # STEP 2: Re-transcribe captions from the SILENCE-REMOVED audio
                             # This ensures captions match exactly with the final compressed audio
                             # CapCut-style: transcribe from final audio for perfect sync
+                            if _queue_stop_event.is_set():
+                                raise InterruptedError("Stopped by user before TTS re-transcription")
                             log("")
                             log("[AI VOICE] 📝 TRANSCRIBING CAPTIONS FROM SILENCE-REMOVED TTS AUDIO")
                             log("[AI VOICE] CapCut-style: Captions generated from final compressed audio...")
@@ -4989,6 +4997,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         elif synced_video and hasattr(synced_video, 'duration') and synced_video.duration:
             target_duration = synced_video.duration
         
+        if _queue_stop_event.is_set():
+            raise InterruptedError("Stopped by user before final compose/export")
         ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration, original_video_path=video_path, crop_top_ratio=custom_top_ratio, crop_bottom_ratio=custom_bottom_ratio, caption_text_color=caption_text_color, caption_stroke_color=caption_stroke_color, caption_stroke_width=caption_stroke_width, caption_font_size=caption_font_size, caption_y_offset=caption_y_offset)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
@@ -5521,7 +5531,13 @@ def queue_worker(jobs, q):
             if _queue_stop_event.is_set():
                 log(f"\n⏹ QUEUE STOPPED after {i-1}/{len(jobs)} jobs")
                 break
-            _run_video_job(job, i, len(jobs), q)
+            try:
+                _run_video_job(job, i, len(jobs), q)
+            except InterruptedError:
+                log(f"\n⏹ QUEUE STOPPED during job {i}/{len(jobs)}")
+                break
+            except Exception as e:
+                log(f"\n❌ Job {i}/{len(jobs)} failed: {e}")
         # Final cleanup: release Whisper model to free GPU memory
         _release_whisper_model(log=log)
         if _queue_stop_event.is_set():
@@ -5645,7 +5661,13 @@ def queue_worker(jobs, q):
         else:
             log(f"\n[QUEUE] 🎬 Job {ready_idx + 1} ready — starting video (no pre-gen voice)")
         
-        _run_video_job(job, ready_idx + 1, total, q, pre_generated_voice=voice_data)
+        try:
+            _run_video_job(job, ready_idx + 1, total, q, pre_generated_voice=voice_data)
+        except InterruptedError:
+            log(f"\n⏹ QUEUE STOPPED during job {ready_idx + 1}/{total}")
+            break
+        except Exception as e:
+            log(f"\n❌ Job {ready_idx + 1}/{total} failed: {e}")
         
         processed[ready_idx] = True
         processed_count += 1
@@ -8376,6 +8398,8 @@ class App:
             def _single_job_wrapper():
                 try:
                     process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"), **single_kwargs)
+                except InterruptedError:
+                    pass  # Clean stop — not an error
                 except Exception as exc:
                     q.put(f"[SINGLE JOB ERROR] {exc}\n")
                 finally:
