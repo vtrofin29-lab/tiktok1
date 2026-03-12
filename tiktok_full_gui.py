@@ -1038,8 +1038,8 @@ CROP_BOTTOM_RATIO = 0.35
 # If the width-scaled foreground would be shorter than this, it scales up more (zooms in, clips sides).
 MIN_FG_HEIGHT_RATIO = 0.35  # Foreground fills at least 35% of canvas height (672px on 1920px canvas)
 
-VOICE_GAIN = 1.5  # Default: 1.5x louder for better voice clarity
-MUSIC_GAIN = 0.15  # Default: 0.15x quieter for subtle background music
+VOICE_GAIN = 2.5  # Default: 2.5x louder for better voice clarity
+MUSIC_GAIN = 0.18  # Default: 0.18x quieter for subtle background music
 CAPTION_FONT_PREFERRED = "Bangers"
 CAPTION_FONT_SIZE = 56
 
@@ -2135,13 +2135,28 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
         # Determine Whisper task: 'translate' produces English directly from any
         # source language with much better quality than post-hoc Google Translate,
         # because it operates on the raw audio signal rather than noisy ASR text.
+        #
+        # Strategy for best translation quality:
+        # - English target: Whisper translate (audio → English directly, highest quality)
+        # - Non-English target: Whisper translate → English → Google Translate → target
+        #   This two-step approach is significantly better than Whisper transcribe → source text
+        #   → Google Translate → target, because Whisper's translate task handles accents/noise
+        #   at the audio level, producing clean English text that Google Translate handles well.
         _whisper_task = "transcribe"
         _use_whisper_translate = False
+        _needs_second_pass_translation = False
         if translate_to and translate_to not in ('none', ''):
+            # Always use Whisper's translate task when translation is requested.
+            # This produces English text directly from audio (any source language),
+            # which is much more accurate than transcribing in the source language
+            # and then translating the (potentially garbled) ASR text.
+            _whisper_task = "translate"
+            _use_whisper_translate = True
             if translate_to.lower() in ('en', 'eng', 'english'):
-                _whisper_task = "translate"
-                _use_whisper_translate = True
-                log_fn("[whisper] Using built-in Whisper translation → English (higher quality)")
+                log_fn("[whisper] Using built-in Whisper translation → English (highest quality)")
+            else:
+                _needs_second_pass_translation = True
+                log_fn(f"[whisper] Using two-step translation: audio → English → {translate_to} (better quality)")
         
         # Build transcription kwargs
         transcribe_kwargs = dict(
@@ -2161,12 +2176,17 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     log_fn(f"[whisper] Detected source language: {detected_lang}")
     
     # Apply translation if requested
-    # When Whisper already translated to English (task='translate'), skip external
-    # translation to avoid degrading the output through a second translation pass.
     if translate_to and translate_to != 'none':
-        if _use_whisper_translate:
-            log_fn(f"[TRANSCRIBE] Whisper already translated {detected_lang} → en (skipping external translation)")
+        if _use_whisper_translate and not _needs_second_pass_translation:
+            # Whisper already translated to English — no further translation needed
+            log_fn(f"[TRANSCRIBE] Whisper translated {detected_lang} → en (done)")
+        elif _needs_second_pass_translation:
+            # Two-step: Whisper produced English, now translate English → target language
+            # This is much better than translating noisy source-language ASR output
+            log_fn(f"[TRANSCRIBE] Whisper translated {detected_lang} → en, now translating en → {translate_to}...")
+            segments = translate_segments(segments, target_language=translate_to, log=log_fn)
         else:
+            # Fallback: direct translation from source language (only if Whisper translate wasn't used)
             log_fn(f"[TRANSCRIBE] Auto-detected source language: {detected_lang}")
             log_fn(f"[TRANSCRIBE] Translating from {detected_lang} → {translate_to}...")
             segments = translate_segments(segments, target_language=translate_to, log=log_fn)
@@ -4559,7 +4579,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None, voice_gain=None, music_gain=None):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -4596,6 +4616,15 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     if translation_enabled and use_ai_voice and target_language and target_language != 'none':
         tts_lang_synced = TRANS_TO_TTS_LANG.get(target_language, target_language)
         tts_language = tts_lang_synced
+    
+    # Determine audio gains - prefer per-job parameter over global
+    if voice_gain is None:
+        voice_gain = globals().get('VOICE_GAIN', 2.5)
+    if music_gain is None:
+        music_gain = globals().get('MUSIC_GAIN', 0.18)
+    # Apply per-job gains to globals so compose functions pick them up
+    globals()['VOICE_GAIN'] = voice_gain
+    globals()['MUSIC_GAIN'] = music_gain
     
     # Set 4K mode if requested
     # NOTE: Using global state for IS_4K_MODE, WIDTH, HEIGHT. This is safe because:
@@ -5593,7 +5622,9 @@ def _run_video_job(job, job_index, total_jobs, q, pre_generated_voice=None):
                        caption_stroke_width=job.get("caption_stroke_width"),
                        caption_font_size=job.get("caption_font_size"),
                        caption_y_offset=job.get("caption_y_offset"),
-                       pre_generated_voice=pre_generated_voice)
+                       pre_generated_voice=pre_generated_voice,
+                       voice_gain=job.get("voice_gain"),
+                       music_gain=job.get("music_gain"))
     log(f"===== END JOB {job_index} =====\n")
 
 
@@ -6180,7 +6211,7 @@ class App:
         # --- Voice Volume Control ---
         ttk.Label(left_frame, text="Voice volume:").grid(row=row, column=0, sticky="e")
         self.voice_gain_var = tk.DoubleVar(value=VOICE_GAIN)
-        self.voice_gain_scale = tk.Scale(left_frame, from_=0.0, to=3.0, resolution=0.1, orient='horizontal', length=120, showvalue=0, variable=self.voice_gain_var, command=self.on_voice_gain_changed)
+        self.voice_gain_scale = tk.Scale(left_frame, from_=0.0, to=6.0, resolution=0.1, orient='horizontal', length=120, showvalue=0, variable=self.voice_gain_var, command=self.on_voice_gain_changed)
         self.voice_gain_scale.grid(row=row, column=1, padx=(6,0))
         self.voice_gain_label = ttk.Label(left_frame, text=f"{self.voice_gain_var.get():.1f}x")
         self.voice_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
@@ -6189,7 +6220,7 @@ class App:
         # --- Music Volume Control ---
         ttk.Label(left_frame, text="Music volume:").grid(row=row, column=0, sticky="e")
         self.music_gain_var = tk.DoubleVar(value=MUSIC_GAIN)
-        self.music_gain_scale = tk.Scale(left_frame, from_=0.0, to=2.0, resolution=0.05, orient='horizontal', length=120, showvalue=0, variable=self.music_gain_var, command=self.on_music_gain_changed)
+        self.music_gain_scale = tk.Scale(left_frame, from_=0.0, to=3.0, resolution=0.05, orient='horizontal', length=120, showvalue=0, variable=self.music_gain_var, command=self.on_music_gain_changed)
         self.music_gain_scale.grid(row=row, column=1, padx=(6,0))
         self.music_gain_label = ttk.Label(left_frame, text=f"{self.music_gain_var.get():.2f}x")
         self.music_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
@@ -8155,6 +8186,9 @@ class App:
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
                 "silence_threshold_ms": self.silence_threshold_var.get(),
+                # Audio gain settings (per-job volume capture)
+                "voice_gain": self.voice_gain_var.get(),
+                "music_gain": self.music_gain_var.get(),
                 # Font and border settings (per-job caption styling)
                 "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
                 "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
@@ -8401,6 +8435,9 @@ class App:
                    "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                    "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
                    "silence_threshold_ms": self.silence_threshold_var.get(),
+                   # Audio gain settings (per-job volume capture)
+                   "voice_gain": self.voice_gain_var.get(),
+                   "music_gain": self.music_gain_var.get(),
                    # Font and border settings
                    "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
                    "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
@@ -8474,6 +8511,8 @@ class App:
                 "caption_stroke_width": job.get("caption_stroke_width"),
                 "caption_font_size": job.get("caption_font_size"),
                 "caption_y_offset": job.get("caption_y_offset"),
+                "voice_gain": job.get("voice_gain"),
+                "music_gain": job.get("music_gain"),
             }
             def _single_job_wrapper():
                 try:
@@ -8507,7 +8546,9 @@ class App:
         translation_enabled = self.translation_enabled_var.get()
         tts_language = self.tts_language_var.get()
         silence_threshold_ms = self.silence_threshold_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms)
+        voice_gain = self.voice_gain_var.get()
+        music_gain = self.music_gain_var.get()
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms, voice_gain=voice_gain, music_gain=music_gain)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
@@ -9199,6 +9240,9 @@ class App:
             # Apply audio settings
             self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
             self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            # Sync globals — var.set() doesn't trigger Scale command callbacks
+            self.on_voice_gain_changed(str(self.voice_gain_var.get()))
+            self.on_music_gain_changed(str(self.music_gain_var.get()))
             
             # Apply translation/TTS settings
             self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
@@ -9302,6 +9346,9 @@ class App:
             # Apply audio settings
             self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
             self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            # Sync globals — var.set() doesn't trigger Scale command callbacks
+            self.on_voice_gain_changed(str(self.voice_gain_var.get()))
+            self.on_music_gain_changed(str(self.music_gain_var.get()))
             
             # Apply translation/TTS settings
             self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
@@ -9393,6 +9440,9 @@ class App:
             # Reset audio settings
             self.voice_gain_var.set(VOICE_GAIN)
             self.music_gain_var.set(MUSIC_GAIN)
+            # Sync globals — var.set() doesn't trigger Scale command callbacks
+            self.on_voice_gain_changed(str(VOICE_GAIN))
+            self.on_music_gain_changed(str(MUSIC_GAIN))
             
             # Reset translation/TTS settings
             self.translation_enabled_var.set(TRANSLATION_ENABLED)
