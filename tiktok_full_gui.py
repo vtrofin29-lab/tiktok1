@@ -107,6 +107,7 @@ import tempfile
 import shutil
 import json
 import gc
+from datetime import datetime, timezone
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -1632,6 +1633,30 @@ def get_export_settings():
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
 
+def _build_capcut_meta(include_audio_handler=True):
+    """Build CapCut-authentic metadata flags for FFmpeg export commands.
+    Matches real CapCut export fingerprint: isom brand, BT.709 color,
+    creation timestamp, and standard handler names.
+    """
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    meta = [
+        "-map_metadata", "-1",
+        "-brand", "isom",
+        "-metadata", f"creation_time={now_utc}",
+        "-metadata:s:v:0", "handler_name=VideoHandler",
+    ]
+    if include_audio_handler:
+        meta.extend(["-metadata:s:a:0", "handler_name=SoundHandler"])
+    return meta
+
+# BT.709 color space flags matching real CapCut exports (nclx color profile)
+_CAPCUT_COLOR_FLAGS = [
+    "-color_primaries", "bt709",
+    "-color_trc", "bt709",
+    "-colorspace", "bt709",
+    "-color_range", "tv",
+]
+
 def reencode_with_libx264(input_path, output_path, log=None):
     # Use hardware acceleration if available
     cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
@@ -1652,12 +1677,8 @@ def reencode_with_libx264(input_path, output_path, log=None):
         cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18", 
                    "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2"])
     
-    cmd.extend(["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart",
-               "-map_metadata", "-1",
-               "-brand", "mp42",
-               "-metadata:s:v:0", "handler_name=VideoHandler",
-               "-metadata:s:a:0", "handler_name=SoundHandler",
-               output_path])
+    cmd.extend(["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart"]
+               + _CAPCUT_COLOR_FLAGS + _build_capcut_meta() + [output_path])
     
     if log: log(f"[ffmpeg] Re-encoding to: {output_path} (GPU={'NVENC' if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC) else 'No'})")
     try:
@@ -1729,11 +1750,8 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
     fg_filter_threads = max(2, min(total_cores, 8))
     cmd.extend(["-filter_threads", str(fg_filter_threads)])
     cmd.extend(vparams + ["-threads", "0", "-pix_fmt", "yuv420p",
-               "-movflags", "+faststart",
-               "-map_metadata", "-1",
-               "-brand", "mp42",
-               "-metadata:s:v:0", "handler_name=VideoHandler",
-               out_path])
+               "-movflags", "+faststart"]
+               + _CAPCUT_COLOR_FLAGS + _build_capcut_meta(include_audio_handler=False) + [out_path])
     
     if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc}, hwaccel={USE_HARDWARE_DECODING and use_nvenc})")
     try:
@@ -2326,14 +2344,8 @@ def _make_ffmpeg_params_for_codec(codec):
     - pre_render_foreground_ffmpeg() uses -hwaccel cuda for foreground (works!)
     - NVENC encoding below (works!)
     """
-    # CapCut metadata tags – match real CapCut export fingerprint:
-    # major_brand=mp42, handler names without "CapCut" prefix, no comment field.
-    _capcut_meta = [
-        "-map_metadata", "-1",
-        "-brand", "mp42",
-        "-metadata:s:v:0", "handler_name=VideoHandler",
-        "-metadata:s:a:0", "handler_name=SoundHandler",
-    ]
+    # CapCut metadata: isom brand, BT.709 color, creation timestamp, handler names
+    _capcut_meta = _build_capcut_meta() + _CAPCUT_COLOR_FLAGS
     if codec in ("h264_nvenc", "hevc_nvenc"):
         # GPU encoding with NVENC - CapCut-like H.264 High quality
         return [
@@ -3671,14 +3683,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 "-threads", "0"
             ])
         
-        cmd.extend([
-            "-movflags", "+faststart",
-            "-map_metadata", "-1",
-            "-brand", "mp42",
-            "-metadata:s:v:0", "handler_name=VideoHandler",
-            "-metadata:s:a:0", "handler_name=SoundHandler",
-            output_path
-        ])
+        cmd.extend(["-movflags", "+faststart"]
+                   + _CAPCUT_COLOR_FLAGS + _build_capcut_meta() + [output_path])
         
         log_fn("[EXPORT] Executing FFmpeg final encode...")
         log_fn(f"[EXPORT] Full command: {' '.join(cmd)}")

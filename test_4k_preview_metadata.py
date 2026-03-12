@@ -53,63 +53,56 @@ def test_calc_caption_y_uses_preview_ratio():
     assert "h / HEIGHT" in func_body
 
 
-# ---------- CapCut metadata tests ----------
+# ---------- CapCut metadata helper tests ----------
 
-def test_make_ffmpeg_params_has_capcut_metadata():
-    """_make_ffmpeg_params_for_codec must include authentic CapCut metadata."""
+def test_build_capcut_meta_exists():
+    """_build_capcut_meta helper function must exist."""
     source = _read_source()
-    func_start = source.find("def _make_ffmpeg_params_for_codec(")
-    assert func_start != -1
+    assert 'def _build_capcut_meta(' in source, \
+        "_build_capcut_meta helper function must be defined"
+
+
+def test_build_capcut_meta_uses_isom_brand():
+    """_build_capcut_meta must use isom brand (matching real CapCut)."""
+    source = _read_source()
+    func_start = source.find("def _build_capcut_meta(")
     func_end = source.find("\ndef ", func_start + 10)
     func_body = source[func_start:func_end]
+    assert "'isom'" in func_body or '"isom"' in func_body, \
+        "_build_capcut_meta should set brand to isom (real CapCut brand)"
     assert 'map_metadata' in func_body, \
-        "_make_ffmpeg_params_for_codec should strip source metadata"
-    assert 'brand' in func_body and 'mp42' in func_body, \
-        "_make_ffmpeg_params_for_codec should set major_brand to mp42 (CapCut default)"
+        "_build_capcut_meta should strip source metadata with -map_metadata -1"
     assert 'handler_name=VideoHandler' in func_body, \
-        "_make_ffmpeg_params_for_codec should set video handler (CapCut style)"
-    assert 'handler_name=SoundHandler' in func_body, \
-        "_make_ffmpeg_params_for_codec should set audio handler (CapCut style)"
+        "_build_capcut_meta should set video handler name"
 
 
-def test_reencode_has_capcut_metadata():
-    """reencode_with_libx264 must include authentic CapCut metadata in the FFmpeg command."""
+def test_build_capcut_meta_has_creation_time():
+    """_build_capcut_meta must set creation_time for authentic timestamps."""
     source = _read_source()
-    func_start = source.find("def reencode_with_libx264(")
-    assert func_start != -1
+    func_start = source.find("def _build_capcut_meta(")
     func_end = source.find("\ndef ", func_start + 10)
     func_body = source[func_start:func_end]
-    assert 'map_metadata' in func_body, \
-        "reencode_with_libx264 should strip source metadata"
-    assert 'brand' in func_body and 'mp42' in func_body, \
-        "reencode_with_libx264 should set major_brand to mp42 (CapCut default)"
-    assert 'handler_name=VideoHandler' in func_body, \
-        "reencode_with_libx264 should set video handler (CapCut style)"
+    assert 'creation_time' in func_body, \
+        "_build_capcut_meta should set creation_time metadata"
 
 
-def test_final_encode_has_capcut_metadata():
-    """The final FFmpeg export command must include authentic CapCut metadata."""
+def test_capcut_color_flags_exist():
+    """_CAPCUT_COLOR_FLAGS must define BT.709 color space (matching real CapCut)."""
     source = _read_source()
-    # Find the final encode section (around the FINAL-ENCODE label)
-    final_section = source.find('label="FINAL-ENCODE"')
-    assert final_section != -1, "FINAL-ENCODE label must exist"
-    # Search backward for the cmd construction (within ~2000 chars)
-    search_start = max(0, final_section - 2000)
-    cmd_section = source[search_start:final_section]
-    assert 'map_metadata' in cmd_section, \
-        "Final export command should strip source metadata"
-    assert 'brand' in cmd_section and 'mp42' in cmd_section, \
-        "Final export command should set major_brand to mp42 (CapCut default)"
-    assert 'handler_name=VideoHandler' in cmd_section, \
-        "Final export command should set video handler (CapCut style)"
-    assert 'handler_name=SoundHandler' in cmd_section, \
-        "Final export command should set audio handler (CapCut style)"
+    assert '_CAPCUT_COLOR_FLAGS' in source, \
+        "_CAPCUT_COLOR_FLAGS constant must be defined"
+    flags_start = source.find('_CAPCUT_COLOR_FLAGS')
+    flags_section = source[flags_start:flags_start + 300]
+    assert 'bt709' in flags_section, \
+        "_CAPCUT_COLOR_FLAGS should include bt709 color primaries"
+    assert 'color_range' in flags_section, \
+        "_CAPCUT_COLOR_FLAGS should include color_range"
 
 
 def test_metadata_strips_source_before_adding():
-    """'-map_metadata -1' must appear before custom metadata tags."""
+    """_build_capcut_meta must strip metadata (-map_metadata -1) before adding custom tags."""
     source = _read_source()
-    func_start = source.find("def _make_ffmpeg_params_for_codec(")
+    func_start = source.find("def _build_capcut_meta(")
     func_end = source.find("\ndef ", func_start + 10)
     func_body = source[func_start:func_end]
     map_pos = func_body.find("map_metadata")
@@ -118,19 +111,69 @@ def test_metadata_strips_source_before_adding():
         "-map_metadata should appear before handler_name metadata"
 
 
-def test_prerender_has_capcut_metadata():
-    """pre_render_foreground_ffmpeg must include CapCut metadata."""
+# ---------- Metadata usage in FFmpeg commands ----------
+
+def test_make_ffmpeg_params_uses_capcut_meta():
+    """_make_ffmpeg_params_for_codec must use _build_capcut_meta and _CAPCUT_COLOR_FLAGS."""
+    source = _read_source()
+    func_start = source.find("def _make_ffmpeg_params_for_codec(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert '_build_capcut_meta' in func_body, \
+        "_make_ffmpeg_params_for_codec should call _build_capcut_meta()"
+    assert '_CAPCUT_COLOR_FLAGS' in func_body, \
+        "_make_ffmpeg_params_for_codec should include _CAPCUT_COLOR_FLAGS"
+
+
+def test_reencode_uses_capcut_meta():
+    """reencode_with_libx264 must use _build_capcut_meta and _CAPCUT_COLOR_FLAGS."""
+    source = _read_source()
+    func_start = source.find("def reencode_with_libx264(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert '_build_capcut_meta' in func_body, \
+        "reencode_with_libx264 should call _build_capcut_meta()"
+    assert '_CAPCUT_COLOR_FLAGS' in func_body, \
+        "reencode_with_libx264 should include _CAPCUT_COLOR_FLAGS"
+
+
+def test_final_encode_uses_capcut_meta():
+    """The final FFmpeg export command must use _build_capcut_meta and _CAPCUT_COLOR_FLAGS."""
+    source = _read_source()
+    final_section = source.find('label="FINAL-ENCODE"')
+    assert final_section != -1, "FINAL-ENCODE label must exist"
+    search_start = max(0, final_section - 2000)
+    cmd_section = source[search_start:final_section]
+    assert '_build_capcut_meta' in cmd_section, \
+        "Final export command should call _build_capcut_meta()"
+    assert '_CAPCUT_COLOR_FLAGS' in cmd_section, \
+        "Final export command should include _CAPCUT_COLOR_FLAGS"
+
+
+def test_prerender_uses_capcut_meta():
+    """pre_render_foreground_ffmpeg must use _build_capcut_meta and _CAPCUT_COLOR_FLAGS."""
     source = _read_source()
     func_start = source.find("def pre_render_foreground_ffmpeg(")
     assert func_start != -1
     func_end = source.find("\ndef ", func_start + 10)
     func_body = source[func_start:func_end]
-    assert 'map_metadata' in func_body, \
-        "pre_render_foreground_ffmpeg should strip source metadata"
-    assert 'brand' in func_body and 'mp42' in func_body, \
-        "pre_render_foreground_ffmpeg should set major_brand to mp42"
-    assert 'handler_name=VideoHandler' in func_body, \
-        "pre_render_foreground_ffmpeg should set video handler"
+    assert '_build_capcut_meta' in func_body, \
+        "pre_render_foreground_ffmpeg should call _build_capcut_meta()"
+    assert '_CAPCUT_COLOR_FLAGS' in func_body, \
+        "pre_render_foreground_ffmpeg should include _CAPCUT_COLOR_FLAGS"
+
+
+def test_no_mp42_brand_remaining():
+    """No FFmpeg command should use the old mp42 brand anymore (real CapCut uses isom)."""
+    source = _read_source()
+    # mp42 should not appear in any metadata context
+    # (it may appear in comments, which is fine)
+    meta_lines = [line for line in source.split('\n')
+                  if 'mp42' in line and not line.strip().startswith('#')]
+    assert len(meta_lines) == 0, \
+        f"No code lines should reference mp42 brand (found: {meta_lines[:3]})"
 
 
 # ---------- Caption indicator info label tests ----------
