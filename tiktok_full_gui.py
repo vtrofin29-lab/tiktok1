@@ -208,6 +208,14 @@ def translate_segments(segments, target_language='en', log=None):
     """
     Translate all caption segments to target language.
     
+    Uses batch translation (joining all segments with a separator, translating
+    once, then splitting) so the translation engine sees the full context.
+    This produces significantly better results than translating each short
+    segment in isolation, where the engine lacks context and often produces
+    nonsensical output.
+    
+    Falls back to per-segment translation if batch splitting fails.
+    
     Args:
         segments: List of caption segments from Whisper
         target_language: Target language code
@@ -219,24 +227,54 @@ def translate_segments(segments, target_language='en', log=None):
     if not TRANSLATION_AVAILABLE or target_language == 'none':
         return segments
     
+    if not segments:
+        return segments
+    
     if log:
         log(f"[TRANSLATE] Translating {len(segments)} segments to {target_language}...")
     
-    translated = []
-    for i, seg in enumerate(segments):
-        try:
-            original_text = seg.get("text", "")
-            translated_text = translate_text(original_text, target_language, log=None)
-            
-            # Create new segment with translated text
-            new_seg = seg.copy()
-            new_seg["text"] = translated_text
-            new_seg["original_text"] = original_text
-            translated.append(new_seg)
-        except Exception as e:
-            if log:
-                log(f"[TRANSLATE ERROR] Failed segment {i}: {e}")
-            translated.append(seg)
+    # --- Batch translation for better context ---
+    _SEP = " ||| "
+    originals = [seg.get("text", "").strip() for seg in segments]
+    combined = _SEP.join(originals)
+    
+    batch_ok = False
+    try:
+        translated_combined = translate_text(combined, target_language, log=None)
+        if translated_combined and _SEP.strip() in translated_combined:
+            parts = [p.strip() for p in translated_combined.split(_SEP.strip())]
+            if len(parts) == len(segments):
+                batch_ok = True
+                translated = []
+                for seg, orig, trans in zip(segments, originals, parts):
+                    new_seg = seg.copy()
+                    new_seg["text"] = trans
+                    new_seg["original_text"] = orig
+                    translated.append(new_seg)
+                if log:
+                    log(f"[TRANSLATE] Batch translation succeeded ({len(segments)} segments)")
+    except Exception as e:
+        if log:
+            log(f"[TRANSLATE] Batch translation failed ({e}), falling back to per-segment")
+    
+    # --- Fallback: per-segment translation ---
+    if not batch_ok:
+        if log and len(segments) > 1:
+            log("[TRANSLATE] Using per-segment translation (fallback)")
+        translated = []
+        for i, seg in enumerate(segments):
+            try:
+                original_text = seg.get("text", "")
+                translated_text = translate_text(original_text, target_language, log=None)
+                
+                new_seg = seg.copy()
+                new_seg["text"] = translated_text
+                new_seg["original_text"] = original_text
+                translated.append(new_seg)
+            except Exception as e:
+                if log:
+                    log(f"[TRANSLATE ERROR] Failed segment {i}: {e}")
+                translated.append(seg)
     
     if log:
         log("[TRANSLATE] Translation complete!")
@@ -2093,7 +2131,25 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
         if use_fp16:
             log_fn("[whisper] Using FP16 precision on GPU for faster transcription (2x speedup)")
         
-        result = model.transcribe(voice_path, word_timestamps=True, fp16=use_fp16)
+        # Determine Whisper task: 'translate' produces English directly from any
+        # source language with much better quality than post-hoc Google Translate,
+        # because it operates on the raw audio signal rather than noisy ASR text.
+        _whisper_task = "transcribe"
+        _use_whisper_translate = False
+        if translate_to and translate_to not in ('none', ''):
+            if translate_to.lower() in ('en', 'eng', 'english'):
+                _whisper_task = "translate"
+                _use_whisper_translate = True
+                log_fn("[whisper] Using built-in Whisper translation → English (higher quality)")
+        
+        # Build transcription kwargs
+        transcribe_kwargs = dict(
+            word_timestamps=True,
+            fp16=use_fp16,
+            task=_whisper_task,
+        )
+        
+        result = model.transcribe(voice_path, **transcribe_kwargs)
         log_fn("[whisper] Transcription finished.")
     
     # Post-processing outside the lock (doesn't need GPU)
@@ -2104,11 +2160,15 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     log_fn(f"[whisper] Detected source language: {detected_lang}")
     
     # Apply translation if requested
-    # Translation is enabled when translate_to is specified and not 'none'
+    # When Whisper already translated to English (task='translate'), skip external
+    # translation to avoid degrading the output through a second translation pass.
     if translate_to and translate_to != 'none':
-        log_fn(f"[TRANSCRIBE] Auto-detected source language: {detected_lang}")
-        log_fn(f"[TRANSCRIBE] Translating from {detected_lang} → {translate_to}...")
-        segments = translate_segments(segments, target_language=translate_to, log=log_fn)
+        if _use_whisper_translate:
+            log_fn(f"[TRANSCRIBE] Whisper already translated {detected_lang} → en (skipping external translation)")
+        else:
+            log_fn(f"[TRANSCRIBE] Auto-detected source language: {detected_lang}")
+            log_fn(f"[TRANSCRIBE] Translating from {detected_lang} → {translate_to}...")
+            segments = translate_segments(segments, target_language=translate_to, log=log_fn)
     
     return segments
 
@@ -4564,14 +4624,13 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             # Font size global looks like HD default — scale up for 4K
             globals()['CAPTION_FONT_SIZE'] = DEFAULT_4K_FONT_SIZE
             _hd_auto_scaled = True
-        # Scale caption Y offset when HD auto-scaling was applied
-        if _hd_auto_scaled:
-            if caption_y_offset is not None and caption_y_offset != 0:
-                caption_y_offset = caption_y_offset * 2
-            elif caption_y_offset is None:
-                _cur_y = globals().get('CAPTION_Y_OFFSET', 0)
-                if _cur_y != 0:
-                    caption_y_offset = _cur_y * 2
+        # Scale caption Y offset from HD→4K when it looks like an HD-space value.
+        # The offset must be scaled independently of font scaling because the user
+        # may set a large font (≥80) in HD mode and still have the offset in HD
+        # pixel space.  HD offsets have |value| ≤ 1920 (HD height).
+        _y_raw = caption_y_offset if caption_y_offset is not None else globals().get('CAPTION_Y_OFFSET', 0)
+        if _y_raw != 0 and abs(_y_raw) <= 1920:
+            caption_y_offset = _y_raw * 2
         # Scale stroke width (use resolved font size from globals to avoid None)
         _resolved_fs = globals().get('CAPTION_FONT_SIZE', DEFAULT_4K_FONT_SIZE)
         if caption_stroke_width is not None:

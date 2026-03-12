@@ -328,14 +328,14 @@ def test_4k_setup_auto_scales_hd_font_size():
 
 
 def test_4k_setup_auto_scales_y_offset():
-    """process_single_job 4K block must auto-scale HD y_offset when font is HD-scaled."""
+    """process_single_job 4K block must auto-scale HD y_offset independently of font scaling."""
     source = _read_source()
     func_start = source.find("def process_single_job(")
     assert func_start != -1
     func_body = source[func_start:func_start + 5000]
-    # When HD auto-scaling is detected, y_offset should also be doubled
-    assert "caption_y_offset * 2" in func_body or "caption_y_offset *2" in func_body, \
-        "4K setup should double HD y_offset when HD auto-scaling is applied"
+    # Y offset should be doubled when it is in HD range (|value| <= 1920)
+    assert "_y_raw * 2" in func_body or "_y_raw *2" in func_body, \
+        "4K setup should double HD-range y_offset for 4K export"
 
 
 def test_4k_setup_tracks_hd_auto_scaling():
@@ -361,7 +361,7 @@ def test_4k_setup_scales_y_offset_from_global():
 
 
 def test_4k_setup_does_not_scale_already_4k_values():
-    """4K setup should NOT scale values that are already in 4K range (font >= 80)."""
+    """4K setup should NOT scale values that are already in 4K range (|offset| > 1920)."""
     source = _read_source()
     func_start = source.find("def process_single_job(")
     assert func_start != -1
@@ -369,12 +369,76 @@ def test_4k_setup_does_not_scale_already_4k_values():
     _4k_block_start = source.find("if use_4k:", func_start)
     assert _4k_block_start != -1
     _4k_block = source[_4k_block_start:_4k_block_start + 1500]
-    # The auto-scaling should only happen when _hd_auto_scaled is True
-    # which is only set when font size < HD_FONT_SIZE_THRESHOLD
-    assert "_hd_auto_scaled = False" in _4k_block, \
-        "4K setup should default _hd_auto_scaled to False"
-    assert "if _hd_auto_scaled" in _4k_block, \
-        "Y-offset scaling should be gated by _hd_auto_scaled flag"
+    # The auto-scaling of Y offset should guard against values already in 4K range
+    assert "abs(_y_raw) <= 1920" in _4k_block, \
+        "Y-offset scaling should only apply to HD-range offsets (abs <= 1920)"
+
+
+def test_4k_y_offset_scales_independently_of_font():
+    """Y offset scaling must NOT require _hd_auto_scaled – it checks HD range directly."""
+    source = _read_source()
+    func_start = source.find("def process_single_job(")
+    assert func_start != -1
+    _4k_block_start = source.find("if use_4k:", func_start)
+    assert _4k_block_start != -1
+    _4k_block = source[_4k_block_start:_4k_block_start + 1500]
+    # Y offset block should reference _y_raw and check abs against 1920
+    assert "_y_raw" in _4k_block, "Should use _y_raw for HD-range Y offset detection"
+    # Should NOT be gated by _hd_auto_scaled for the Y offset (independent scaling)
+    y_block_start = _4k_block.find("_y_raw")
+    y_block = _4k_block[y_block_start:y_block_start + 200]
+    assert "if _hd_auto_scaled" not in y_block, \
+        "Y offset scaling should NOT depend on _hd_auto_scaled flag"
+
+
+def test_4k_y_offset_skips_zero():
+    """Y offset of 0 (bottom) should not be scaled even when in HD range."""
+    source = _read_source()
+    func_start = source.find("def process_single_job(")
+    assert func_start != -1
+    _4k_block_start = source.find("if use_4k:", func_start)
+    _4k_block = source[_4k_block_start:_4k_block_start + 1500]
+    assert "_y_raw != 0" in _4k_block, \
+        "Y offset of 0 should be skipped (no scaling needed for bottom position)"
+
+
+def test_whisper_uses_translate_task_for_english():
+    """transcribe_captions should use Whisper task='translate' for English target."""
+    source = _read_source()
+    func_start = source.find("def transcribe_captions(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert "task" in func_body, \
+        "transcribe_captions should pass task parameter to Whisper"
+    assert "'translate'" in func_body or '"translate"' in func_body, \
+        "transcribe_captions should use 'translate' task for English"
+
+
+def test_whisper_skips_external_translate_when_builtin():
+    """When Whisper translated to English, external translation should be skipped."""
+    source = _read_source()
+    func_start = source.find("def transcribe_captions(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert "_use_whisper_translate" in func_body, \
+        "Should track whether Whisper built-in translation was used"
+    assert "skipping external translation" in func_body.lower() or "skip" in func_body.lower(), \
+        "Should skip external translation when Whisper already translated"
+
+
+def test_translate_segments_batch_approach():
+    """translate_segments should attempt batch translation for better context."""
+    source = _read_source()
+    func_start = source.find("def translate_segments(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert "|||" in func_body, \
+        "translate_segments should use separator for batch translation"
+    assert "batch" in func_body.lower(), \
+        "translate_segments should attempt batch translation for context"
 
 
 if __name__ == "__main__":
