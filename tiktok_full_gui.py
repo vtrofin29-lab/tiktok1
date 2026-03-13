@@ -3501,47 +3501,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
             )
         
-        # ── Spot blur on background ──
-        # If spot blur is enabled, also apply it to the blurred background so that
-        # the covered area is hidden on both the foreground and background layers.
-        # This requires -filter_complex (split → crop+boxblur → overlay).
-        # Coordinates are relative to bg_encode resolution (may be half of video_width
-        # for 4K to reduce GPU load).
+        # ── Spot blur on background ── DISABLED ──
+        # The background is already fully blurred (boxblur), so applying an
+        # additional spot-blur rectangle creates a visible double-blur artifact.
+        # The foreground spot blur is sufficient to hide the target area.
         bg_spot_blur = ""
-        bg_blur_ov = effect_settings or {}
-        if bg_blur_ov.get('blur_overlay_enabled', False):
-            bx_pct = float(bg_blur_ov.get('blur_overlay_x', 10))
-            by_pct = float(bg_blur_ov.get('blur_overlay_y', 10))
-            bw_pct = float(bg_blur_ov.get('blur_overlay_w', 20))
-            bh_pct = float(bg_blur_ov.get('blur_overlay_h', 15))
-            b_intensity = int(bg_blur_ov.get('blur_overlay_intensity', 20))
-            # Background fills the entire canvas after crop+scale, so coordinates
-            # are relative to the encode resolution. The crop removes the same
-            # top/bottom as the foreground, so Y must be adjusted for the crop.
-            bg_keep = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
-            bg_bx = max(0, int(bg_encode_w * bx_pct / 100.0)) & ~1
-            bg_by = max(0, int(bg_encode_h * (by_pct / 100.0 - crop_top_ratio) / bg_keep)) & ~1
-            bg_bw = max(2, int(bg_encode_w * bw_pct / 100.0)) & ~1
-            bg_bh = max(2, int(bg_encode_h * bh_pct / (100.0 * bg_keep))) & ~1
-            if bg_bx + bg_bw > bg_encode_w:
-                bg_bw = (bg_encode_w - bg_bx) & ~1
-            if bg_by + bg_bh > bg_encode_h:
-                bg_bh = (bg_encode_h - bg_by) & ~1
-            bg_b_blur = max(2, b_intensity)
-            # Clamp boxblur radius to respect YUV420p chroma plane limits.
-            # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
-            # boxblur radius <= min(chroma_w, chroma_h) / 2 = min(crop_w, crop_h) / 4.
-            safe_blur_limit = max(2, min(bg_bw, bg_bh) // 4)
-            if bg_b_blur > safe_blur_limit:
-                log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {safe_blur_limit} (crop {bg_bw}x{bg_bh} limit)")
-                bg_b_blur = safe_blur_limit
-            bg_spot_blur = (
-                f",format=yuv420p,split[_bgm][_bgc];"
-                f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
-                f"boxblur={bg_b_blur}:2[_bgb];"
-                f"[_bgm][_bgb]overlay={bg_bx}:{bg_by}"
-            )
-            log_fn(f"[EXPORT] ✓ Background spot blur: pos=({bg_bx},{bg_by}) size={bg_bw}x{bg_bh} blur={bg_b_blur}")
 
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         # GPU hardware decoding for background pre-render.
@@ -7401,7 +7365,7 @@ class App:
                 globals()['IS_4K_MODE'] = True
                 # Sync caption font size slider and label with 4K value
                 if hasattr(self, 'caption_font_size_scale'):
-                    self.caption_font_size_scale.config(from_=40, to=400)
+                    self.caption_font_size_scale.config(from_=40, to=800)
                 if hasattr(self, 'caption_font_size_var'):
                     self.caption_font_size_var.set(112)
                 if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
@@ -7720,112 +7684,9 @@ class App:
                 except Exception:
                     size = 56
             # Clamp to valid range (scaled for 4K)
-            max_size = 400 if globals().get('IS_4K_MODE', False) else 120
+            max_size = 800 if globals().get('IS_4K_MODE', False) else 120
             min_size = 40 if globals().get('IS_4K_MODE', False) else 20
             size = max(min_size, min(max_size, size))
-            globals()['CAPTION_FONT_SIZE'] = size
-            try:
-                if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
-                    self.caption_font_size_label.config(text=f"{size}px")
-            except Exception:
-                pass
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[FONT-SIZE-CHANGE] Font size changed to: {size}px\n")
-                self.log_widget.config(state='disabled')
-                self.log_widget.see('end')
-            except Exception:
-                pass
-            
-            # Update mini preview to show new font size - FORCE REDRAW
-            try:
-                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    # Redraw the mini preview with updated caption
-                    top_pct = float(self.top_percent_var.get())/100.0
-                    bottom_pct = float(self.bottom_percent_var.get())/100.0
-                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    # Use centralized redraw method that includes caption indicator
-                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    # Force canvas update
-                    self.mini_canvas.update_idletasks()
-                    
-            except Exception as e:
-                try:
-                    self.log_widget.config(state='normal')
-                    self.log_widget.insert('end', f"[FONT-SIZE-UPDATE-ERR] {e}\n")
-                    self.log_widget.config(state='disabled')
-                except Exception:
-                    pass
-        except Exception as e:
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[FONT-SIZE-ERR] {e}\n")
-                self.log_widget.config(state='disabled')
-            except Exception:
-                pass
-
-    def on_words_per_caption_changed(self, *args):
-        """Callback when words per caption spinbox changes."""
-        try:
-            # Get the new value from spinbox
-            try:
-                words = self.words_per_caption_var.get()
-            except Exception:
-                words = 2
-            # Clamp to valid range
-            words = max(1, min(3, words))
-            
-            # Update the global WORDS_PER_GROUP
-            globals()['WORDS_PER_GROUP'] = words
-            
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[WORDS-PER-CAPTION] Changed to: {words} words\n")
-                self.log_widget.config(state='disabled')
-                self.log_widget.see('end')
-            except Exception:
-                pass
-            
-            # Update mini preview to show new sample text - FORCE REDRAW
-            try:
-                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    # Redraw the mini preview with updated caption
-                    top_pct = float(self.top_percent_var.get())/100.0
-                    bottom_pct = float(self.bottom_percent_var.get())/100.0
-                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    # Use centralized redraw method that includes caption indicator
-                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    # Force canvas update
-                    self.mini_canvas.update_idletasks()
-                    
-            except Exception as e:
-                try:
-                    self.log_widget.config(state='normal')
-                    self.log_widget.insert('end', f"[WORDS-UPDATE-ERR] {e}\n")
-                    self.log_widget.config(state='disabled')
-                except Exception:
-                    pass
-        except Exception as e:
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[WORDS-ERR] {e}\n")
-                self.log_widget.config(state='disabled')
-            except Exception:
-                pass
-
-    def on_caption_font_size_changed(self, val):
-        """Callback when caption font size slider changes."""
-        try:
-            # val comes as string; set global and update label
-            try:
-                size = int(float(val))
-            except Exception:
-                try:
-                    size = int(val)
-                except Exception:
-                    size = 56
-            # Clamp to valid range
-            size = max(20, min(120, size))
             globals()['CAPTION_FONT_SIZE'] = size
             try:
                 if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
