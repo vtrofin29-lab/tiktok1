@@ -282,70 +282,93 @@ def _openai_translate_segments(segments, target_language='en', log=None):
     
     if log:
         log(f"[OpenAI TRANSLATE] Sending {len(segments)} segments to GPT-4o-mini for {lang_name} translation...")
+        if custom:
+            log(f"[OpenAI TRANSLATE] Using CUSTOM prompt: {custom[:120]}{'...' if len(custom) > 120 else ''}")
+        else:
+            log(f"[OpenAI TRANSLATE] Using default subtitle translator prompt")
     
-    try:
-        response = _requests.post(
-            'https://api.openai.com/v1/chat/completions',
-            headers={
-                'Authorization': f'Bearer {api_key}',
-                'Content-Type': 'application/json'
-            },
-            json={
-                'model': 'gpt-4o-mini',
-                'temperature': 0.3,
-                'messages': [
-                    {'role': 'system', 'content': system_prompt},
-                    {'role': 'user', 'content': numbered_text}
-                ]
-            },
-            timeout=60
-        )
-        
-        if response.status_code != 200:
-            if log:
-                log(f"[OpenAI TRANSLATE ERROR] API returned {response.status_code}: {response.text[:200]}")
-            return None
-        
-        data = response.json()
-        reply = data['choices'][0]['message']['content'].strip()
-        
-        # Parse numbered lines from response
-        result_lines = reply.split('\n')
-        translated_texts = [''] * len(segments)
-        
-        import re
-        for line in result_lines:
-            line = line.strip()
-            if not line:
+    import time as _time
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = _requests.post(
+                'https://api.openai.com/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': 'gpt-4o-mini',
+                    'temperature': 0.3,
+                    'messages': [
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': numbered_text}
+                    ]
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 429:
+                wait = 2 ** attempt
+                if log:
+                    log(f"[OpenAI TRANSLATE] Rate limited (429). Retry {attempt+1}/{max_retries} in {wait}s...")
+                    if attempt == 0:
+                        log("[OpenAI TRANSLATE] TIP: If this persists, add billing credit at https://platform.openai.com/settings/organization/billing")
+                _time.sleep(wait)
                 continue
-            # Match "1. text" or "1) text" or just "1 text"
-            m = re.match(r'^(\d+)[.\)]\s*(.*)', line)
-            if m:
-                idx = int(m.group(1)) - 1  # Convert 1-based to 0-based
-                if 0 <= idx < len(segments):
-                    translated_texts[idx] = m.group(2).strip()
-        
-        # Verify we got translations for most segments
-        filled = sum(1 for t in translated_texts if t)
-        if filled < len(segments) * 0.5:
+            
+            if response.status_code != 200:
+                if log:
+                    log(f"[OpenAI TRANSLATE ERROR] API returned {response.status_code}: {response.text[:200]}")
+                return None
+            
+            data = response.json()
+            reply = data['choices'][0]['message']['content'].strip()
+            
+            # Parse numbered lines from response
+            result_lines = reply.split('\n')
+            translated_texts = [''] * len(segments)
+            
+            import re
+            for line in result_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # Match "1. text" or "1) text" or just "1 text"
+                m = re.match(r'^(\d+)[.\)]\s*(.*)', line)
+                if m:
+                    idx = int(m.group(1)) - 1  # Convert 1-based to 0-based
+                    if 0 <= idx < len(segments):
+                        translated_texts[idx] = m.group(2).strip()
+            
+            # Verify we got translations for most segments
+            filled = sum(1 for t in translated_texts if t)
+            if filled < len(segments) * 0.5:
+                if log:
+                    log(f"[OpenAI TRANSLATE WARNING] Only {filled}/{len(segments)} lines parsed, falling back")
+                return None
+            
+            # Fill any missing translations with originals
+            for i in range(len(segments)):
+                if not translated_texts[i]:
+                    translated_texts[i] = segments[i].get("text", "").strip()
+            
             if log:
-                log(f"[OpenAI TRANSLATE WARNING] Only {filled}/{len(segments)} lines parsed, falling back")
+                log(f"[OpenAI TRANSLATE] Successfully translated {filled}/{len(segments)} segments")
+            
+            return translated_texts
+            
+        except Exception as e:
+            if log:
+                log(f"[OpenAI TRANSLATE ERROR] {e}")
+            if attempt < max_retries - 1:
+                continue
             return None
-        
-        # Fill any missing translations with originals
-        for i in range(len(segments)):
-            if not translated_texts[i]:
-                translated_texts[i] = segments[i].get("text", "").strip()
-        
-        if log:
-            log(f"[OpenAI TRANSLATE] Successfully translated {filled}/{len(segments)} segments")
-        
-        return translated_texts
-        
-    except Exception as e:
-        if log:
-            log(f"[OpenAI TRANSLATE ERROR] {e}")
-        return None
+    
+    # All retries exhausted (429 on every attempt)
+    if log:
+        log("[OpenAI TRANSLATE ERROR] All retries failed (rate limited). Add billing credit at https://platform.openai.com/settings/organization/billing")
+    return None
 
 
 def translate_segments(segments, target_language='en', log=None):
@@ -392,7 +415,8 @@ def translate_segments(segments, target_language='en', log=None):
                 log("[TRANSLATE] ✓ OpenAI GPT-4o-mini translation complete!")
             return translated
         if log:
-            log("[TRANSLATE] OpenAI failed, falling back to googletrans...")
+            log("[TRANSLATE] ⚠ OpenAI translation failed — falling back to googletrans...")
+            log("[TRANSLATE] Check logs above for details (429=needs billing credit, other=see error)")
     elif not api_key and log:
         log("[TRANSLATE] No OpenAI API key set - using googletrans (free, lower quality)")
     
@@ -7094,10 +7118,16 @@ class App:
                     "Please check your key at:\nhttps://platform.openai.com/api-keys")
             elif response.status_code == 429:
                 if hasattr(self, 'log'):
-                    self.log("[OpenAI] ✗ Rate limit or quota exceeded")
-                messagebox.showwarning("Rate Limit",
-                    "Your API key is valid but rate-limited or out of quota.\n\n"
-                    "Check your billing at:\nhttps://platform.openai.com/usage")
+                    self.log("[OpenAI] ✗ Rate limit or quota exceeded (HTTP 429)")
+                    self.log("[OpenAI] FIX: Go to https://platform.openai.com/settings/organization/billing")
+                    self.log("[OpenAI] and add at least $5 prepaid credit. Free-tier keys have no quota.")
+                messagebox.showwarning("Billing Credit Required",
+                    "Your API key is valid but has no billing credit.\n\n"
+                    "Even brand-new keys need prepaid credit to work.\n"
+                    "OpenAI free-tier keys have $0 quota by default.\n\n"
+                    "FIX: Add at least $5 credit at:\n"
+                    "https://platform.openai.com/settings/organization/billing\n\n"
+                    "After adding credit, click 'Verify' again.")
             else:
                 err_text = response.text[:200] + ('...' if len(response.text) > 200 else '')
                 if hasattr(self, 'log'):

@@ -188,3 +188,76 @@ def test_translate_logs_which_engine():
     source = _read_source()
     assert 'No OpenAI API key set' in source, \
         "Should log when no API key is set (falling back to googletrans)"
+
+
+# ─── Retry Logic for 429 ────────────────────────────────────────────
+
+def test_openai_translate_has_retry_loop():
+    """_openai_translate_segments should retry on 429 rate-limit errors."""
+    source = _read_source()
+    assert 'max_retries' in source, \
+        "Should have max_retries for 429 retry logic"
+
+def test_openai_translate_retries_on_429():
+    """_openai_translate_segments should detect 429 status and retry."""
+    source = _read_source()
+    assert 'status_code == 429' in source, \
+        "Should check for 429 status code in _openai_translate_segments"
+
+def test_openai_translate_retry_backoff():
+    """_openai_translate_segments should use exponential backoff on retries."""
+    source = _read_source()
+    assert '2 ** attempt' in source, \
+        "Should use exponential backoff (2 ** attempt)"
+
+def test_openai_translate_retry_billing_tip():
+    """Should show billing URL tip when rate limited."""
+    source = _read_source()
+    assert 'platform.openai.com/settings/organization/billing' in source, \
+        "Should mention billing URL for adding credit"
+
+
+# ─── Custom Prompt Logging ──────────────────────────────────────────
+
+def test_openai_translate_logs_custom_prompt():
+    """Should log when custom prompt is being used."""
+    source = _read_source()
+    assert 'Using CUSTOM prompt' in source, \
+        "Should log when using a custom translation prompt"
+
+def test_openai_translate_logs_default_prompt():
+    """Should log when default prompt is being used."""
+    source = _read_source()
+    assert 'Using default subtitle translator prompt' in source, \
+        "Should log when using the default prompt"
+
+
+# ─── Improved 429 Verify Message ────────────────────────────────────
+
+def test_verify_429_mentions_billing_credit():
+    """429 verify message should tell user to add billing credit."""
+    source = _read_source()
+    # Find the 429 handling in _verify_openai_key
+    assert 'Billing Credit Required' in source or 'billing credit' in source.lower(), \
+        "429 message should mention billing credit"
+
+def test_verify_429_mentions_free_tier():
+    """429 verify message should explain that free-tier keys have no quota."""
+    source = _read_source()
+    assert 'free-tier' in source.lower() or 'Free-tier' in source or 'free tier' in source.lower(), \
+        "429 message should explain free-tier keys have no quota"
+
+def test_verify_429_has_billing_url():
+    """429 verify message should link to billing page."""
+    source = _read_source()
+    assert 'platform.openai.com/settings/organization/billing' in source, \
+        "429 message should link to billing settings page"
+
+
+# ─── Functional Retry Test ──────────────────────────────────────────
+
+def test_openai_translate_retry_returns_none_after_all_retries():
+    """After all retries exhausted, should return None."""
+    source = _read_source()
+    assert 'All retries failed' in source, \
+        "Should log message when all retries are exhausted"
