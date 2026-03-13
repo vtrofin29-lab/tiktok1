@@ -2,7 +2,7 @@
 
 Validates that:
 1. OpenAI is used ONLY for translation, NOT for TTS voice generation
-2. generate_tts_audio uses GenAI Pro and gTTS (not OpenAI TTS)
+2. generate_tts_audio uses GenAI Pro only (no gTTS fallback)
 3. Verify success message does NOT promise OpenAI TTS
 4. _openai_tts_generate function still exists (dormant, not called by TTS pipeline)
 """
@@ -46,14 +46,14 @@ def test_generate_tts_audio_uses_genaipro():
     assert 'generate_tts_with_genaipro(' in func_body, \
         "generate_tts_audio should use GenAI Pro for TTS"
 
-def test_generate_tts_audio_uses_gtts():
-    """generate_tts_audio should fall back to gTTS."""
+def test_generate_tts_audio_does_not_use_gtts():
+    """generate_tts_audio should NOT fall back to gTTS — uses GenAI Pro only."""
     source = _read_source()
     func_match = re.search(r'def generate_tts_audio\(.*?\n(?=def |\Z)', source, re.DOTALL)
     assert func_match, "Should find generate_tts_audio function"
     func_body = func_match.group(0)
-    assert 'gTTS' in func_body or 'TTS_AVAILABLE' in func_body, \
-        "generate_tts_audio should use gTTS as fallback"
+    assert 'gTTS(' not in func_body, \
+        "generate_tts_audio should NOT use gTTS — voice generation uses GenAI Pro only"
 
 def test_generate_tts_audio_docstring_mentions_no_openai():
     """generate_tts_audio docstring should clarify OpenAI is NOT used for TTS."""

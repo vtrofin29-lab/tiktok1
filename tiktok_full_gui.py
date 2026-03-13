@@ -1329,11 +1329,9 @@ def _get_genaipro_api_key():
 
 def generate_tts_audio(text, language='en', output_path=None, log=None):
     """
-    Generate Text-to-Speech audio from text.
+    Generate Text-to-Speech audio from text using GenAI Pro.
     
-    Priority order:
-    1. GenAI Pro (if tts_config.json has API key) — alternative premium TTS
-    2. gTTS (free fallback) — basic quality
+    Uses GenAI Pro (tts_config.json API key) for high-quality voice synthesis.
     
     Note: OpenAI API key is used ONLY for translation (GPT-4o-mini),
     NOT for voice generation (TTS).
@@ -1347,53 +1345,36 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    # --- Strategy 1: GenAI Pro (separate API key from tts_config.json) ---
     api_key = _get_genaipro_api_key()
     
-    if api_key:
+    if not api_key:
         if log:
-            log("="*60)
-            log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
-            log(f"[TTS] Using GenAI Pro API for high-quality synthesis")
-            log(f"[TTS] Text length: {len(text)} characters")
-            log(f"[TTS] Language: {language}")
-            log("="*60)
-        result = generate_tts_with_genaipro(text, language, output_path, api_key, log)
-        if result:
-            if log:
-                log("="*60)
-                log("[TTS] ✅ AI VOICE GENERATION COMPLETE!")
-                log(f"[TTS] Audio file ready: {result}")
-                log("="*60)
-            return result
-        if log:
-            log("[TTS] ⚠️  GenAI Pro failed, falling back to gTTS...")
-    
-    # --- Strategy 2: gTTS (free fallback) ---
-    if not TTS_AVAILABLE:
-        if log:
-            log("[TTS] gTTS not available - skipping voice generation")
+            log("[TTS] ⚠️  No GenAI Pro API key found in tts_config.json")
+            log("[TTS] Voice generation requires a GenAI Pro API key.")
+            log("[TTS] Please configure tts_config.json with your API key.")
         return None
     
     if not text or not text.strip():
         return None
     
-    try:
-        if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='tts_')
-            os.close(fd)
-        
-        tts = gTTS(text=text, lang=language, slow=False)
-        tts.save(output_path)
-        
+    if log:
+        log("="*60)
+        log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
+        log(f"[TTS] Using GenAI Pro API for high-quality synthesis")
+        log(f"[TTS] Text length: {len(text)} characters")
+        log(f"[TTS] Language: {language}")
+        log("="*60)
+    result = generate_tts_with_genaipro(text, language, output_path, api_key, log)
+    if result:
         if log:
-            log(f"[TTS/gTTS] Generated audio: {output_path} (length: {len(text)} chars)")
-        
-        return output_path
-    except Exception as e:
-        if log:
-            log(f"[TTS ERROR] Failed to generate audio: {e}")
-        return None
+            log("="*60)
+            log("[TTS] ✅ AI VOICE GENERATION COMPLETE!")
+            log(f"[TTS] Audio file ready: {result}")
+            log("="*60)
+        return result
+    if log:
+        log("[TTS] ❌ GenAI Pro voice generation failed")
+    return None
 
 def replace_voice_with_tts(caption_segments, language='en', log=None):
     """
@@ -1407,10 +1388,11 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    # Check if any TTS engine is available (GenAI Pro via tts_config.json, or gTTS)
-    if not TTS_AVAILABLE and not _get_genaipro_api_key():
+    # Check if GenAI Pro is available (required for voice generation)
+    if not _get_genaipro_api_key():
         if log:
-            log("[TTS] No TTS engine available (no gTTS, no GenAI Pro) - cannot replace voice")
+            log("[TTS] No GenAI Pro API key found - cannot replace voice")
+            log("[TTS] Please configure tts_config.json with your GenAI Pro API key.")
         return None
     
     if log:
