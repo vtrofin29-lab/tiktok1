@@ -509,24 +509,24 @@ def _build_short_reference(curr_text, prev_text, diff_words):
     """
     import re
     
-    # Detect language heuristics based on common words
-    lower = curr_text.lower()
+    # Detect language heuristics based on common words (word boundary matching)
+    words_set = set(re.findall(r'\b\w+\b', curr_text.lower()))
     
     # Romanian detection
-    ro_markers = ['și', 'este', 'avea', 'ani', 'de', 'la', 'că', 'într', 'pentru']
-    is_romanian = any(m in lower for m in ro_markers)
+    ro_markers = {'și', 'este', 'avea', 'ani', 'de', 'la', 'că', 'pentru'}
+    is_romanian = len(words_set & ro_markers) >= 2
     
     # Spanish detection
-    es_markers = ['ella', 'también', 'tenía', 'años', 'pero', 'como']
-    is_spanish = any(m in lower for m in es_markers)
+    es_markers = {'ella', 'también', 'tenía', 'años', 'pero', 'como'}
+    is_spanish = not is_romanian and len(words_set & es_markers) >= 2
     
     # French detection
-    fr_markers = ['elle', 'aussi', 'avait', 'mais', 'comme', 'les']
-    is_french = any(m in lower for m in fr_markers)
+    fr_markers = {'elle', 'aussi', 'avait', 'mais', 'comme', 'les'}
+    is_french = not is_romanian and not is_spanish and len(words_set & fr_markers) >= 2
     
     # German detection
-    de_markers = ['sie', 'auch', 'hatte', 'aber', 'wie', 'und']
-    is_german = any(m in lower for m in de_markers)
+    de_markers = {'sie', 'auch', 'hatte', 'aber', 'wie', 'und'}
+    is_german = not is_romanian and not is_spanish and not is_french and len(words_set & de_markers) >= 2
     
     if not diff_words:
         # Identical segments
@@ -4145,10 +4145,10 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     
     MAX_FFMPEG_RETRIES = 2
     last_ffmpeg_error = None
-    if globals().get('STOP_REQUESTED', False):
-        log("[STOP] ⛔ Processing stopped by user.")
-        return False
     for ffmpeg_attempt in range(MAX_FFMPEG_RETRIES):
+        if globals().get('STOP_REQUESTED', False):
+            log("[STOP] ⛔ Processing stopped by user.")
+            return False
         try:
             import tempfile
             # On second attempt, force CPU-only mode as fallback
