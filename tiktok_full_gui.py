@@ -1391,8 +1391,9 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
     # Check if GenAI Pro is available (required for voice generation)
     if not _get_genaipro_api_key():
         if log:
-            log("[TTS] No GenAI Pro API key found - cannot replace voice")
-            log("[TTS] Please configure tts_config.json with your GenAI Pro API key.")
+            log("[TTS] ⚠️  No GenAI Pro API key found in tts_config.json")
+            log("[TTS] Voice generation requires a GenAI Pro API key.")
+            log("[TTS] Please configure tts_config.json with your API key.")
         return None
     
     if log:
