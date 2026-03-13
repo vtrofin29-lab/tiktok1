@@ -56,6 +56,9 @@ def test_generate_tts_audio_tier_order():
     pos_genaipro = func_body.find('generate_tts_with_genaipro(')
     pos_openai = func_body.find('_openai_tts_generate(')
     pos_gtts = func_body.find('gTTS(')
+    assert pos_genaipro >= 0, "Should find generate_tts_with_genaipro call"
+    assert pos_openai >= 0, "Should find _openai_tts_generate call"
+    assert pos_gtts >= 0, "Should find gTTS call"
     assert pos_genaipro < pos_openai < pos_gtts, \
         "Order should be: GenAI Pro → OpenAI TTS → gTTS"
 
