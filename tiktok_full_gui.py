@@ -598,6 +598,92 @@ def _build_short_reference(curr_text, prev_text, diff_words):
 
 # ----------------- AI VOICE REPLACEMENT FUNCTIONS -----------------
 
+def _openai_tts_generate(text, language='en', output_path=None, log=None):
+    """
+    Generate Text-to-Speech audio using OpenAI's TTS API (/v1/audio/speech).
+    Uses the same OPENAI_API_KEY that is used for translations.
+    
+    Args:
+        text: Text to convert to speech
+        language: Language code (used to select voice)
+        output_path: Path to save audio file (temp file if None)
+        log: Optional logging function
+    
+    Returns:
+        Path to generated audio file or None if failed
+    """
+    api_key = globals().get('OPENAI_API_KEY')
+    if not api_key:
+        return None
+    
+    if not REQUESTS_AVAILABLE:
+        if log:
+            log("[OpenAI TTS] requests library not available")
+        return None
+    
+    if not text or not text.strip():
+        return None
+    
+    try:
+        import requests as _requests
+        
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='openai_tts_')
+            os.close(fd)
+        
+        # Select voice based on language — OpenAI TTS voices work across languages
+        # but some voices are better suited for different language groups
+        voice_map = {
+            'en': 'alloy',   'es': 'nova',    'fr': 'shimmer',
+            'de': 'onyx',    'it': 'nova',    'pt': 'nova',
+            'ro': 'alloy',   'ru': 'onyx',    'zh': 'nova',
+            'zh-cn': 'nova', 'ja': 'shimmer', 'ko': 'shimmer',
+            'ar': 'onyx',    'hi': 'alloy',   'tr': 'onyx',
+            'pl': 'alloy',   'nl': 'alloy',   'sv': 'shimmer',
+            'da': 'shimmer',
+        }
+        voice = voice_map.get(language, 'alloy')
+        
+        if log:
+            log(f"[OpenAI TTS] Generating speech with voice '{voice}' ({len(text)} chars)...")
+        
+        response = _requests.post(
+            'https://api.openai.com/v1/audio/speech',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'model': 'tts-1',
+                'input': text,
+                'voice': voice,
+                'response_format': 'mp3'
+            },
+            timeout=120
+        )
+        
+        if response.status_code == 200:
+            with open(output_path, 'wb') as f:
+                f.write(response.content)
+            if log:
+                log(f"[OpenAI TTS] ✓ Generated audio: {output_path} ({len(response.content)} bytes)")
+            return output_path
+        elif response.status_code == 429:
+            if log:
+                log("[OpenAI TTS] ⚠ Rate limited (429) — will fall back to other TTS engines")
+                log("[OpenAI TTS] TIP: Add billing credit at https://platform.openai.com/settings/organization/billing")
+            return None
+        else:
+            if log:
+                err_text = response.text[:300]
+                log(f"[OpenAI TTS ERROR] API returned {response.status_code}: {err_text}")
+            return None
+    except Exception as e:
+        if log:
+            log(f"[OpenAI TTS ERROR] {e}")
+        return None
+
+
 def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=None, log=None):
     """
     Generate Text-to-Speech audio using GenAI Pro API.
@@ -1230,7 +1316,12 @@ def map_timestamps_after_silence_removal(segments, silence_map, log=None):
 
 def generate_tts_audio(text, language='en', output_path=None, log=None):
     """
-    Generate Text-to-Speech audio from text using GenAI Pro (if API key available) or gTTS (fallback).
+    Generate Text-to-Speech audio from text.
+    
+    Priority order:
+    1. OpenAI TTS (if OPENAI_API_KEY is set) — high quality, multilingual
+    2. GenAI Pro (if tts_config.json has API key) — alternative premium TTS
+    3. gTTS (free fallback) — basic quality
     
     Args:
         text: Text to convert to speech
@@ -1241,7 +1332,28 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    # Try to load API key from config
+    # --- Strategy 1: OpenAI TTS (uses same key as translation) ---
+    openai_key = globals().get('OPENAI_API_KEY')
+    if openai_key and REQUESTS_AVAILABLE:
+        if log:
+            log("="*60)
+            log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
+            log(f"[TTS] Using OpenAI TTS API (same key as translation)")
+            log(f"[TTS] Text length: {len(text)} characters")
+            log(f"[TTS] Language: {language}")
+            log("="*60)
+        result = _openai_tts_generate(text, language, output_path, log)
+        if result:
+            if log:
+                log("="*60)
+                log("[TTS] ✅ OpenAI VOICE GENERATION COMPLETE!")
+                log(f"[TTS] Audio file ready: {result}")
+                log("="*60)
+            return result
+        if log:
+            log("[TTS] ⚠️  OpenAI TTS failed, trying next engine...")
+    
+    # --- Strategy 2: GenAI Pro (separate API key from tts_config.json) ---
     api_key = None
     try:
         config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
@@ -1252,7 +1364,6 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     except Exception:
         pass
     
-    # Try GenAI Pro first if API key is available
     if api_key:
         if log:
             log("="*60)
@@ -1272,7 +1383,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
         if log:
             log("[TTS] ⚠️  GenAI Pro failed, falling back to gTTS...")
     
-    # Fallback to gTTS
+    # --- Strategy 3: gTTS (free fallback) ---
     if not TTS_AVAILABLE:
         if log:
             log("[TTS] gTTS not available - skipping voice generation")
@@ -7101,11 +7212,13 @@ class App:
                 globals()['OPENAI_API_KEY'] = key
                 if hasattr(self, 'log'):
                     self.log("[OpenAI] ✓ API key is VALID - translations will use GPT-4o-mini")
+                    self.log("[OpenAI] ✓ Voice generation (TTS) will also use OpenAI")
                     self.log("[OpenAI] NOTE: API usage is visible at https://platform.openai.com/usage")
                     self.log("[OpenAI] API calls do NOT appear on chat.openai.com (that is a different product)")
                 messagebox.showinfo("API Key Valid",
                     "✓ Your OpenAI API key is working!\n\n"
-                    "Translations will use GPT-4o-mini.\n\n"
+                    "• Translations will use GPT-4o-mini\n"
+                    "• Voice generation (TTS) will use OpenAI TTS\n\n"
                     "IMPORTANT: API calls do NOT appear on chat.openai.com.\n"
                     "Check your API usage at:\nhttps://platform.openai.com/usage")
             elif response.status_code == 401:
