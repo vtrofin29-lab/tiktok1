@@ -7401,7 +7401,7 @@ class App:
                 globals()['IS_4K_MODE'] = True
                 # Sync caption font size slider and label with 4K value
                 if hasattr(self, 'caption_font_size_scale'):
-                    self.caption_font_size_scale.config(from_=40, to=240)
+                    self.caption_font_size_scale.config(from_=40, to=400)
                 if hasattr(self, 'caption_font_size_var'):
                     self.caption_font_size_var.set(112)
                 if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
@@ -7720,7 +7720,7 @@ class App:
                 except Exception:
                     size = 56
             # Clamp to valid range (scaled for 4K)
-            max_size = 240 if globals().get('IS_4K_MODE', False) else 120
+            max_size = 400 if globals().get('IS_4K_MODE', False) else 120
             min_size = 40 if globals().get('IS_4K_MODE', False) else 20
             size = max(min_size, min(max_size, size))
             globals()['CAPTION_FONT_SIZE'] = size
