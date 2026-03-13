@@ -631,8 +631,8 @@ def _openai_tts_generate(text, language='en', output_path=None, log=None):
             fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='openai_tts_')
             os.close(fd)
         
-        # Select voice based on language — OpenAI TTS voices work across languages
-        # but some voices are better suited for different language groups
+        # Select voice based on language — all OpenAI TTS voices are multilingual,
+        # but some voice tones suit certain language groups better (cosmetic preference)
         voice_map = {
             'en': 'alloy',   'es': 'nova',    'fr': 'shimmer',
             'de': 'onyx',    'it': 'nova',    'pt': 'nova',
@@ -1421,9 +1421,9 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    if not TTS_AVAILABLE:
+    if not TTS_AVAILABLE and not globals().get('OPENAI_API_KEY'):
         if log:
-            log("[TTS] gTTS not available - cannot replace voice")
+            log("[TTS] No TTS engine available (no gTTS, no OpenAI key) - cannot replace voice")
         return None
     
     if log:
