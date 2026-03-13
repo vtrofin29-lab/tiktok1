@@ -7099,10 +7099,11 @@ class App:
                     "Your API key is valid but rate-limited or out of quota.\n\n"
                     "Check your billing at:\nhttps://platform.openai.com/usage")
             else:
+                err_text = response.text[:200] + ('...' if len(response.text) > 200 else '')
                 if hasattr(self, 'log'):
-                    self.log(f"[OpenAI] ✗ API returned status {response.status_code}: {response.text[:200]}")
+                    self.log(f"[OpenAI] ✗ API returned status {response.status_code}: {err_text}")
                 messagebox.showerror("API Error",
-                    f"API returned status {response.status_code}.\n\n{response.text[:200]}")
+                    f"API returned status {response.status_code}.\n\n{err_text}")
         except Exception as e:
             if hasattr(self, 'log'):
                 self.log(f"[OpenAI] ✗ Verification failed: {e}")
