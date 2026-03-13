@@ -1319,9 +1319,11 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     Generate Text-to-Speech audio from text.
     
     Priority order:
-    1. OpenAI TTS (if OPENAI_API_KEY is set) — high quality, multilingual
-    2. GenAI Pro (if tts_config.json has API key) — alternative premium TTS
-    3. gTTS (free fallback) — basic quality
+    1. GenAI Pro (if tts_config.json has API key) — alternative premium TTS
+    2. gTTS (free fallback) — basic quality
+    
+    Note: OpenAI API key is used ONLY for translation (GPT-4o-mini),
+    NOT for voice generation (TTS).
     
     Args:
         text: Text to convert to speech
@@ -1332,28 +1334,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    # --- Strategy 1: OpenAI TTS (uses same key as translation) ---
-    openai_key = globals().get('OPENAI_API_KEY')
-    if openai_key and REQUESTS_AVAILABLE:
-        if log:
-            log("="*60)
-            log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
-            log(f"[TTS] Using OpenAI TTS API (same key as translation)")
-            log(f"[TTS] Text length: {len(text)} characters")
-            log(f"[TTS] Language: {language}")
-            log("="*60)
-        result = _openai_tts_generate(text, language, output_path, log)
-        if result:
-            if log:
-                log("="*60)
-                log("[TTS] ✅ OpenAI VOICE GENERATION COMPLETE!")
-                log(f"[TTS] Audio file ready: {result}")
-                log("="*60)
-            return result
-        if log:
-            log("[TTS] ⚠️  OpenAI TTS failed, trying next engine...")
-    
-    # --- Strategy 2: GenAI Pro (separate API key from tts_config.json) ---
+    # --- Strategy 1: GenAI Pro (separate API key from tts_config.json) ---
     api_key = None
     try:
         config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
@@ -1383,7 +1364,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
         if log:
             log("[TTS] ⚠️  GenAI Pro failed, falling back to gTTS...")
     
-    # --- Strategy 3: gTTS (free fallback) ---
+    # --- Strategy 2: gTTS (free fallback) ---
     if not TTS_AVAILABLE:
         if log:
             log("[TTS] gTTS not available - skipping voice generation")
@@ -1421,9 +1402,19 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    if not TTS_AVAILABLE and not globals().get('OPENAI_API_KEY'):
+    # Check if any TTS engine is available (GenAI Pro via tts_config.json, or gTTS)
+    has_genaipro = False
+    try:
+        _cfg_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+        if os.path.exists(_cfg_path):
+            with open(_cfg_path, 'r') as _f:
+                _cfg = json.load(_f)
+                has_genaipro = bool(_cfg.get("api_key", "").strip())
+    except Exception:
+        pass
+    if not TTS_AVAILABLE and not has_genaipro:
         if log:
-            log("[TTS] No TTS engine available (no gTTS, no OpenAI key) - cannot replace voice")
+            log("[TTS] No TTS engine available (no gTTS, no GenAI Pro) - cannot replace voice")
         return None
     
     if log:
@@ -7212,13 +7203,13 @@ class App:
                 globals()['OPENAI_API_KEY'] = key
                 if hasattr(self, 'log'):
                     self.log("[OpenAI] ✓ API key is VALID - translations will use GPT-4o-mini")
-                    self.log("[OpenAI] ✓ Voice generation (TTS) will also use OpenAI")
+                    self.log("[OpenAI] NOTE: OpenAI is used ONLY for translation, NOT for voice generation (TTS)")
                     self.log("[OpenAI] NOTE: API usage is visible at https://platform.openai.com/usage")
                     self.log("[OpenAI] API calls do NOT appear on chat.openai.com (that is a different product)")
                 messagebox.showinfo("API Key Valid",
                     "✓ Your OpenAI API key is working!\n\n"
                     "• Translations will use GPT-4o-mini\n"
-                    "• Voice generation (TTS) will use OpenAI TTS\n\n"
+                    "• Voice generation uses GenAI Pro / gTTS (NOT OpenAI)\n\n"
                     "IMPORTANT: API calls do NOT appear on chat.openai.com.\n"
                     "Check your API usage at:\nhttps://platform.openai.com/usage")
             elif response.status_code == 401:
