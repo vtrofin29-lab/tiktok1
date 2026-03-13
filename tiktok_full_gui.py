@@ -346,22 +346,25 @@ def _openai_translate_segments(segments, target_language, log=None):
                 {"role": "user", "content": numbered_lines},
             ],
             temperature=0.3,
-            max_tokens=max(len(numbered_lines) * 3, 256),
+            max_tokens=max(len(numbered_lines), 256),
         )
         
         raw = response.choices[0].message.content.strip()
         
         # Parse numbered output: "1. translated text"
-        import re as _re
+        import re
         parsed = {}
         for line in raw.split("\n"):
             line = line.strip()
             if not line:
                 continue
-            m = _re.match(r"(\d+)\.\s*(.*)", line)
+            m = re.match(r"(\d+)\.\s*(.*)", line)
             if m:
                 parsed[int(m.group(1))] = m.group(2).strip()
         
+        # Accept if at least 80% of segments were translated — minor
+        # parsing mismatches (e.g. model merging short segments) are OK
+        # because missing segments fall back to the original text below.
         if len(parsed) >= len(segments) * 0.8:
             translated = []
             for i, seg in enumerate(segments):
