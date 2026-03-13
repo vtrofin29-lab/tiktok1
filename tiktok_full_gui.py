@@ -6110,10 +6110,23 @@ class App:
         ttk.Label(left_frame, text="OpenAI Key:").grid(row=row, column=0, sticky="e")
         openai_frame = ttk.Frame(left_frame)
         openai_frame.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        self.openai_key_var = tk.StringVar(value="")
+        # Try to load saved OpenAI key from config file
+        saved_openai_key = ""
+        try:
+            openai_config_path = os.path.join(os.path.dirname(__file__), "openai_config.json")
+            if os.path.exists(openai_config_path):
+                with open(openai_config_path, 'r') as f:
+                    openai_cfg = json.load(f)
+                    saved_openai_key = openai_cfg.get("openai_api_key", "")
+                    if saved_openai_key:
+                        globals()['OPENAI_API_KEY'] = saved_openai_key
+        except Exception:
+            pass
+        self.openai_key_var = tk.StringVar(value=saved_openai_key)
         self.openai_key_entry = ttk.Entry(openai_frame, textvariable=self.openai_key_var, show="*", width=22)
         self.openai_key_entry.pack(side="left", fill="x", expand=True)
         ttk.Button(openai_frame, text="Set", style='Bordered.TButton', command=self._apply_openai_key, width=4).pack(side="left", padx=(4,0))
+        ttk.Button(openai_frame, text="Save", style='Bordered.TButton', command=self._save_openai_key, width=5).pack(side="left", padx=(4,0))
         row += 1
 
         # Custom translation prompt (uses {language} placeholder for selected target language)
@@ -6993,6 +7006,29 @@ class App:
                     self.log("[OpenAI] API key cleared - using googletrans")
         except Exception as e:
             print(f"OpenAI key apply error: {e}")
+
+    def _save_openai_key(self):
+        """Save the OpenAI API key to a config file and apply it."""
+        try:
+            key = self.openai_key_var.get().strip()
+            if not key:
+                messagebox.showwarning("No API Key", "Please enter an OpenAI API key.")
+                return
+            # Apply the key first
+            globals()['OPENAI_API_KEY'] = key
+            # Save to config file
+            config_path = os.path.join(os.path.dirname(__file__), "openai_config.json")
+            config = {"openai_api_key": key}
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(config, f)
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] API key saved and activated")
+                messagebox.showinfo("API Key Saved", "OpenAI API key saved successfully!")
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save OpenAI API key: {e}")
+        except Exception as e:
+            print(f"Save OpenAI key error: {e}")
 
     def _apply_translation_prompt(self):
         """Apply the custom translation prompt from the GUI entry field."""
@@ -9309,6 +9345,7 @@ class App:
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get(),
                 "translation_custom_prompt": self.translation_prompt_var.get() if hasattr(self, 'translation_prompt_var') else "",
+                "openai_api_key": self.openai_key_var.get().strip() if hasattr(self, 'openai_key_var') else "",
                 "use_ai_voice": self.use_ai_voice_var.get(),
                 "tts_language": self.tts_language_var.get(),
                 "tts_voice": self.tts_voice_var.get(),
@@ -9413,6 +9450,11 @@ class App:
                 saved_prompt = preset_data.get("translation_custom_prompt", "")
                 self.translation_prompt_var.set(saved_prompt)
                 globals()['TRANSLATION_CUSTOM_PROMPT'] = saved_prompt
+            if hasattr(self, 'openai_key_var'):
+                saved_key = preset_data.get("openai_api_key", "")
+                if saved_key:
+                    self.openai_key_var.set(saved_key)
+                    globals()['OPENAI_API_KEY'] = saved_key
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
@@ -9523,6 +9565,11 @@ class App:
                 saved_prompt = preset_data.get("translation_custom_prompt", "")
                 self.translation_prompt_var.set(saved_prompt)
                 globals()['TRANSLATION_CUSTOM_PROMPT'] = saved_prompt
+            if hasattr(self, 'openai_key_var'):
+                saved_key = preset_data.get("openai_api_key", "")
+                if saved_key:
+                    self.openai_key_var.set(saved_key)
+                    globals()['OPENAI_API_KEY'] = saved_key
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
