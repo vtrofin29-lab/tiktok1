@@ -6125,7 +6125,6 @@ class App:
         self.translation_prompt_entry.pack(side="left", fill="x", expand=True)
         ttk.Button(prompt_frame, text="Set", style='Bordered.TButton', command=self._apply_translation_prompt, width=4).pack(side="left", padx=(4,0))
         row += 1
-        ttk.Label(left_frame, text="").grid(row=row-1, column=0, sticky="w")
         prompt_hint = ttk.Label(left_frame, text="  Use {language} for auto target lang", font=('Segoe UI', 7))
         prompt_hint.grid(row=row, column=1, columnspan=2, sticky='w', padx=(6,0))
         row += 1
