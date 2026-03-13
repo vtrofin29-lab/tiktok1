@@ -1,6 +1,7 @@
-"""Tests for translation quality improvement and volume control fixes."""
+"""Tests for volume control dB display (CapCut-style) and related features."""
 import os
 import re
+import math
 
 def _read_source():
     """Read the main source file."""
@@ -9,464 +10,204 @@ def _read_source():
         return f.read()
 
 
-# ─── Translation quality improvements ───────────────────────────────
-
-def test_two_step_translation_for_non_english_targets():
-    """For non-English targets, should use Whisper translate→English→Google Translate→target."""
-    source = _read_source()
-    func_start = source.find("def transcribe_captions(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end]
-    # Should have a flag for second-pass translation (non-English targets)
-    assert "_needs_second_pass_translation" in func_body, \
-        "Should have _needs_second_pass_translation flag for two-step translation"
-    # Should always use Whisper translate when translation is requested
-    assert 'task="translate"' in func_body or "task='translate'" in func_body or \
-           "_whisper_task = \"translate\"" in func_body, \
-        "Should use Whisper translate task when any translation is requested"
-
-
-def test_whisper_translate_always_used_for_translation():
-    """Whisper's translate task should be used for ALL translation targets, not just English."""
-    source = _read_source()
-    func_start = source.find("def transcribe_captions(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end]
-    # The whisper task should be set to 'translate' for any translation target,
-    # not just when target is English
-    assert "_whisper_task = \"translate\"" in func_body, \
-        "Should set _whisper_task to translate for any translation target"
-    # The logic should set translate for ALL targets, then do a second pass
-    # for non-English targets
-    assert "_needs_second_pass_translation = True" in func_body, \
-        "Should set _needs_second_pass_translation for non-English targets"
-
-
-def test_two_step_logging():
-    """Should log the two-step translation approach for non-English targets."""
-    source = _read_source()
-    func_start = source.find("def transcribe_captions(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end].lower()
-    assert "two-step" in func_body, \
-        "Should log the two-step translation approach"
-
-
-# ─── Volume control fixes ───────────────────────────────────────────
+# ─── Volume defaults & slider ranges ───────────────────────────────
 
 def test_voice_gain_default_increased():
-    """Default VOICE_GAIN should be 2.5x or higher for better clarity."""
+    """VOICE_GAIN default should be 5.0 for louder voice output."""
     source = _read_source()
-    match = re.search(r'VOICE_GAIN\s*=\s*([0-9.]+)', source)
-    assert match is not None, "VOICE_GAIN constant should exist"
-    gain = float(match.group(1))
-    assert gain >= 2.0, f"VOICE_GAIN default should be >= 2.0 for better clarity, got {gain}"
-
-
-def test_voice_slider_max_increased():
-    """Voice volume slider should have max >= 5.0 for sufficient headroom."""
-    source = _read_source()
-    # Find the voice gain scale creation with to= parameter
-    voice_scale_pattern = re.search(
-        r'voice_gain_scale\s*=\s*tk\.Scale\([^)]*to=([0-9.]+)', source)
-    assert voice_scale_pattern is not None, "Voice gain scale should exist"
-    max_val = float(voice_scale_pattern.group(1))
-    assert max_val >= 5.0, f"Voice slider max should be >= 5.0, got {max_val}"
-
-
-def test_music_slider_max_increased():
-    """Music volume slider should have max >= 2.5 for sufficient headroom."""
-    source = _read_source()
-    music_scale_pattern = re.search(
-        r'music_gain_scale\s*=\s*tk\.Scale\([^)]*to=([0-9.]+)', source)
-    assert music_scale_pattern is not None, "Music gain scale should exist"
-    max_val = float(music_scale_pattern.group(1))
-    assert max_val >= 2.5, f"Music slider max should be >= 2.5, got {max_val}"
-
-
-def test_per_job_voice_gain_in_batch_queue():
-    """Job dicts for batch queue should include voice_gain."""
-    source = _read_source()
-    # Find the add_job function's job dict construction
-    add_job_start = source.find("def add_job(")
-    assert add_job_start != -1, "add_job function should exist"
-    add_job_end = source.find("\n    def ", add_job_start + 10)
-    add_job_body = source[add_job_start:add_job_end]
-    assert '"voice_gain"' in add_job_body, \
-        "Batch queue job dict should include voice_gain"
-    assert '"music_gain"' in add_job_body, \
-        "Batch queue job dict should include music_gain"
-
-
-def test_per_job_voice_gain_in_single_run():
-    """Job dict for single run should include voice_gain."""
-    source = _read_source()
-    # Find the on_run_single function
-    run_single_start = source.find("def on_run_single(")
-    assert run_single_start != -1, "on_run_single function should exist"
-    run_single_end = source.find("\n    def ", run_single_start + 10)
-    run_single_body = source[run_single_start:run_single_end]
-    assert '"voice_gain"' in run_single_body, \
-        "Single run job dict should include voice_gain"
-    assert '"music_gain"' in run_single_body, \
-        "Single run job dict should include music_gain"
-
-
-def test_process_single_job_accepts_voice_gain():
-    """process_single_job should accept voice_gain and music_gain parameters."""
-    source = _read_source()
-    sig_start = source.find("def process_single_job(")
-    assert sig_start != -1
-    # Find the end of the signature (closing paren + colon)
-    sig_end = source.find(":", sig_start)
-    signature = source[sig_start:sig_end]
-    assert "voice_gain" in signature, \
-        "process_single_job should have voice_gain parameter"
-    assert "music_gain" in signature, \
-        "process_single_job should have music_gain parameter"
-
-
-def test_process_single_job_applies_per_job_gains():
-    """process_single_job should apply per-job gains to globals."""
-    source = _read_source()
-    func_start = source.find("def process_single_job(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end]
-    # Should set globals from per-job parameters
-    assert "globals()['VOICE_GAIN'] = voice_gain" in func_body, \
-        "Should apply per-job voice_gain to global"
-    assert "globals()['MUSIC_GAIN'] = music_gain" in func_body, \
-        "Should apply per-job music_gain to global"
-
-
-def test_run_video_job_passes_voice_gain():
-    """_run_video_job should pass voice_gain and music_gain to process_single_job."""
-    source = _read_source()
-    func_start = source.find("def _run_video_job(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end]
-    assert 'voice_gain=job.get("voice_gain")' in func_body, \
-        "_run_video_job should pass voice_gain from job dict"
-    assert 'music_gain=job.get("music_gain")' in func_body, \
-        "_run_video_job should pass music_gain from job dict"
-
-
-def test_preset_loading_syncs_volume_globals():
-    """Preset loading should sync volume globals via callbacks."""
-    source = _read_source()
-    # Check load_preset function
-    load_start = source.find("def load_preset(self):")
-    assert load_start != -1
-    load_end = source.find("\n    def ", load_start + 10)
-    load_body = source[load_start:load_end]
-    assert "on_voice_gain_changed" in load_body, \
-        "load_preset should call on_voice_gain_changed to sync globals"
-    assert "on_music_gain_changed" in load_body, \
-        "load_preset should call on_music_gain_changed to sync globals"
-
-
-def test_preset_silent_loading_syncs_volume_globals():
-    """Silent preset loading should also sync volume globals via callbacks."""
-    source = _read_source()
-    # Check load_preset_silent function
-    load_start = source.find("def load_preset_silent(self):")
-    assert load_start != -1
-    load_end = source.find("\n    def ", load_start + 10)
-    load_body = source[load_start:load_end]
-    assert "on_voice_gain_changed" in load_body, \
-        "load_preset_silent should call on_voice_gain_changed to sync globals"
-    assert "on_music_gain_changed" in load_body, \
-        "load_preset_silent should call on_music_gain_changed to sync globals"
-
-
-def test_reset_defaults_syncs_volume_globals():
-    """Reset to defaults should sync volume globals via callbacks."""
-    source = _read_source()
-    # Look for reset function that sets voice_gain_var
-    reset_pattern = re.findall(
-        r'on_voice_gain_changed.*str.*VOICE_GAIN', source)
-    assert len(reset_pattern) >= 1, \
-        "Reset to defaults should call on_voice_gain_changed to sync globals"
-
-
-def test_audio_intermediate_uses_wav():
-    """Audio temp file should use WAV (lossless) instead of MP3 to preserve volume."""
-    source = _read_source()
-    # Should write to .wav file
-    assert 'audio.wav' in source, \
-        "Audio intermediate should use WAV format (audio.wav) for lossless volume preservation"
-    # Should NOT use codec='mp3' for the audio temp file
-    # Find the write_audiofile call in the export section
-    export_section = source[source.find('Save audio to temp file'):]
-    if export_section:
-        write_call = export_section[:export_section.find('\n\n')]
-        assert "codec='mp3'" not in write_call, \
-            "Audio intermediate should not use MP3 codec (lossy compression reduces volume)"
-
-
-def test_ffmpeg_audio_volume_boost():
-    """FFmpeg export should include audio volume boost filter for adequate output levels."""
-    source = _read_source()
-    # The filter_parts should include an audio volume filter
-    assert '[2:a]volume=' in source, \
-        "FFmpeg export should include audio volume filter for output level boost"
-    assert '[aout]' in source, \
-        "FFmpeg audio filter should output to [aout] label"
-
-
-def test_ffmpeg_maps_filtered_audio():
-    """FFmpeg export should map the filtered audio output, not raw input."""
-    source = _read_source()
-    # Should map [aout] (filtered audio) instead of 2:a (raw input)
-    export_fn = source[source.find('def _export_with_ffmpeg_filters'):]
-    if export_fn:
-        # Find the cmd.extend section with -map
-        assert '"[aout]"' in export_fn, \
-            "FFmpeg command should map [aout] (volume-boosted audio)"
-
+    assert re.search(r'^VOICE_GAIN\s*=\s*5\.0', source, re.MULTILINE), \
+        "VOICE_GAIN default should be 5.0"
 
 def test_voice_gain_default_is_5():
-    """VOICE_GAIN default should be exactly 5.0 for strong voice clarity."""
+    """Confirm VOICE_GAIN is exactly 5.0."""
     source = _read_source()
-    match = re.search(r'^VOICE_GAIN\s*=\s*([0-9.]+)', source, re.MULTILINE)
-    assert match is not None, "VOICE_GAIN constant should exist"
-    gain = float(match.group(1))
-    assert gain >= 5.0, f"VOICE_GAIN default should be >= 5.0, got {gain}"
-
+    match = re.search(r'^VOICE_GAIN\s*=\s*(\S+)', source, re.MULTILINE)
+    assert match, "VOICE_GAIN must be defined"
+    assert float(match.group(1)) == 5.0, f"VOICE_GAIN should be 5.0, got {match.group(1)}"
 
 def test_music_gain_default_is_025():
-    """MUSIC_GAIN default should be 0.25 for audible background music."""
+    """Confirm MUSIC_GAIN is exactly 0.25."""
     source = _read_source()
-    match = re.search(r'^MUSIC_GAIN\s*=\s*([0-9.]+)', source, re.MULTILINE)
-    assert match is not None, "MUSIC_GAIN constant should exist"
-    gain = float(match.group(1))
-    assert gain >= 0.25, f"MUSIC_GAIN default should be >= 0.25, got {gain}"
+    match = re.search(r'^MUSIC_GAIN\s*=\s*(\S+)', source, re.MULTILINE)
+    assert match, "MUSIC_GAIN must be defined"
+    assert float(match.group(1)) == 0.25, f"MUSIC_GAIN should be 0.25, got {match.group(1)}"
 
+def test_voice_slider_max_increased():
+    """Voice slider should allow up to 20.0x."""
+    source = _read_source()
+    assert "to=20.0" in source, "Voice slider must allow gains up to 20.0x"
 
 def test_voice_slider_max_is_20():
-    """Voice volume slider max should be 20.0 for high amplification headroom."""
+    """Voice gain scale to=20.0 must exist in slider creation."""
     source = _read_source()
-    voice_scale_pattern = re.search(
-        r'voice_gain_scale\s*=\s*tk\.Scale\([^)]*to=([0-9.]+)', source)
-    assert voice_scale_pattern is not None, "Voice gain scale should exist"
-    max_val = float(voice_scale_pattern.group(1))
-    assert max_val >= 20.0, f"Voice slider max should be >= 20.0, got {max_val}"
+    # Find the voice gain scale creation
+    idx = source.find("voice_gain_scale")
+    assert idx != -1, "voice_gain_scale must exist"
+    nearby = source[idx:idx+200]
+    assert "to=20.0" in nearby, "voice_gain_scale must have to=20.0"
 
+def test_music_slider_max_increased():
+    """Music slider should allow up to 5.0x."""
+    source = _read_source()
+    assert "to=5.0" in source, "Music slider must allow gains up to 5.0x"
 
 def test_music_slider_max_is_5():
-    """Music volume slider max should be 5.0 for more range."""
+    """Music gain scale to=5.0 must exist in slider creation."""
     source = _read_source()
-    music_scale_pattern = re.search(
-        r'music_gain_scale\s*=\s*tk\.Scale\([^)]*to=([0-9.]+)', source)
-    assert music_scale_pattern is not None, "Music gain scale should exist"
-    max_val = float(music_scale_pattern.group(1))
-    assert max_val >= 5.0, f"Music slider max should be >= 5.0, got {max_val}"
+    idx = source.find("music_gain_scale")
+    assert idx != -1, "music_gain_scale must exist"
+    nearby = source[idx:idx+200]
+    assert "to=5.0" in nearby, "music_gain_scale must have to=5.0"
 
 
-def test_audio_gain_debug_logging():
-    """Audio processing should log the actual gain values being applied."""
+# ─── Preset loading syncs volume globals + dB labels ───────────────
+
+def test_preset_loading_syncs_volume_globals():
+    """Preset loading must call on_voice_gain_changed to sync globals + dB labels."""
     source = _read_source()
-    assert '[AUDIO] Voice gain:' in source, \
-        "Audio processing should log voice gain values for debugging"
+    # After voice_gain_var.set(), the on_voice_gain_changed callback must be called
+    idx = source.find("voice_gain_var.set(preset_data")
+    assert idx != -1, "Preset loading must set voice_gain_var"
+    nearby = source[idx:idx+400]
+    assert "on_voice_gain_changed" in nearby, \
+        "Preset loading must call on_voice_gain_changed to sync globals and dB label"
 
-
-# ─── Voice gain applied in FFmpeg (not MoviePy) ────────────────────
-
-def test_voice_gain_not_in_moviepy():
-    """Voice clips should NOT have volumex(VOICE_GAIN) — gain is applied in FFmpeg."""
+def test_preset_silent_loading_syncs_volume_globals():
+    """Silent preset loading must also sync volume globals + dB labels."""
     source = _read_source()
-    assert '.volumex(VOICE_GAIN)' not in source, \
-        "Voice gain should NOT be applied via MoviePy volumex (causes WAV clipping). " \
-        "It should be applied in FFmpeg's volume filter instead."
+    # Find all preset loading sections that set voice_gain_var
+    occurrences = [m.start() for m in re.finditer(r'voice_gain_var\.set\(', source)]
+    synced = 0
+    for idx in occurrences:
+        nearby = source[idx:idx+400]
+        if "on_voice_gain_changed" in nearby:
+            synced += 1
+    assert synced >= 2, \
+        f"At least 2 preset loading locations must sync volume globals; found {synced}"
 
 
-def test_voice_gain_in_ffmpeg_filter():
-    """FFmpeg filter should use VOICE_GAIN (not a fixed constant) for audio volume."""
-    source = _read_source()
-    export_fn = source[source.find('def _export_with_ffmpeg_filters'):]
-    assert 'volume={VOICE_GAIN}' in export_fn, \
-        "FFmpeg audio filter should use dynamic VOICE_GAIN value, not a fixed constant"
-
+# ─── No FFMPEG_OUTPUT_VOLUME_BOOST constant ─────────────────────────
 
 def test_no_ffmpeg_output_volume_boost_constant():
-    """The fixed FFMPEG_OUTPUT_VOLUME_BOOST constant should be removed."""
+    """There should be no FFMPEG_OUTPUT_VOLUME_BOOST constant (was removed)."""
     source = _read_source()
-    assert 'FFMPEG_OUTPUT_VOLUME_BOOST' not in source, \
-        "FFMPEG_OUTPUT_VOLUME_BOOST constant should be removed (replaced by VOICE_GAIN in FFmpeg)"
+    assert "FFMPEG_OUTPUT_VOLUME_BOOST" not in source, \
+        "FFMPEG_OUTPUT_VOLUME_BOOST should not exist"
 
 
-# ─── OpenAI translation integration ────────────────────────────────
-
-def test_openai_translate_function_exists():
-    """The _openai_translate_segments function should exist."""
-    source = _read_source()
-    assert 'def _openai_translate_segments(' in source, \
-        "_openai_translate_segments function should exist for ChatGPT-quality translations"
-
-
-def test_translate_segments_tries_openai_first():
-    """translate_segments should try OpenAI translation before Google Translate."""
-    source = _read_source()
-    func_start = source.find("def translate_segments(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end]
-    assert '_openai_translate_segments' in func_body, \
-        "translate_segments should call _openai_translate_segments first for best quality"
-
-
-def test_openai_translate_uses_api_key():
-    """OpenAI translation should use OPENAI_API_KEY from globals or environment."""
-    source = _read_source()
-    func_start = source.find("def _openai_translate_segments(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end]
-    assert 'OPENAI_API_KEY' in func_body, \
-        "OpenAI translation should use OPENAI_API_KEY"
-
-
-def test_openai_translate_falls_back_gracefully():
-    """OpenAI translation should return None when API key is missing (fallback to googletrans)."""
-    source = _read_source()
-    func_start = source.find("def _openai_translate_segments(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end]
-    assert 'return None' in func_body, \
-        "OpenAI translation should return None on failure for graceful fallback"
-
-
-def test_openai_translate_uses_gpt4o_mini():
-    """OpenAI translation should use gpt-4o-mini model for cost efficiency."""
-    source = _read_source()
-    func_start = source.find("def _openai_translate_segments(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end]
-    assert 'gpt-4o-mini' in func_body, \
-        "OpenAI translation should use gpt-4o-mini model"
-
-
-# ─── dB volume display (CapCut-style) ──────────────────────────────
+# ─── dB display (CapCut-style) ──────────────────────────────────────
 
 def test_gain_to_db_str_exists():
-    """Helper function _gain_to_db_str should exist for CapCut-style dB display."""
+    """_gain_to_db_str function must exist for CapCut-style dB display."""
     source = _read_source()
     assert "def _gain_to_db_str(" in source, \
-        "_gain_to_db_str helper function should exist"
-
+        "_gain_to_db_str function must exist"
 
 def test_gain_to_db_str_mute():
-    """gain=0 should show 'Mute'."""
+    """_gain_to_db_str(0) should return 'Mute'."""
     source = _read_source()
-    assert "import math" in source, "math module must be imported for log10"
     func_start = source.find("def _gain_to_db_str(")
     assert func_start != -1
-    func_end = source.find("\n\n", func_start + 10)
-    func_body = source[func_start:func_end]
+    func_body = source[func_start:func_start + 300]
     assert '"Mute"' in func_body or "'Mute'" in func_body, \
         "_gain_to_db_str should return 'Mute' for zero gain"
 
-
 def test_gain_to_db_str_uses_log10():
-    """Should use 20*log10(gain) formula for dB conversion."""
+    """_gain_to_db_str must use 20*log10 formula for dB conversion."""
     source = _read_source()
     func_start = source.find("def _gain_to_db_str(")
     assert func_start != -1
-    func_end = source.find("\n\n", func_start + 10)
-    func_body = source[func_start:func_end]
-    assert "log10" in func_body, \
-        "_gain_to_db_str should use log10 for dB conversion"
+    func_body = source[func_start:func_start + 300]
+    assert "log10" in func_body, "_gain_to_db_str must use log10 for dB"
+    assert "20" in func_body, "_gain_to_db_str must use 20*log10 formula"
 
+def test_gain_to_db_str_positive_format():
+    """Positive dB values should be formatted with + prefix (CapCut-style)."""
+    source = _read_source()
+    func_start = source.find("def _gain_to_db_str(")
+    assert func_start != -1
+    func_body = source[func_start:func_start + 300]
+    # Should include a + prefix for positive dB
+    assert '"+' in func_body or "'+'" in func_body or 'f"+{' in func_body, \
+        "Positive dB values should have + prefix (e.g. +6.0 dB)"
+
+def test_gain_to_db_str_math_correctness():
+    """Verify the dB formula: 20*log10(gain) produces correct values."""
+    # Test known values: gain=1.0 -> 0 dB, gain=2.0 -> +6.0 dB, gain=0.5 -> -6.0 dB
+    assert abs(20.0 * math.log10(1.0)) < 0.01, "gain=1.0 should be 0 dB"
+    assert abs(20.0 * math.log10(2.0) - 6.02) < 0.1, "gain=2.0 should be ~+6 dB"
+    assert abs(20.0 * math.log10(0.5) - (-6.02)) < 0.1, "gain=0.5 should be ~-6 dB"
+    assert abs(20.0 * math.log10(5.0) - 13.98) < 0.1, "gain=5.0 should be ~+14 dB"
 
 def test_volume_label_shows_db():
-    """Volume slider labels should show dB values (CapCut-style), not just multiplier."""
+    """Volume labels should display dB values via _gain_to_db_str, not multipliers."""
     source = _read_source()
-    # Voice label should use _gain_to_db_str
-    assert re.search(r'voice_gain_label.*_gain_to_db_str', source), \
-        "Voice gain label should display dB via _gain_to_db_str"
-    # Music label should use _gain_to_db_str
-    assert re.search(r'music_gain_label.*_gain_to_db_str', source), \
-        "Music gain label should display dB via _gain_to_db_str"
-
+    # voice_gain_label should use _gain_to_db_str, not f"{gain:.1f}x"
+    assert "_gain_to_db_str" in source, "_gain_to_db_str must be used"
+    # Labels should be initialized with dB display
+    idx = source.find("voice_gain_label")
+    assert idx != -1
+    nearby = source[idx:idx+200]
+    assert "_gain_to_db_str" in nearby, "voice_gain_label should use _gain_to_db_str"
 
 def test_voice_callback_shows_db():
-    """on_voice_gain_changed callback should display dB, not multiplier."""
+    """on_voice_gain_changed must update label with dB via _gain_to_db_str."""
     source = _read_source()
     func_start = source.find("def on_voice_gain_changed(")
     assert func_start != -1
-    func_end = source.find("\n    def ", func_start + 10)
-    func_body = source[func_start:func_end]
+    func_body = source[func_start:func_start + 400]
     assert "_gain_to_db_str" in func_body, \
-        "Voice gain callback should use _gain_to_db_str for dB display"
-
+        "on_voice_gain_changed should use _gain_to_db_str for dB display"
 
 def test_music_callback_shows_db():
-    """on_music_gain_changed callback should display dB, not multiplier."""
+    """on_music_gain_changed must update label with dB via _gain_to_db_str."""
     source = _read_source()
     func_start = source.find("def on_music_gain_changed(")
     assert func_start != -1
-    func_end = source.find("\n    def ", func_start + 10)
-    func_body = source[func_start:func_end]
+    func_body = source[func_start:func_start + 400]
     assert "_gain_to_db_str" in func_body, \
-        "Music gain callback should use _gain_to_db_str for dB display"
+        "on_music_gain_changed should use _gain_to_db_str for dB display"
 
-
-def test_gain_to_db_str_positive_format():
-    """Positive dB should be formatted with '+' prefix."""
+def test_voice_callback_updates_global():
+    """on_voice_gain_changed must update the global VOICE_GAIN."""
     source = _read_source()
-    func_start = source.find("def _gain_to_db_str(")
+    func_start = source.find("def on_voice_gain_changed(")
     assert func_start != -1
-    func_end = source.find("\n\n", func_start + 10)
-    func_body = source[func_start:func_end]
-    # Should format positive values with "+" prefix
-    assert '"+' in func_body or "f\"+{" in func_body or 'f"+{' in func_body, \
-        "Positive dB values should have '+' prefix (e.g. '+14.0 dB')"
+    func_body = source[func_start:func_start + 400]
+    assert "VOICE_GAIN" in func_body, \
+        "on_voice_gain_changed should set globals()['VOICE_GAIN']"
 
-
-# ─── OpenAI API key in GUI ─────────────────────────────────────────
-
-def test_openai_key_gui_field_exists():
-    """GUI should have an OpenAI API key input field for ChatGPT translations."""
+def test_music_callback_updates_global():
+    """on_music_gain_changed must update the global MUSIC_GAIN."""
     source = _read_source()
-    assert "openai_api_key_var" in source, \
-        "GUI should have an openai_api_key_var for the API key input"
-    assert "openai_api_key_entry" in source or "OpenAI Key" in source, \
-        "GUI should have an OpenAI Key label and entry field"
-
-
-def test_apply_openai_key_method_exists():
-    """Should have a method to apply the OpenAI key from the GUI."""
-    source = _read_source()
-    assert "def _apply_openai_key(" in source, \
-        "_apply_openai_key method should exist to apply the key"
-
-
-def test_apply_openai_key_sets_global():
-    """_apply_openai_key should set the global OPENAI_API_KEY."""
-    source = _read_source()
-    func_start = source.find("def _apply_openai_key(")
+    func_start = source.find("def on_music_gain_changed(")
     assert func_start != -1
-    func_end = source.find("\n    def ", func_start + 10)
-    func_body = source[func_start:func_end]
-    assert "OPENAI_API_KEY" in func_body, \
-        "_apply_openai_key should set OPENAI_API_KEY global"
+    func_body = source[func_start:func_start + 400]
+    assert "MUSIC_GAIN" in func_body, \
+        "on_music_gain_changed should set globals()['MUSIC_GAIN']"
 
-
-def test_openai_prompt_mentions_context():
-    """OpenAI translation prompt should mention context for natural translations."""
+def test_import_math_for_db():
+    """math module must be imported for log10 dB calculation."""
     source = _read_source()
-    func_start = source.find("def _openai_translate_segments(")
-    assert func_start != -1
-    func_end = source.find("\ndef ", func_start + 10)
-    func_body = source[func_start:func_end].lower()
-    assert "context" in func_body, \
-        "OpenAI prompt should mention context for better translations"
-    assert "natural" in func_body, \
-        "OpenAI prompt should emphasize natural translations"
+    assert "import math" in source, "math module needed for dB calculation"
+
+def test_db_display_in_both_labels():
+    """Both voice and music gain labels should use dB display."""
+    source = _read_source()
+    # Find voice label creation
+    voice_idx = source.find("voice_gain_label = ttk.Label")
+    assert voice_idx != -1, "voice_gain_label creation must exist"
+    voice_nearby = source[voice_idx:voice_idx + 200]
+    assert "_gain_to_db_str" in voice_nearby, "voice label must use dB format"
+    
+    # Find music label creation  
+    music_idx = source.find("music_gain_label = ttk.Label")
+    assert music_idx != -1, "music_gain_label creation must exist"
+    music_nearby = source[music_idx:music_idx + 200]
+    assert "_gain_to_db_str" in music_nearby, "music label must use dB format"
+
+def test_openai_api_key_variable_exists():
+    """OPENAI_API_KEY global variable must exist."""
+    source = _read_source()
+    assert re.search(r'^OPENAI_API_KEY\s*=', source, re.MULTILINE), \
+        "OPENAI_API_KEY variable must be defined at module level"

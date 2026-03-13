@@ -99,18 +99,15 @@ def get_validated_font(selected_font_name, selected_font_path):
 
 
 import sys
-import math
 import threading
 import queue
 import subprocess
+import math
 import time
 import tempfile
 import shutil
 import json
 import gc
-import uuid
-import random
-from datetime import datetime, timezone
 
 import tkinter as tk
 import tkinter.font as tkfont
@@ -209,9 +206,6 @@ def translate_segments(segments, target_language='en', log=None):
     """
     Translate all caption segments to target language.
     
-    Tries OpenAI (ChatGPT) first for highest quality context-aware translations.
-    Falls back to Google Translate batch translation, then per-segment translation.
-    
     Args:
         segments: List of caption segments from Whisper
         target_language: Target language code
@@ -220,172 +214,32 @@ def translate_segments(segments, target_language='en', log=None):
     Returns:
         List of segments with translated text
     """
-    if target_language == 'none':
-        return segments
-    
-    if not segments:
+    if not TRANSLATION_AVAILABLE or target_language == 'none':
         return segments
     
     if log:
         log(f"[TRANSLATE] Translating {len(segments)} segments to {target_language}...")
     
-    # --- Try OpenAI translation first (best quality) ---
-    openai_result = _openai_translate_segments(segments, target_language, log=log)
-    if openai_result is not None:
-        if log:
-            log("[TRANSLATE] Translation complete! (OpenAI)")
-        return openai_result
-    
-    if not TRANSLATION_AVAILABLE:
-        if log:
-            log("[TRANSLATE] No translation engine available (install googletrans or set OPENAI_API_KEY)")
-        return segments
-    
-    # --- Batch translation for better context ---
-    _SEP = " ||| "
-    originals = [seg.get("text", "").strip() for seg in segments]
-    combined = _SEP.join(originals)
-    
-    batch_ok = False
-    _SEP_STRIPPED = _SEP.strip()
-    try:
-        translated_combined = translate_text(combined, target_language, log=None)
-        if translated_combined and _SEP_STRIPPED in translated_combined:
-            parts = [p.strip() for p in translated_combined.split(_SEP_STRIPPED)]
-            if len(parts) == len(segments):
-                batch_ok = True
-                translated = []
-                for seg, orig, trans in zip(segments, originals, parts):
-                    new_seg = seg.copy()
-                    new_seg["text"] = trans
-                    new_seg["original_text"] = orig
-                    translated.append(new_seg)
-                if log:
-                    log(f"[TRANSLATE] Batch translation succeeded ({len(segments)} segments)")
-    except Exception as e:
-        if log:
-            log(f"[TRANSLATE] Batch translation failed ({e}), falling back to per-segment")
-    
-    # --- Fallback: per-segment translation ---
-    if not batch_ok:
-        if log and len(segments) > 1:
-            log("[TRANSLATE] Using per-segment translation (fallback)")
-        translated = []
-        for i, seg in enumerate(segments):
-            try:
-                original_text = seg.get("text", "")
-                translated_text = translate_text(original_text, target_language, log=None)
-                
-                new_seg = seg.copy()
-                new_seg["text"] = translated_text
-                new_seg["original_text"] = original_text
-                translated.append(new_seg)
-            except Exception as e:
-                if log:
-                    log(f"[TRANSLATE ERROR] Failed segment {i}: {e}")
-                translated.append(seg)
+    translated = []
+    for i, seg in enumerate(segments):
+        try:
+            original_text = seg.get("text", "")
+            translated_text = translate_text(original_text, target_language, log=None)
+            
+            # Create new segment with translated text
+            new_seg = seg.copy()
+            new_seg["text"] = translated_text
+            new_seg["original_text"] = original_text
+            translated.append(new_seg)
+        except Exception as e:
+            if log:
+                log(f"[TRANSLATE ERROR] Failed segment {i}: {e}")
+            translated.append(seg)
     
     if log:
-        log("[TRANSLATE] Translation complete!")
+        log(f"[TRANSLATE] Translation complete!")
     
     return translated
-
-
-# ----------------- OPENAI TRANSLATION (ChatGPT-like quality) -----------------
-
-def _openai_translate_segments(segments, target_language, log=None):
-    """
-    Translate caption segments using OpenAI ChatGPT API for high-quality,
-    context-aware translations that preserve meaning and natural phrasing.
-    
-    Returns translated segments list, or None if OpenAI is not available/fails.
-    """
-    api_key = globals().get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY')
-    if not api_key:
-        return None
-    
-    if not segments:
-        return segments
-    
-    try:
-        import openai
-    except ImportError:
-        if log:
-            log("[TRANSLATE] openai package not installed -- falling back to Google Translate")
-        return None
-    
-    # Language name mapping for better prompts
-    _LANG_NAMES = {
-        'ro': 'Romanian', 'en': 'English', 'es': 'Spanish', 'fr': 'French',
-        'de': 'German', 'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch',
-        'pl': 'Polish', 'ru': 'Russian', 'ja': 'Japanese', 'ko': 'Korean',
-        'zh': 'Chinese', 'ar': 'Arabic', 'hi': 'Hindi', 'tr': 'Turkish',
-        'sv': 'Swedish', 'da': 'Danish', 'fi': 'Finnish', 'no': 'Norwegian',
-        'cs': 'Czech', 'hu': 'Hungarian', 'el': 'Greek', 'bg': 'Bulgarian',
-        'hr': 'Croatian', 'sk': 'Slovak', 'sl': 'Slovenian', 'uk': 'Ukrainian',
-        'th': 'Thai', 'vi': 'Vietnamese', 'id': 'Indonesian', 'ms': 'Malay',
-    }
-    lang_name = _LANG_NAMES.get(target_language, target_language)
-    
-    originals = [seg.get("text", "").strip() for seg in segments]
-    numbered_lines = "\n".join(f"{i+1}. {t}" for i, t in enumerate(originals))
-    
-    system_prompt = (
-        f"You are a professional translator who produces natural, fluent {lang_name} translations. "
-        f"Translate the following numbered subtitle lines into {lang_name}. "
-        f"The lines are consecutive subtitles from a video — use the full context to produce "
-        f"translations that sound natural and make sense as a whole, not just literal word-by-word. "
-        f"Adapt idioms, slang, and expressions to sound native in {lang_name}. "
-        f"Keep the same numbering. Keep translations concise (subtitle length). "
-        f"Output ONLY the numbered translated lines, nothing else."
-    )
-    
-    try:
-        client = openai.OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": numbered_lines},
-            ],
-            temperature=0.3,
-            max_tokens=max(len(numbered_lines), 256),
-        )
-        
-        raw = response.choices[0].message.content.strip()
-        
-        # Parse numbered output: "1. translated text"
-        import re
-        parsed = {}
-        for line in raw.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            m = re.match(r"(\d+)\.\s*(.*)", line)
-            if m:
-                parsed[int(m.group(1))] = m.group(2).strip()
-        
-        # Accept if at least 80% of segments were translated — minor
-        # parsing mismatches (e.g. model merging short segments) are OK
-        # because missing segments fall back to the original text below.
-        if len(parsed) >= len(segments) * 0.8:
-            translated = []
-            for i, seg in enumerate(segments):
-                new_seg = seg.copy()
-                new_seg["text"] = parsed.get(i + 1, originals[i])
-                new_seg["original_text"] = originals[i]
-                translated.append(new_seg)
-            if log:
-                log(f"[TRANSLATE] OpenAI translation succeeded ({len(parsed)}/{len(segments)} segments)")
-            return translated
-        else:
-            if log:
-                log(f"[TRANSLATE] OpenAI returned {len(parsed)}/{len(segments)} segments -- falling back")
-            return None
-    except Exception as e:
-        if log:
-            log(f"[TRANSLATE] OpenAI translation failed: {e} -- falling back to Google Translate")
-        return None
 
 # ----------------- AI VOICE REPLACEMENT FUNCTIONS -----------------
 
@@ -426,6 +280,7 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
         
         # Map language codes to voice IDs (you can expand this mapping)
         # Check if a custom voice ID is specified, otherwise use language defaults
+        global TTS_VOICE_ID
         if TTS_VOICE_ID and TTS_VOICE_ID != 'auto':
             voice_id = TTS_VOICE_ID
         else:
@@ -493,7 +348,7 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
         poll_interval = 2  # Poll every 2 seconds to reduce API calls
         
         if log:
-            log("[GenAI Pro] Waiting for audio generation... (will wait indefinitely until complete)")
+            log(f"[GenAI Pro] Waiting for audio generation... (will wait indefinitely until complete)")
         
         i = 0
         while True:
@@ -584,9 +439,9 @@ def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=No
                     
                     if not audio_url:
                         if log:
-                            log("[GenAI Pro ERROR] Task completed but no audio URL found")
+                            log(f"[GenAI Pro ERROR] Task completed but no audio URL found")
                             log(f"[GenAI Pro ERROR] status={status}, result={result}")
-                            log("[GenAI Pro ERROR] Checked fields: result, output_url, audio_url, result_url, file_url, url")
+                            log(f"[GenAI Pro ERROR] Checked fields: result, output_url, audio_url, result_url, file_url, url")
                             log(f"[GenAI Pro ERROR] All available fields in task: {list(our_task.keys())}")
                         return None
                     
@@ -657,6 +512,7 @@ def _submit_genaipro_task(text, language='en', api_key=None, log=None):
     try:
         import requests
 
+        global TTS_VOICE_ID
         if TTS_VOICE_ID and TTS_VOICE_ID != 'auto':
             voice_id = TTS_VOICE_ID
         else:
@@ -817,11 +673,11 @@ def _poll_and_download_genaipro(task_id, headers, output_path=None, log=None):
 
                     if not audio_url:
                         if log:
-                            log("[GenAI Pro Poll ERROR] No audio URL in completed task")
+                            log(f"[GenAI Pro Poll ERROR] No audio URL in completed task")
                         return None
 
                     if log:
-                        log("[GenAI Pro Poll] 📥 Downloading audio...")
+                        log(f"[GenAI Pro Poll] 📥 Downloading audio...")
 
                     audio_response = requests.get(audio_url, timeout=30)
 
@@ -842,9 +698,9 @@ def _poll_and_download_genaipro(task_id, headers, output_path=None, log=None):
                     return None
             else:
                 if i == 0 and log:
-                    log("[GenAI Pro Poll] Task not found in status check yet...")
+                    log(f"[GenAI Pro Poll] Task not found in status check yet...")
                 elif i % 30 == 0 and log and i > 0:
-                    log("[GenAI Pro Poll] Still waiting for task...")
+                    log(f"[GenAI Pro Poll] Still waiting for task...")
 
             i += 1
 
@@ -1046,7 +902,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
         if log:
             log("="*60)
             log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
-            log("[TTS] Using GenAI Pro API for high-quality synthesis")
+            log(f"[TTS] Using GenAI Pro API for high-quality synthesis")
             log(f"[TTS] Text length: {len(text)} characters")
             log(f"[TTS] Language: {language}")
             log("="*60)
@@ -1258,11 +1114,7 @@ CAPTION_PADDING = 200
 CAPTION_TEXT_COLOR = (255, 255, 255, 255)
 CAPTION_STROKE_COLOR = (0, 0, 0, 150)
 # Stroke width (pixels) for caption border
-STROKE_WIDTH_RATIO = 0.05
-CAPTION_STROKE_WIDTH = max(1, int(CAPTION_FONT_SIZE * STROKE_WIDTH_RATIO))
-# 4K resolution doubles font size: if the current global looks like an HD default, scale up.
-DEFAULT_4K_FONT_SIZE = 112
-HD_FONT_SIZE_THRESHOLD = 80
+CAPTION_STROKE_WIDTH = max(1, int(CAPTION_FONT_SIZE * 0.05))
 
 # Video zoom scale (user-controllable)
 VIDEO_ZOOM_SCALE = 1.0  # 1.0 = auto-fit, <1.0 = zoom out, >1.0 = zoom in
@@ -1283,7 +1135,7 @@ OPENAI_API_KEY = None
 AZURE_SPEECH_KEY = None
 AZURE_SPEECH_REGION = None
 
-FPS = 30
+FPS = 24
 
 MUSIC_FADEOUT_SECONDS = 0.8
 MUSIC_LOOP_ALLOWED = True
@@ -1296,7 +1148,7 @@ BG_BRIGHTNESS_BOOST = 0.08  # +8% brightness compensation for NV12/format conver
 USE_GPU_IF_AVAILABLE = True
 PREFERRED_NVENC_CODEC = "h264_nvenc"
 USE_HARDWARE_DECODING = True  # Enable GPU-accelerated decoding
-NVENC_PRESET_SPEED = "p4"  # p1=fastest, p7=slowest/best quality. p4 = CapCut-like quality/speed balance
+NVENC_PRESET_SPEED = "p1"  # p1=fastest, p7=slowest/best quality. Using p1 for maximum export speed
 
 CAPTION_RAISE = 420
 CAPTION_Y_OFFSET = 0  # Vertical offset in pixels (negative = move up, positive = move down)
@@ -1312,14 +1164,6 @@ REQUIRE_FONT_BANGERS = False
 CROP_SETTINGS_FILE = "crop_settings.json"
 
 CREATED_OUTPUTS = set()
-
-# Global stop event — set by the Stop button to cancel queue/single processing.
-# Worker threads check this event at key checkpoints and abort early.
-_queue_stop_event = threading.Event()
-
-# Active FFmpeg subprocess — tracked so the Stop button can kill it immediately.
-_active_ffmpeg_proc = None
-_active_ffmpeg_lock = threading.Lock()
 
 # ----------------- FONT / DIACRITICS / UTIL -----------------
 FONT_CANDIDATES = ["Bangers-Regular.ttf", "Bangers.ttf", "bangers.ttf", "Bangers.otf", "Bangers-Regular.otf"]
@@ -1539,7 +1383,7 @@ def get_font_family_name(font_path, log_func=None):
             return family_name
         else:
             if log_func:
-                log_func("[FONT-EXTRACT] No family name found in name table, using filename")
+                log_func(f"[FONT-EXTRACT] No family name found in name table, using filename")
             
     except ImportError as e:
         if log_func:
@@ -1779,95 +1623,14 @@ def ffmpeg_gpu_filters_available():
         return False
 
 def get_export_settings():
-    audio_bitrate = "256k"
-    threads = 0  # Auto-detect threads for optimal CPU utilization
-    libx264_params = ["-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-movflags", "+faststart+use_metadata_tags"]
+    audio_bitrate = "192k"
+    threads = 4  # Use 4 threads for better CPU utilization (was 0/auto)
+    libx264_params = ["-preset", "ultrafast", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]  # Changed from slow to ultrafast
     libx264_codec = "libx264"
-    nvenc_params = ["-rc", "constqp", "-qp", "20", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-multipass", "fullres", "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2", "-threads", "0", "-movflags", "+faststart+use_metadata_tags"]
+    nvenc_params = ["-rc", "constqp", "-qp", "22", "-b:v", "0", "-preset", NVENC_PRESET_SPEED, "-multipass", "0", "-pix_fmt", "yuv420p", "-profile:v", "high", "-movflags", "+faststart"]
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
         return PREFERRED_NVENC_CODEC, nvenc_params, threads, audio_bitrate
     return libx264_codec, libx264_params, threads, audio_bitrate
-
-def _build_capcut_artwork():
-    """Generate CapCut-authentic Artwork JSON metadata with randomized IDs.
-    Matches real CapCut export artwork metadata structure.
-    """
-    music_id1 = str(uuid.uuid4())
-    music_id2 = str(uuid.uuid4())
-    video_id = str(uuid.uuid4())
-    # CapCut effect IDs are 19-digit numbers in the 73xx-74xx range
-    effect_id1 = str(random.randint(7300000000000000000, 7499999999999999999))
-    effect_id2 = str(random.randint(7300000000000000000, 7499999999999999999))
-    vs_val = random.randint(30, 60)
-    sp_val = random.choice([0, 1, 2])
-    ef_val = random.choice([0, 1, 2])
-    ft_val = random.choice([0, 1, 2])
-    artwork = {
-        "data": {
-            "editType": "default",
-            "infoStickerId": "",
-            "is_ai_lyric": 0,
-            "is_aimusic_mv": 0,
-            "is_use_ai_image_generation": 0,
-            "is_use_ai_video_generation": 0,
-            "is_use_aimusic_bgm": 0,
-            "is_use_aimusic_vocal": 0,
-            "is_use_graph_chart": 0,
-            "is_use_jichuang_mode_in_ai_writer": 0,
-            "is_use_relight": 0,
-            "is_use_vc_sing_clone": 1,  # always 1 in real CapCut exports
-            "is_use_voice_clone": "0",
-            "motion_blur_cnt": 0,
-            "musicId": f"{music_id1},{music_id2}",
-            "os": "windows",
-            "product": "vicut",
-            "stickerId": "",
-            "videoEffectId": f"{effect_id1},{effect_id2}",
-            "videoId": video_id,
-            "videoParams": {
-                "be": 0, "ef": ef_val, "ft": ft_val, "ma": 0,
-                "me": 0, "mu": 0, "re": 0, "sp": sp_val,
-                "st": 0, "te": 0, "tx": 0, "v": 0, "vs": vs_val,
-            },
-        },
-        "source_platform": "desktop",
-        "source_type": "vicut",
-    }
-    return json.dumps(artwork, separators=(",", ":"))
-
-
-def _build_capcut_meta(include_audio_handler=True):
-    """Build CapCut-authentic metadata flags for FFmpeg export commands.
-    Matches real CapCut export fingerprint: isom brand, minor_version 512,
-    compatible_brands isomiso2avc1mp41, BT.709 color, creation timestamp,
-    standard handler names, and CapCut-specific tags.
-    """
-    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
-    meta = [
-        "-map_metadata", "-1",
-        "-brand", "isom",
-        "-metadata", "minor_version=512",
-        "-metadata", "compatible_brands=isomiso2avc1mp41",
-        "-metadata", f"creation_time={now_utc}",
-        "-metadata:s:v:0", "handler_name=VideoHandler",
-        "-metadata", "Hw=1",
-        "-metadata", "Bitrate=28000000",
-        "-metadata", "Maxrate=0",
-        "-metadata", "Te Is Reencode=1",
-        "-metadata", "Mp 4 Data Incomplete=false",
-        "-metadata", f"Artwork={_build_capcut_artwork()}",
-    ]
-    if include_audio_handler:
-        meta.extend(["-metadata:s:a:0", "handler_name=SoundHandler"])
-    return meta
-
-# BT.709 color space flags matching real CapCut exports (nclx color profile)
-_CAPCUT_COLOR_FLAGS = [
-    "-color_primaries", "bt709",
-    "-color_trc", "bt709",
-    "-colorspace", "bt709",
-    "-color_range", "tv",
-]
 
 def reencode_with_libx264(input_path, output_path, log=None):
     # Use hardware acceleration if available
@@ -1881,33 +1644,21 @@ def reencode_with_libx264(input_path, output_path, log=None):
     
     # Use NVENC if available, otherwise use faster CPU preset
     if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC):
-        cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "constqp", "-qp", "20", "-b:v", "0", 
-                   "-preset", NVENC_PRESET_SPEED, "-multipass", "fullres",
-                   "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2",
-                   "-threads", "0"])
+        cmd.extend(["-c:v", PREFERRED_NVENC_CODEC, "-rc", "constqp", "-qp", "22", "-b:v", "0", 
+                   "-preset", NVENC_PRESET_SPEED, "-multipass", "0",
+                   "-pix_fmt", "yuv420p", "-profile:v", "high"])
     else:
-        cmd.extend(["-c:v", "libx264", "-preset", "medium", "-crf", "18", 
-                   "-pix_fmt", "yuv420p", "-profile:v", "high", "-level", "4.2"])
+        cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "20", 
+                   "-pix_fmt", "yuv420p", "-profile:v", "high"])
     
-    cmd.extend(["-c:a", "aac", "-b:a", "256k", "-movflags", "+faststart+use_metadata_tags"]
-               + _CAPCUT_COLOR_FLAGS + _build_capcut_meta() + [output_path])
+    cmd.extend(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_path])
     
     if log: log(f"[ffmpeg] Re-encoding to: {output_path} (GPU={'NVENC' if USE_GPU_IF_AVAILABLE and ffmpeg_supports_nvenc(PREFERRED_NVENC_CODEC) else 'No'})")
     try:
-        _log_fn = log if log else (lambda s: None)
-        result = _run_ffmpeg_with_stop_check(cmd, 600, _log_fn, label="RE-ENCODE")
-        if result.returncode != 0:
-            if log: log(f"[ffmpeg] Re-encode failed (return code {result.returncode}).")
-            return False
+        subprocess.check_call(cmd)
         if log: log("[ffmpeg] Re-encode completed.")
         return True
-    except InterruptedError:
-        if log: log("[ffmpeg] ⏹ Re-encode stopped by user.")
-        raise
-    except subprocess.TimeoutExpired:
-        if log: log("[ffmpeg] Re-encode timed out after 600s.")
-        return False
-    except Exception as e:
+    except subprocess.CalledProcessError as e:
         if log: log(f"[ffmpeg] Re-encode failed: {e}")
         return False
 
@@ -1942,7 +1693,7 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
         # crop is a CPU-only filter, so we must hwdownload first, then crop on CPU,
         # then hwupload_cuda back to GPU for scale_cuda.
         vf = f"hwdownload,format=nv12,crop={crop_w}:{crop_h}:{crop_x}:{crop_y},hwupload_cuda,scale_cuda={scale_w}:{scale_h},hwdownload,format=nv12,setsar=1:1"
-        if log: log("[ffmpeg] Using GPU-accelerated scale_cuda for pre-render")
+        if log: log(f"[ffmpeg] Using GPU-accelerated scale_cuda for pre-render")
     else:
         vf = f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y},scale={scale_w}:{scale_h}:flags=lanczos,setsar=1:1"
     
@@ -1956,32 +1707,18 @@ def pre_render_foreground_ffmpeg(input_path, out_path, crop_x, crop_y, crop_w, c
         codec = "libx264"
         vparams = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22"]  # Changed from veryfast to ultrafast
     
-    # Add threading for faster demux/mux and filter processing.
-    # Use all cores (max 8) for filter threads; -threads 0 lets FFmpeg auto-detect.
-    total_cores = os.cpu_count() or 4
-    fg_filter_threads = max(2, min(total_cores, 8))
-    cmd.extend(["-filter_threads", str(fg_filter_threads)])
-    cmd.extend(vparams + ["-threads", "0", "-pix_fmt", "yuv420p",
-               "-movflags", "+faststart+use_metadata_tags"]
-               + _CAPCUT_COLOR_FLAGS + _build_capcut_meta(include_audio_handler=False) + [out_path])
+    cmd.extend(vparams + ["-pix_fmt", "yuv420p", out_path])
     
     if log: log(f"[ffmpeg] Pre-render starting -> {os.path.basename(out_path)} (nvenc={use_nvenc}, hwaccel={USE_HARDWARE_DECODING and use_nvenc})")
     try:
-        _log_fn = log if log else (lambda s: None)
-        result = _run_ffmpeg_with_stop_check(cmd, 600, _log_fn, label="FG-PRERENDER")
-        if result.returncode != 0:
-            if log:
-                log(f"[ffmpeg] Pre-render FAILED (return code {result.returncode}).")
-                if result.stderr:
-                    log(result.stderr[:500])
-            return False
+        subprocess.check_call(cmd)
         if log: log(f"[ffmpeg] Pre-render completed: {out_path}")
         return True
-    except InterruptedError:
-        if log: log("[ffmpeg] ⏹ Pre-render stopped by user.")
-        raise
-    except subprocess.TimeoutExpired:
-        if log: log("[ffmpeg] Pre-render timed out after 600s.")
+    except subprocess.CalledProcessError as e:
+        if log:
+            log(f"[ffmpeg] Pre-render FAILED (return code {e.returncode}).")
+            log(" ".join(cmd))
+            log(str(e))
         return False
     except Exception as e:
         if log: log(f"[ffmpeg] Pre-render exception: {e}")
@@ -2016,6 +1753,7 @@ _whisper_transcription_lock = threading.Lock()  # Serialize GPU transcription (W
 
 def _get_cached_whisper_model(model_name="large", tries=3, log=None):
     """Load Whisper model once and cache it. Thread-safe: called within _whisper_transcription_lock."""
+    global _whisper_model_cache
     # Note: This function is always called within _whisper_transcription_lock (from transcribe_captions).
     # The lock ensures only one thread can check/update the cache at a time.
     if model_name in _whisper_model_cache:
@@ -2031,10 +1769,11 @@ def _get_cached_whisper_model(model_name="large", tries=3, log=None):
 
 def _release_whisper_model(log=None):
     """Release cached Whisper model and free GPU memory for FFmpeg NVENC export."""
+    global _whisper_model_cache
     with _whisper_transcription_lock:
         if _whisper_model_cache:
             if log:
-                log("[whisper] 🧹 Releasing cached Whisper model(s) to free GPU memory for export...")
+                log(f"[whisper] 🧹 Releasing cached Whisper model(s) to free GPU memory for export...")
             _whisper_model_cache.clear()
             gc.collect()
             try:
@@ -2042,12 +1781,12 @@ def _release_whisper_model(log=None):
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     if log:
-                        log("[whisper] ✓ GPU memory freed (torch.cuda.empty_cache)")
+                        log(f"[whisper] ✓ GPU memory freed (torch.cuda.empty_cache)")
             except Exception:
                 pass
         else:
             if log:
-                log("[whisper] No cached model to release")
+                log(f"[whisper] No cached model to release")
 
 def _find_and_remove_corrupted_whisper_models(model_name, log=None):
     removed = []
@@ -2076,28 +1815,8 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
     return removed
 
 def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
-    # Lazy import — heavy modules, only loaded when transcription is needed.
-    # Wrapped in try/except because torch can crash during init on broken
-    # installations (DLL errors, CUDA library mismatches on Windows, etc.).
-    try:
-        import torch
-    except Exception as e:
-        msg = (f"PyTorch nu poate fi încărcat: {e}\n"
-               "Reinstalează PyTorch:\n"
-               "  pip uninstall torch torchvision torchaudio\n"
-               "  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
-        if log:
-            log(f"[whisper] ❌ {msg}")
-        raise RuntimeError(msg) from e
-    try:
-        import whisper
-    except Exception as e:
-        msg = (f"Whisper nu poate fi încărcat: {e}\n"
-               "Reinstalează whisper:\n"
-               "  pip install --upgrade openai-whisper")
-        if log:
-            log(f"[whisper] ❌ {msg}")
-        raise RuntimeError(msg) from e
+    import torch    # lazy import — heavy module, only loaded when transcription is needed
+    import whisper  # lazy import — heavy module, only loaded when transcription is needed
     last_exc = None
     
     # Detect GPU availability for Whisper with improved detection
@@ -2113,16 +1832,16 @@ def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
                 if log:
                     gpu_name = torch.cuda.get_device_name(0)
                     log(f"[whisper] GPU detected: {gpu_name}")
-                    log("[whisper] Will use CUDA acceleration for transcription")
+                    log(f"[whisper] Will use CUDA acceleration for transcription")
             else:
                 if log:
-                    log("[whisper] CUDA available but no GPU devices found - will use CPU")
+                    log(f"[whisper] CUDA available but no GPU devices found - will use CPU")
         else:
             if log:
-                log("[whisper] CUDA not available in PyTorch - will use CPU (slower)")
-                log("[whisper] For GPU support, install PyTorch with CUDA:")
-                log("[whisper]   RTX 5070/5080/5090: pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130")
-                log("[whisper]   RTX 4060-4090:      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
+                log(f"[whisper] CUDA not available in PyTorch - will use CPU (slower)")
+                log(f"[whisper] For GPU support, install PyTorch with CUDA:")
+                log(f"[whisper]   RTX 5070/5080/5090: pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu130")
+                log(f"[whisper]   RTX 4060-4090:      pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121")
     except Exception as e:
         if log:
             log(f"[whisper] GPU detection failed ({str(e)}) - will use CPU")
@@ -2174,7 +1893,7 @@ def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
                 else:
                     # Other CUDA error - try falling back to CPU
                     if log: log(f"[whisper] CUDA error loading model: {e}")
-                    if log: log("[whisper] Falling back to CPU...")
+                    if log: log(f"[whisper] Falling back to CPU...")
                     device = "cpu"
                     if attempt < tries:
                         time.sleep(0.5)
@@ -2246,40 +1965,7 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
         if use_fp16:
             log_fn("[whisper] Using FP16 precision on GPU for faster transcription (2x speedup)")
         
-        # Determine Whisper task: 'translate' produces English directly from any
-        # source language with much better quality than post-hoc Google Translate,
-        # because it operates on the raw audio signal rather than noisy ASR text.
-        #
-        # Strategy for best translation quality:
-        # - English target: Whisper translate (audio → English directly, highest quality)
-        # - Non-English target: Whisper translate → English → Google Translate → target
-        #   This two-step approach is significantly better than Whisper transcribe → source text
-        #   → Google Translate → target, because Whisper's translate task handles accents/noise
-        #   at the audio level, producing clean English text that Google Translate handles well.
-        _whisper_task = "transcribe"
-        _use_whisper_translate = False
-        _needs_second_pass_translation = False
-        if translate_to and translate_to not in ('none', ''):
-            # Always use Whisper's translate task when translation is requested.
-            # This produces English text directly from audio (any source language),
-            # which is much more accurate than transcribing in the source language
-            # and then translating the (potentially garbled) ASR text.
-            _whisper_task = "translate"
-            _use_whisper_translate = True
-            if translate_to.lower() in ('en', 'eng', 'english'):
-                log_fn("[whisper] Using built-in Whisper translation → English (highest quality)")
-            else:
-                _needs_second_pass_translation = True
-                log_fn(f"[whisper] Using two-step translation: audio → English → {translate_to} (better quality)")
-        
-        # Build transcription kwargs
-        transcribe_kwargs = dict(
-            word_timestamps=True,
-            fp16=use_fp16,
-            task=_whisper_task,
-        )
-        
-        result = model.transcribe(voice_path, **transcribe_kwargs)
+        result = model.transcribe(voice_path, word_timestamps=True, fp16=use_fp16)
         log_fn("[whisper] Transcription finished.")
     
     # Post-processing outside the lock (doesn't need GPU)
@@ -2290,20 +1976,11 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
     log_fn(f"[whisper] Detected source language: {detected_lang}")
     
     # Apply translation if requested
+    # Translation is enabled when translate_to is specified and not 'none'
     if translate_to and translate_to != 'none':
-        if _use_whisper_translate and not _needs_second_pass_translation:
-            # Whisper already translated to English — no further translation needed
-            log_fn(f"[TRANSCRIBE] Whisper translated {detected_lang} → en (done)")
-        elif _needs_second_pass_translation:
-            # Two-step: Whisper produced English, now translate English → target language
-            # This is much better than translating noisy source-language ASR output
-            log_fn(f"[TRANSCRIBE] Whisper translated {detected_lang} → en, now translating en → {translate_to}...")
-            segments = translate_segments(segments, target_language=translate_to, log=log_fn)
-        else:
-            # Fallback: direct translation from source language (only if Whisper translate wasn't used)
-            log_fn(f"[TRANSCRIBE] Auto-detected source language: {detected_lang}")
-            log_fn(f"[TRANSCRIBE] Translating from {detected_lang} → {translate_to}...")
-            segments = translate_segments(segments, target_language=translate_to, log=log_fn)
+        log_fn(f"[TRANSCRIBE] Auto-detected source language: {detected_lang}")
+        log_fn(f"[TRANSCRIBE] Translating from {detected_lang} → {translate_to}...")
+        segments = translate_segments(segments, target_language=translate_to, log=log_fn)
     
     return segments
 
@@ -2320,8 +1997,8 @@ def generate_caption_image(text, preferred_font=None, log=None):
     """
     try:
         if log:
-            log("[CAPTION-GEN] ═══════════════════════════════════════════════")
-            log("[CAPTION-GEN] Starting caption generation")
+            log(f"[CAPTION-GEN] ═══════════════════════════════════════════════")
+            log(f"[CAPTION-GEN] Starting caption generation")
             log(f"[CAPTION-GEN] Text: '{text[:80]}{'...' if len(text) > 80 else ''}'")
             log(f"[CAPTION-GEN] Text length: {len(text)} characters")
             log(f"[CAPTION-GEN] Preferred font: {preferred_font or 'default'}")
@@ -2426,7 +2103,7 @@ def generate_caption_image(text, preferred_font=None, log=None):
         draw.rounded_rectangle([bubble_x0,bubble_y0,bubble_x1,bubble_y1], radius=int(padding_y*0.8), fill=bubble_fill)
         try:
             if log:
-                log("[CAPTION-GEN] Background: TRANSPARENT (no white box - text only with stroke)")
+                log(f"[CAPTION-GEN] Background: TRANSPARENT (no white box - text only with stroke)")
         except Exception:
             pass
     except Exception as e:
@@ -2502,9 +2179,9 @@ def generate_caption_image(text, preferred_font=None, log=None):
     
     try:
         if log:
-            log("[CAPTION-GEN] ✓ Caption image generated successfully!")
+            log(f"[CAPTION-GEN] ✓ Caption image generated successfully!")
             log(f"[CAPTION-GEN] Final image size: {img.size[0]}x{img.size[1]}px")
-            log("[CAPTION-GEN] ═══════════════════════════════════════════════")
+            log(f"[CAPTION-GEN] ═══════════════════════════════════════════════")
     except Exception:
         pass
     
@@ -2518,24 +2195,18 @@ def extract_and_scale_frame(video_path, time_sec=None, desired_width=360):
     else:
         clip = VideoFileClip(video_path)
         created_clip = True
-    try:
-        if time_sec is None:
-            t = min(max(0.001, clip.duration / 2.0), clip.duration - 0.001)
-        else:
-            t = min(max(0.0, float(time_sec)), max(0.001, clip.duration - 0.001))
-        frame = clip.get_frame(t)
-    finally:
-        if created_clip:
-            try:
-                clip.close()
-            except Exception:
-                pass
+    if time_sec is None:
+        t = min(max(0.001, clip.duration / 2.0), clip.duration - 0.001)
+    else:
+        t = min(max(0.0, float(time_sec)), max(0.001, clip.duration - 0.001))
+    frame = clip.get_frame(t)
+    if created_clip:
+        try:
+            clip.close()
+        except Exception:
+            pass
     img = Image.fromarray(frame).convert("RGB")
     w, h = img.size
-    if w <= 0:
-        w = 1
-    if h <= 0:
-        h = 1
     scale = desired_width / w
     new_w = desired_width
     new_h = int(round(h * scale))
@@ -2598,31 +2269,26 @@ def _make_ffmpeg_params_for_codec(codec):
     - pre_render_foreground_ffmpeg() uses -hwaccel cuda for foreground (works!)
     - NVENC encoding below (works!)
     """
-    # CapCut metadata: isom brand, BT.709 color, creation timestamp, handler names
-    _capcut_meta = _build_capcut_meta() + _CAPCUT_COLOR_FLAGS
     if codec in ("h264_nvenc", "hevc_nvenc"):
-        # GPU encoding with NVENC - CapCut-like H.264 High quality
+        # GPU encoding with NVENC - optimized for maximum speed
         return [
-            "-rc", "constqp",          # Constant QP for consistent quality
-            "-qp", "20",               # Quality level (lower = better, 20 = high quality)
+            "-rc", "constqp",          # Constant QP for fastest encoding
+            "-qp", "22",               # Quality level (lower = better, 22 is good balance)
             "-b:v", "0",               # Let QP control quality
-            "-preset", NVENC_PRESET_SPEED,  # p4 for quality/speed balance
-            "-multipass", "fullres",   # Full-resolution multipass for better quality
+            "-preset", NVENC_PRESET_SPEED,  # p1 for max speed (configurable)
+            "-multipass", "0",         # Disable multipass for fastest encoding
             "-pix_fmt", "yuv420p",     # Standard pixel format
-            "-profile:v", "high",      # H.264 High profile (same as CapCut)
-            "-level", "4.2",           # Level 4.2 for broad compatibility
-            "-movflags", "+faststart+use_metadata_tags"  # Web streaming optimization + custom metadata tags
-        ] + _capcut_meta
+            "-profile:v", "high",      # H.264 High profile
+            "-movflags", "+faststart"  # Web streaming optimization
+        ]
     else:
-        # CPU encoding with libx264 - CapCut-like H.264 High quality
+        # CPU encoding with libx264 - fallback option
         return [
-            "-preset", "medium",       # Medium preset for quality/speed balance
-            "-crf", "18",              # High quality (CapCut-like, lower = better)
+            "-preset", "ultrafast",    # Fastest CPU preset
+            "-crf", "20",              # Constant quality
             "-pix_fmt", "yuv420p",     # Standard pixel format
-            "-profile:v", "high",      # H.264 High profile (same as CapCut)
-            "-level", "4.2",           # Level 4.2 for broad compatibility
-            "-movflags", "+faststart+use_metadata_tags"  # Web streaming optimization + custom metadata tags
-        ] + _capcut_meta
+            "-movflags", "+faststart"  # Web streaming optimization
+        ]
 
 # ----------------- FFmpeg Fast Export Functions -----------------
 
@@ -2748,6 +2414,7 @@ def _generate_ass_subtitle_file(caption_segments, output_path, font_name="Arial"
     Returns:
         Path to generated ASS file
     """
+    import re
     
     # Convert RGBA to ASS color format (BGR in hex with alpha)
     # ASS uses &HAABBGGRR format
@@ -2880,7 +2547,7 @@ def _build_caption_drawtext_filter(caption_text, start_time, end_time, video_wid
         f"fontcolor={text_color}",
         f"borderw={stroke_width}",
         f"bordercolor={stroke_color}",
-        "x=(w-text_w)/2",  # Center horizontally
+        f"x=(w-text_w)/2",  # Center horizontally
         f"y={y_position}",   # Bottom positioning with offset
         f"enable='gte(t,{start_time:.3f})*lt(t,{end_time:.3f})'"  # Timing (exclusive end to avoid overlap)
     ]
@@ -3029,51 +2696,6 @@ def _build_ffmpeg_effect_filters(effect_settings, log_fn=None):
     return ""
 
 
-def _run_ffmpeg_with_stop_check(cmd, timeout, log_fn, label="FFmpeg"):
-    """Run an FFmpeg subprocess, polling for completion while checking the stop event.
-    
-    Uses subprocess.Popen so the process can be killed immediately when the
-    user presses the Stop button.  Returns a subprocess.CompletedProcess-like
-    object with returncode, stdout, and stderr.
-    """
-    global _active_ffmpeg_proc
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, errors="replace")
-    with _active_ffmpeg_lock:
-        _active_ffmpeg_proc = proc
-    try:
-        # Poll every 0.5 s so the stop event is noticed quickly
-        deadline = time.time() + timeout
-        while True:
-            try:
-                stdout, stderr = proc.communicate(timeout=0.5)
-                # Process finished normally
-                return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
-            except subprocess.TimeoutExpired:
-                pass
-
-            if _queue_stop_event.is_set():
-                log_fn(f"[{label}] ⏹ Stop requested — killing FFmpeg process...")
-                proc.kill()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    pass
-                raise InterruptedError(f"{label} stopped by user")
-
-            if time.time() > deadline:
-                proc.kill()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    pass
-                raise subprocess.TimeoutExpired(cmd, timeout)
-    finally:
-        with _active_ffmpeg_lock:
-            if _active_ffmpeg_proc is proc:
-                _active_ffmpeg_proc = None
-
-
 def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, output_path, video_width, video_height, log_fn, effect_settings=None, mirror_video=False, target_duration=None, preferred_font=None, words_per_caption=2, text_color_rgba=None, stroke_color_rgba=None, stroke_width=None, font_size=None, blur_radius=None, dim_factor=None, bg_scale_extra=None, crop_top_ratio=None, crop_bottom_ratio=None, caption_y_offset=None, force_cpu=False):
     """
     Fast export using pure FFmpeg complex filters.
@@ -3102,11 +2724,6 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         True if successful, False otherwise
     """
     try:
-        # Early abort if stop was requested before we even start
-        if _queue_stop_event.is_set():
-            log_fn("[EXPORT] ⏹ Export aborted — stop was requested")
-            return False
-        
         log_fn("[EXPORT] ═══════════════════════════════════════════════════")
         log_fn("[EXPORT] Using fast FFmpeg filter-based export...")
         log_fn(f"[EXPORT] Building filter chain for {len(caption_segments)} caption segments...")
@@ -3217,7 +2834,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             if font_path:
                 log_fn(f"[EXPORT] Using custom font: {font_path}")
             else:
-                log_fn("[EXPORT] Using default FFmpeg font (no custom font found)")
+                log_fn(f"[EXPORT] Using default FFmpeg font (no custom font found)")
             log_fn(f"[EXPORT] Text color: {text_color_hex} (RGBA: {text_color_rgba})")
             log_fn(f"[EXPORT] Stroke color: {stroke_color_hex}")
             log_fn(f"[EXPORT] Stroke width: {stroke_width}px")
@@ -3318,11 +2935,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Input [1:a] = audio
         
         # Calculate speed adjustment factor if target_duration is set
-        # Foreground (fg_path) may already be speed-adjusted by MoviePy, so probe it
-        # separately from the background (bg_path) which uses the original video.
         speed_factor = None
         if target_duration and target_duration > 0:
-            # Probe the foreground video duration to calculate speed factor
+            # We need to probe the foreground video duration to calculate speed factor
             try:
                 probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
                              "-of", "default=noprint_wrappers=1:nokey=1", fg_path]
@@ -3331,54 +2946,29 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                     fg_duration = float(probe_result.stdout.strip())
                     if abs(fg_duration - target_duration) > 0.05:
                         speed_factor = fg_duration / target_duration
-                        log_fn(f"[EXPORT] FG speed adjustment: {fg_duration:.2f}s → {target_duration:.2f}s (factor: {speed_factor:.4f})")
+                        log_fn(f"[EXPORT] Video speed adjustment: {fg_duration:.2f}s → {target_duration:.2f}s (factor: {speed_factor:.4f})")
                 else:
-                    log_fn(f"[EXPORT] ffprobe fg failed (rc={probe_result.returncode}), skipping fg speed adjustment")
+                    log_fn(f"[EXPORT] ffprobe failed (rc={probe_result.returncode}), skipping speed adjustment")
             except Exception as e:
-                log_fn(f"[EXPORT] Could not probe fg video duration for speed adjustment: {e}")
+                log_fn(f"[EXPORT] Could not probe video duration for speed adjustment: {e}")
         
-        # Build the setpts expression for foreground speed adjustment (Pass 2)
+        # Build the setpts expression for speed adjustment
         setpts_filter = ""
+        # Track whether we're slowing down (need looping) or speeding up
+        needs_stream_loop = False
         if speed_factor and speed_factor > 0:
+            # setpts=PTS/factor speeds up (factor>1) or slows down (factor<1)
             setpts_filter = f"setpts=PTS/{speed_factor:.6f},"
-            log_fn(f"[EXPORT] ✓ FG speed filter: setpts=PTS/{speed_factor:.6f}")
-        
-        # Calculate BACKGROUND speed adjustment separately.
-        # bg_path may be the original video (different duration from the speed-adjusted fg).
-        # Without this, the background plays at original speed while the foreground is
-        # speed-adjusted, causing the background to drift 1-2 seconds behind.
-        bg_speed_factor = None
-        bg_needs_stream_loop = False
-        if target_duration and target_duration > 0:
-            try:
-                bg_probe_cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                                "-of", "default=noprint_wrappers=1:nokey=1", bg_path]
-                bg_probe_result = subprocess.run(bg_probe_cmd, capture_output=True, text=True, timeout=30)
-                if bg_probe_result.returncode == 0 and bg_probe_result.stdout.strip():
-                    bg_duration = float(bg_probe_result.stdout.strip())
-                    if abs(bg_duration - target_duration) > 0.05:
-                        bg_speed_factor = bg_duration / target_duration
-                        log_fn(f"[EXPORT] BG speed adjustment: {bg_duration:.2f}s → {target_duration:.2f}s (factor: {bg_speed_factor:.4f})")
-                else:
-                    log_fn(f"[EXPORT] ffprobe bg failed (rc={bg_probe_result.returncode}), skipping bg speed adjustment")
-            except Exception as e:
-                log_fn(f"[EXPORT] Could not probe bg video duration for speed adjustment: {e}")
-        
-        # Build the setpts expression for background speed adjustment (Pass 1)
-        bg_setpts_filter = ""
-        if bg_speed_factor and bg_speed_factor > 0:
-            bg_setpts_filter = f"setpts=PTS/{bg_speed_factor:.6f},"
-            log_fn(f"[EXPORT] ✓ BG speed filter: setpts=PTS/{bg_speed_factor:.6f}")
-            if bg_speed_factor < 1.0:
+            log_fn(f"[EXPORT] ✓ Speed adjustment filter: setpts=PTS/{speed_factor:.6f}")
+            if speed_factor < 1.0:
                 # Slowing down: video becomes longer, need looping to avoid running out of frames
-                bg_needs_stream_loop = True
-                log_fn(f"[EXPORT] BG is being slowed down (factor={bg_speed_factor:.4f}) - looping enabled")
+                needs_stream_loop = True
+                log_fn(f"[EXPORT] Video is being slowed down (factor={speed_factor:.4f}) - looping enabled")
         
         # Build background from video: scale to FILL canvas (preserving aspect ratio), apply blur and dim
-        # Using Gaussian blur (gblur) for smooth, high-quality background.
-        # base_blur_val is a reference value derived from blur_radius, used to compute
-        # the Gaussian sigma for the downscaled image. Minimum of 5 ensures visible blur.
-        base_blur_val = max(5, blur_radius // 2)
+        # FFmpeg boxblur approximates Gaussian blur; halving the radius gives similar visual results.
+        # Minimum of 5 ensures visible blur even with small radius settings.
+        box_blur_val = max(5, blur_radius // 2)
         # brightness adjustment: dim_factor 1.0 means no dimming (full brightness)
         # FFmpeg eq filter brightness is additive (-1.0 to 1.0), so: brightness = dim_factor - 1.0
         # Note: NV12 format conversion and downscale-blur-upscale can lose ~8% brightness,
@@ -3386,9 +2976,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         eq_brightness = dim_factor - 1.0 + BG_BRIGHTNESS_BOOST
         log_fn(f"[EXPORT]   Background: blur={blur_radius}, dim_factor={dim_factor:.2f}, eq_brightness={eq_brightness:+.2f}")
         
+        # Ensure target dimensions are even (required for yuv420p pixel format)
+        bg_target_w = int(video_width * bg_scale_extra) & ~1  # Ensure even
+        bg_target_h = int(video_height * bg_scale_extra) & ~1
+        
         # ── TWO-PASS STRATEGY ──
         # Pass 1: Pre-render blurred background video to a temp file.
-        #         Heavy CPU filters (gblur, scale, crop, eq) run here.
+        #         Heavy CPU filters (boxblur, scale, crop, eq) run here.
         # Pass 2: Final encode uses two simple inputs (bg + fg) with just
         #         overlay + captions. GPU NVENC can encode at full speed
         #         because the filter chain is lightweight.
@@ -3417,26 +3011,23 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             gpu_filters = use_gpu and ffmpeg_gpu_filters_available()
         
         # Log GPU diagnostic info
-        log_fn("[EXPORT] ═══ GPU DIAGNOSTIC ═══")
+        log_fn(f"[EXPORT] ═══ GPU DIAGNOSTIC ═══")
         log_fn(f"[EXPORT] GPU encoding: {'✓ ENABLED (' + nvenc_codec + ')' if use_gpu else '✗ DISABLED (using CPU libx264)'}")
         log_fn(f"[EXPORT] GPU filters: {'✓ ENABLED (scale_cuda/overlay_cuda)' if gpu_filters else '✗ DISABLED (using CPU filters)'}")
         if not use_gpu:
             log_fn(f"[EXPORT] {get_nvenc_diagnostic()}")
-        log_fn("[EXPORT] ═══════════════════")
+        log_fn(f"[EXPORT] ═══════════════════")
         
         # Build background video filter chain
         # Background uses the SAME crop as foreground, then zooms to fill the canvas.
         # This makes the blurred background match the foreground content area.
         #
         # Optimization: downscale-blur-upscale trick for much faster blur processing.
-        # Instead of gblur on 1080x1920 (2M pixels), downscale 2x → blur on
-        # half-res → upscale back (~4x fewer operations, still fast).
-        # Using 2x (not 4x) downscale preserves more detail and reduces upscale
-        # artifacts. Combined with Gaussian blur (gblur) instead of boxblur,
-        # this produces a smooth, high-quality background.
-        blur_down_w = max(video_width // 2, 2) & ~1   # 1080→540, ensure even
-        blur_down_h = max(video_height // 2, 2) & ~1  # 1920→960, ensure even
-        blur_sigma = max(3, base_blur_val * 2 // 3)    # 12→8, Gaussian sigma for half-res
+        # Instead of boxblur=12 on 1080x1920 (2M pixels, ~1.25B ops/frame),
+        # downscale 4x → smaller blur → upscale back (~200x fewer operations).
+        blur_down_w = max(video_width // 4, 2) & ~1   # 1080→270, ensure even
+        blur_down_h = max(video_height // 4, 2) & ~1  # 1920→480, ensure even
+        small_blur = max(2, box_blur_val // 3)         # 12→4, proportionally reduced
         # Encode background at blur_down resolution for ALL resolutions.
         # The blur already destroys detail above blur_down resolution, so encoding
         # at a higher resolution wastes GPU encoder cycles for no quality benefit.
@@ -3447,116 +3038,92 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Add eq brightness filter: handles both dimming and NV12 brightness compensation
         eq_part = f"eq=brightness={eq_brightness:.2f}," if abs(eq_brightness) > 0.001 else ""
         # Build user crop filter for background (same crop as foreground)
-        keep_ratio = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
+        keep_ratio = 1.0 - crop_top_ratio - crop_bottom_ratio
         bg_crop_part = ""
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
-        # Mirror the background when mirror_video is enabled so it matches the foreground.
-        # Applied after downscale for efficiency (smaller image = faster flip).
-        bg_mirror = "hflip," if mirror_video else ""
-        if gpu_filters and USE_HARDWARE_DECODING and not bg_needs_stream_loop:
-            # GPU-accelerated decode + CPU Gaussian blur: high-quality blur path.
+        if gpu_filters and USE_HARDWARE_DECODING and not needs_stream_loop:
+            # GPU-accelerated decode + CPU boxblur: identical quality to CPU-only path.
             # GPU handles fast decode via -hwaccel cuda, then hwdownload transfers frames
-            # to CPU where gblur (Gaussian) runs on the half-resolution image.
-            # gblur produces smoother, more natural results than boxblur.
-            # NVENC handles encoding at the end.
+            # to CPU where the same crop→scale→boxblur chain runs as the CPU path.
+            # NVENC handles encoding at the end. This ensures the blur looks identical
+            # to the CPU path while still benefiting from GPU decode/encode speed.
             bg_vf = (
-                f"{bg_setpts_filter}hwdownload,format=nv12,"
+                f"{setpts_filter}hwdownload,format=nv12,"
                 f"{bg_crop_part}"
                 f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
-                f"scale={blur_down_w}:{blur_down_h}:flags=lanczos,"
-                f"{bg_mirror}"
-                f"gblur=sigma={blur_sigma},"
+                f"scale={blur_down_w}:{blur_down_h},"
+                f"boxblur={small_blur}:{small_blur},"
                 f"{eq_part}"
-                f"scale={bg_encode_w}:{bg_encode_h}:flags=lanczos,setsar=1:1"
+                f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
             )
-            log_fn(f"[EXPORT] Pass 1 using GPU decode + CPU gblur sigma={blur_sigma} (blur_down={blur_down_w}x{blur_down_h}, encode={bg_encode_w}x{bg_encode_h})")
+            log_fn(f"[EXPORT] Pass 1 using GPU decode + CPU boxblur={small_blur} (blur_down={blur_down_w}x{blur_down_h}, encode={bg_encode_w}x{bg_encode_h})")
         else:
             bg_vf = (
-                f"{bg_setpts_filter}{bg_crop_part}"
+                f"{setpts_filter}{bg_crop_part}"
                 f"scale={video_width}:{video_height}:force_original_aspect_ratio=increase,"
                 f"crop={video_width}:{video_height},"
-                f"scale={blur_down_w}:{blur_down_h}:flags=lanczos,"
-                f"{bg_mirror}"
-                f"gblur=sigma={blur_sigma},"
+                f"scale={blur_down_w}:{blur_down_h},"
+                f"boxblur={small_blur}:{small_blur},"
                 f"{eq_part}"
-                f"scale={bg_encode_w}:{bg_encode_h}:flags=lanczos,setsar=1:1"
+                f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
             )
-        if mirror_video:
-            log_fn("[EXPORT] ✓ Background mirror/flip applied in Pass 1")
         
         # ── Spot blur on background ──
-        # When spot blur is enabled, crop the background to the area ABOVE the
-        # spot blur region and zoom to fill. This completely hides the spot blur
-        # area from the background — no blurred trace is visible.
-        # Fallback: if the spot blur is too close to the top (not enough area to
-        # crop above), use the old split→crop→boxblur→overlay approach.
+        # If spot blur is enabled, also apply it to the blurred background so that
+        # the covered area is hidden on both the foreground and background layers.
+        # This requires -filter_complex (split → crop+boxblur → overlay).
+        # Coordinates are relative to bg_encode resolution (may be half of video_width
+        # for 4K to reduce GPU load).
         bg_spot_blur = ""
         bg_blur_ov = effect_settings or {}
         if bg_blur_ov.get('blur_overlay_enabled', False):
+            bx_pct = float(bg_blur_ov.get('blur_overlay_x', 10))
             by_pct = float(bg_blur_ov.get('blur_overlay_y', 10))
+            bw_pct = float(bg_blur_ov.get('blur_overlay_w', 20))
+            bh_pct = float(bg_blur_ov.get('blur_overlay_h', 15))
+            b_intensity = int(bg_blur_ov.get('blur_overlay_intensity', 20))
             # Background fills the entire canvas after crop+scale, so coordinates
             # are relative to the encode resolution. The crop removes the same
             # top/bottom as the foreground, so Y must be adjusted for the crop.
             bg_keep = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
-            bg_by = min(max(0, int(bg_encode_h * (by_pct / 100.0 - crop_top_ratio) / bg_keep)), max(0, bg_encode_h - 2)) & ~1
-            # Crop background to the area above the spot blur, then zoom to fill.
-            # When bg_by is very small (blur near top), crop_above_h will be
-            # below min_crop_h and the fallback boxblur path is used instead.
-            crop_above_h = bg_by & ~1  # even-align for YUV420p
-            min_crop_h = max(2, int(bg_encode_h * 0.15)) & ~1
-            if crop_above_h >= min_crop_h:
-                # Enough area above spot blur — crop and zoom to fill the
-                # entire background canvas, hiding the blur region entirely.
-                bg_vf += (f",crop=iw:{crop_above_h}:0:0,"
-                          f"scale={bg_encode_w}:{bg_encode_h}:flags=lanczos,setsar=1:1")
-                log_fn(f"[EXPORT] ✓ Background crops above spot blur at y={bg_by}: "
-                       f"keeping top {crop_above_h}px, zooming to fill {bg_encode_w}x{bg_encode_h}")
-            else:
-                # Spot blur too near top — not enough area to crop above.
-                # Fall back to boxblur overlay so the area is still hidden.
-                bx_pct = float(bg_blur_ov.get('blur_overlay_x', 10))
-                bw_pct = float(bg_blur_ov.get('blur_overlay_w', 20))
-                bh_pct = float(bg_blur_ov.get('blur_overlay_h', 15))
-                b_intensity = int(bg_blur_ov.get('blur_overlay_intensity', 20))
-                bg_bx = min(max(0, int(bg_encode_w * bx_pct / 100.0)), max(0, bg_encode_w - 2)) & ~1
-                bg_bw = max(2, int(bg_encode_w * bw_pct / 100.0)) & ~1
-                bg_bh = max(2, int(bg_encode_h * bh_pct / (100.0 * bg_keep))) & ~1
-                if bg_bx + bg_bw > bg_encode_w:
-                    bg_bw = max(2, (bg_encode_w - bg_bx) & ~1)
-                if bg_by + bg_bh > bg_encode_h:
-                    bg_bh = max(2, (bg_encode_h - bg_by) & ~1)
-                bg_b_blur = max(2, b_intensity)
-                # Clamp boxblur radius to respect FFmpeg constraints.
-                # YUV420p chroma constraint: radius <= min(w, h) / 4.
-                safe_blur_limit = min(bg_bw, bg_bh) // 4
-                if safe_blur_limit < 1:
-                    log_fn(f"[EXPORT] ⚠️ Background spot blur skipped: crop {bg_bw}x{bg_bh} too small for boxblur")
-                else:
-                    if bg_b_blur > safe_blur_limit:
-                        log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {safe_blur_limit} (crop {bg_bw}x{bg_bh} limit)")
-                        bg_b_blur = safe_blur_limit
-                    bg_spot_blur = (
-                        f",format=yuv420p,split[_bgm][_bgc];"
-                        f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
-                        f"boxblur={bg_b_blur}:2[_bgb];"
-                        f"[_bgm][_bgb]overlay={bg_bx}:{bg_by}"
-                    )
-                    log_fn(f"[EXPORT] ✓ Background spot blur fallback: pos=({bg_bx},{bg_by}) size={bg_bw}x{bg_bh} blur={bg_b_blur}")
+            bg_bx = max(0, int(bg_encode_w * bx_pct / 100.0)) & ~1
+            bg_by = max(0, int(bg_encode_h * (by_pct / 100.0 - crop_top_ratio) / bg_keep)) & ~1
+            bg_bw = max(2, int(bg_encode_w * bw_pct / 100.0)) & ~1
+            bg_bh = max(2, int(bg_encode_h * bh_pct / (100.0 * bg_keep))) & ~1
+            if bg_bx + bg_bw > bg_encode_w:
+                bg_bw = (bg_encode_w - bg_bx) & ~1
+            if bg_by + bg_bh > bg_encode_h:
+                bg_bh = (bg_encode_h - bg_by) & ~1
+            bg_b_blur = max(2, b_intensity)
+            # Clamp boxblur radius to respect YUV420p chroma plane limits.
+            # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
+            # boxblur radius <= min(chroma_w, chroma_h) / 2 = min(crop_w, crop_h) / 4.
+            safe_blur_limit = max(2, min(bg_bw, bg_bh) // 4)
+            if bg_b_blur > safe_blur_limit:
+                log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {safe_blur_limit} (crop {bg_bw}x{bg_bh} limit)")
+                bg_b_blur = safe_blur_limit
+            bg_spot_blur = (
+                f",format=yuv420p,split[_bgm][_bgc];"
+                f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
+                f"boxblur={bg_b_blur}:2[_bgb];"
+                f"[_bgm][_bgb]overlay={bg_bx}:{bg_by}"
+            )
+            log_fn(f"[EXPORT] ✓ Background spot blur: pos=({bg_bx},{bg_by}) size={bg_bw}x{bg_bh} blur={bg_b_blur}")
 
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         # GPU hardware decoding for background pre-render.
         # Use -hwaccel cuda for fast decode even though the blur filter chain runs on
         # CPU (hwdownload transfers frames). GPU decode is still faster than CPU decode,
         # and the background is a one-time pre-render so the transfer overhead is minimal.
-        if use_gpu and USE_HARDWARE_DECODING and gpu_filters and not bg_needs_stream_loop:
+        if use_gpu and USE_HARDWARE_DECODING and gpu_filters and not needs_stream_loop:
             bg_cmd.extend(["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"])
-        if bg_needs_stream_loop:
+        if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
         # Add filter threading for CPU filter processing.
-        # GPU path: GPU handles decode, CPU handles crop + scale + gblur.
+        # GPU path: GPU handles decode, CPU handles crop + scale + boxblur.
         # When GPU is active, use half CPU cores to keep CPU at ~50-60%.
         total_cores = os.cpu_count() or 4
         if use_gpu:
@@ -3567,19 +3134,16 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # When spot blur is enabled on the background, we need -filter_complex
         # because the split→crop→overlay graph requires named streams.
         if bg_spot_blur:
-            bg_cmd.extend(["-filter_complex_threads", str(cpu_threads)])
             bg_cmd.extend(["-i", bg_path, "-an", "-filter_complex", bg_vf + bg_spot_blur])
         else:
             bg_cmd.extend(["-i", bg_path, "-an", "-vf", bg_vf])
         
-        # Use NVENC for bg pre-render if available, else CPU
-        # Higher quality encoding since blur_down is half-res (not quarter-res)
+        # Use NVENC for bg pre-render if available, else CPU ultrafast
+        # Background is blurred — use constqp with high QP for fastest encoding
         if use_gpu:
-            # Use fastest NVENC preset (p1) for background — content is heavily blurred,
-            # so the quality difference between p1 and p4 is invisible.
-            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "constqp", "-qp", "23", "-b:v", "0", "-multipass", "0", "-threads", "0"])
+            bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "constqp", "-qp", "30", "-b:v", "0", "-multipass", "0"])
         else:
-            bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-threads", "0"])
+            bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
         
         # Limit bg to same duration as output
         bg_duration_limit = None
@@ -3599,21 +3163,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         
         bg_cmd.extend(["-pix_fmt", "yuv420p", bg_prerendered_path])
         
-        blur_mode = "GPU decode + CPU gblur" if (gpu_filters and not bg_needs_stream_loop) else f"CPU gblur sigma={blur_sigma}"
-        blur_detail = f"(downscale {video_width}→{blur_down_w}, gblur sigma={blur_sigma})"
+        blur_mode = "GPU decode + CPU boxblur" if (gpu_filters and not needs_stream_loop) else f"CPU boxblur={small_blur}"
+        blur_detail = f"(downscale {video_width}→{blur_down_w}, boxblur={small_blur})"
         log_fn("[EXPORT] Pass 1/2: Pre-rendering blurred background video...")
         log_fn(f"[EXPORT]   Encoder: {'NVENC (' + nvenc_codec + ')' if use_gpu else 'CPU (libx264)'}, blur={blur_mode} {blur_detail}, encode={bg_encode_w}x{bg_encode_h}, dim={eq_brightness:.2f}")
         log_fn(f"[EXPORT]   Command: {' '.join(bg_cmd)}")
         bg_timeout = max(300, int((bg_duration_limit or 60) * 5))  # 5x video duration, min 5 min
-        try:
-            bg_result = _run_ffmpeg_with_stop_check(bg_cmd, bg_timeout, log_fn, label="BG-RENDER")
-        except InterruptedError:
-            try:
-                import shutil
-                shutil.rmtree(bg_temp_dir)
-            except Exception:
-                pass
-            return False
+        bg_result = subprocess.run(bg_cmd, capture_output=True, text=True, timeout=bg_timeout)
         if bg_result.returncode != 0:
             log_fn(f"[EXPORT] ⚠️ Background pre-render failed: {bg_result.stderr}")
             try:
@@ -3623,16 +3179,6 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 pass
             return False
         log_fn("[EXPORT] ✓ Background pre-rendered successfully")
-        
-        # Check stop event between Pass 1 and Pass 2
-        if _queue_stop_event.is_set():
-            log_fn("[EXPORT] ⏹ Export aborted between passes — stop was requested")
-            try:
-                import shutil
-                shutil.rmtree(bg_temp_dir)
-            except Exception:
-                pass
-            return False
         
         # ── Pass 2: Final encode ──
         # Two inputs: [0:v]=bg (pre-rendered blurred), [1:v]=fg (original), [2:a]=audio
@@ -3656,8 +3202,8 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Full GPU pipeline: hwupload both inputs → overlay_cuda
             # No captions/effects = pure GPU path
             fg_prep = f"[1:v]{setpts_filter}hwupload_cuda[fg_ready]"
-            # If background was encoded at reduced resolution, upscale with lanczos before overlay
-            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}:flags=lanczos," if bg_needs_upscale else "[0:v]"
+            # If background was encoded at reduced resolution, upscale before overlay
+            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}," if bg_needs_upscale else "[0:v]"
             filter_parts = [
                 fg_prep,
                 f"{bg_scale_prefix}hwupload_cuda[bg_cuda]",
@@ -3666,9 +3212,9 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             if effect_filter_str:
                 # Effects are CPU-only; data is already in CPU format (nv12) after hwdownload
                 filter_parts[-1] += f",{effect_filter_str}"
-                log_fn("[EXPORT] ✓ GPU overlay + CPU effects")
+                log_fn(f"[EXPORT] ✓ GPU overlay + CPU effects")
             if bg_needs_upscale:
-                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} (lanczos) in Pass 2")
+                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
             log_fn("[EXPORT] ✓ Using GPU-accelerated overlay_cuda (full GPU pipeline)")
         elif use_gpu_hybrid:
             # Hybrid GPU pipeline: GPU overlay_cuda for bg+fg, then hwdownload for
@@ -3677,14 +3223,14 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # When fg_hwaccel_decode is true, [1:v] is already CUDA but hwupload_cuda
             # handles CUDA→CUDA as a no-op, so we keep it for compatibility.
             fg_prep = f"[1:v]{setpts_filter}hwupload_cuda[fg_ready]"
-            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}:flags=lanczos," if bg_needs_upscale else "[0:v]"
+            bg_scale_prefix = f"[0:v]scale={video_width}:{video_height}," if bg_needs_upscale else "[0:v]"
             filter_parts = [
                 fg_prep,
                 f"{bg_scale_prefix}hwupload_cuda[bg_cuda]",
                 "[bg_cuda][fg_ready]overlay_cuda=x=(W-w)/2:y=(H-h)/2,hwdownload,format=nv12"
             ]
             if bg_needs_upscale:
-                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} (lanczos) in Pass 2")
+                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
             if fg_hwaccel_decode:
                 log_fn("[EXPORT] ✓ Hybrid GPU pipeline: GPU decode fg → overlay_cuda → hwdownload → CPU captions")
             else:
@@ -3697,11 +3243,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             else:
                 fg_prep = f"[1:v]{setpts_filter}copy[fg_ready]"
             
-            # If background was encoded at reduced resolution, upscale with lanczos before overlay
+            # If background was encoded at reduced resolution, upscale before overlay
             if bg_needs_upscale:
-                bg_prep = f"[0:v]scale={video_width}:{video_height}:flags=lanczos[bg_up]"
+                bg_prep = f"[0:v]scale={video_width}:{video_height}[bg_up]"
                 filter_parts = [fg_prep, bg_prep, "[bg_up][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
-                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} (lanczos) in Pass 2")
+                log_fn(f"[EXPORT] ✓ Background upscale {bg_encode_w}x{bg_encode_h} → {video_width}x{video_height} in Pass 2")
             else:
                 # Combine: bg + fg overlay
                 filter_parts = [fg_prep, "[0:v][fg_ready]overlay=x=(W-w)/2:y=(H-h)/2"]
@@ -3752,34 +3298,30 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Y: the top crop_top_ratio of the original is removed, and the visible
             #    area (keep_ratio) maps to fg_h. So original Y% must be adjusted:
             #    canvas_y = fg_y_off + (by_pct/100 - crop_top_ratio) / keep_ratio * fg_h
-            bx_px = min(max(0, fg_x_off + int(fg_w * bx_pct / 100.0)), max(0, video_width - 2)) & ~1
-            by_px = min(max(0, fg_y_off + int(fg_h * (by_pct / 100.0 - crop_top_ratio) / keep_ratio)), max(0, video_height - 2)) & ~1
+            bx_px = max(0, fg_x_off + int(fg_w * bx_pct / 100.0)) & ~1
+            by_px = max(0, fg_y_off + int(fg_h * (by_pct / 100.0 - crop_top_ratio) / keep_ratio)) & ~1
             bw_px = max(2, int(fg_w * bw_pct / 100.0)) & ~1
             bh_px = max(2, int(fg_h * bh_pct / (100.0 * keep_ratio))) & ~1
             
             # Clamp to fit within frame
             if bx_px + bw_px > video_width:
-                bw_px = max(2, (video_width - bx_px) & ~1)
+                bw_px = (video_width - bx_px) & ~1
             if by_px + bh_px > video_height:
-                bh_px = max(2, (video_height - by_px) & ~1)
+                bh_px = (video_height - by_px) & ~1
             b_blur = max(2, b_intensity)
-            # Clamp boxblur radius to respect FFmpeg constraints.
-            # Luma plane: radius <= min(w, h) / 2
-            # YUV420p chroma plane: radius <= min(w/2, h/2) / 2 = min(w, h) / 4
-            # Use the stricter chroma constraint for the shared radius.
-            safe_blur_limit = min(bw_px, bh_px) // 4
-            if safe_blur_limit < 1:
-                log_fn(f"[EXPORT] ⚠️ Blur overlay skipped: crop {bw_px}x{bh_px} too small for boxblur")
-            else:
-                if b_blur > safe_blur_limit:
-                    log_fn(f"[EXPORT] ⚠️ Blur overlay radius {b_blur} clamped to {safe_blur_limit} (crop {bw_px}x{bh_px} limit)")
-                    b_blur = safe_blur_limit
-                # Label the current composited stream and split it
-                filter_parts[-1] += "[_bo_pre]"
-                filter_parts.append("[_bo_pre]split[_bo_main][_bo_copy]")
-                filter_parts.append(f"[_bo_copy]crop={bw_px}:{bh_px}:{bx_px}:{by_px},boxblur={b_blur}:2[_bo_blurred]")
-                filter_parts.append(f"[_bo_main][_bo_blurred]overlay={bx_px}:{by_px}")
-                log_fn(f"[EXPORT] ✓ Blur overlay: pos=({bx_px},{by_px}) size={bw_px}x{bh_px} blur={b_blur} fg={fg_w}x{fg_h} offset=({fg_x_off},{fg_y_off})")
+            # Clamp boxblur radius to respect YUV420p chroma plane limits.
+            # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
+            # boxblur radius <= min(chroma_w, chroma_h) / 2 = min(crop_w, crop_h) / 4.
+            safe_blur_limit = max(2, min(bw_px, bh_px) // 4)
+            if b_blur > safe_blur_limit:
+                log_fn(f"[EXPORT] ⚠️ Blur overlay radius {b_blur} clamped to {safe_blur_limit} (crop {bw_px}x{bh_px} limit)")
+                b_blur = safe_blur_limit
+            # Label the current composited stream and split it
+            filter_parts[-1] += "[_bo_pre]"
+            filter_parts.append(f"[_bo_pre]split[_bo_main][_bo_copy]")
+            filter_parts.append(f"[_bo_copy]crop={bw_px}:{bh_px}:{bx_px}:{by_px},boxblur={b_blur}:2[_bo_blurred]")
+            filter_parts.append(f"[_bo_main][_bo_blurred]overlay={bx_px}:{by_px}")
+            log_fn(f"[EXPORT] ✓ Blur overlay: pos=({bx_px},{by_px}) size={bw_px}x{bh_px} blur={b_blur} fg={fg_w}x{fg_h} offset=({fg_x_off},{fg_y_off})")
 
         # Apply captions/subtitles and effects for CPU and hybrid GPU pipelines.
         # In both cases, frames are in CPU memory at this point:
@@ -3810,7 +3352,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             # Add video effects to filter chain (same as MoviePy applies)
             if effect_filter_str:
                 filter_parts[-1] += "," + effect_filter_str
-                log_fn("[EXPORT] ✓ Video effects added to FFmpeg filter chain")
+                log_fn(f"[EXPORT] ✓ Video effects added to FFmpeg filter chain")
         
         # Force exact output resolution and reset SAR to avoid narrow/stretched video.
         # Some source videos have non-1:1 SAR that carries through the filter chain,
@@ -3820,17 +3362,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Label the filter output for mapping
         filter_parts[-1] += "[vout]"
         
-        # Add audio volume boost filter — VOICE_GAIN is applied here (not in MoviePy)
-        # to prevent WAV clipping.  The voice:music balance is already set in MoviePy
-        # (music gets MUSIC_GAIN, voice stays at 1.0).  VOICE_GAIN controls overall
-        # output loudness applied losslessly in FFmpeg's 32-bit float pipeline.
-        filter_parts.append(f"[2:a]volume={VOICE_GAIN}[aout]")
-        
         # Join all filter parts with semicolons
         filter_chain = ";".join(filter_parts)
         
         # Log input information for debugging
-        log_fn("[EXPORT] Pass 2/2: Final encode with lightweight filter chain")
+        log_fn(f"[EXPORT] Pass 2/2: Final encode with lightweight filter chain")
         log_fn(f"[EXPORT] Background (pre-rendered): {bg_prerendered_path} ({bg_encode_w}x{bg_encode_h}{' → upscale to ' + str(video_width) + 'x' + str(video_height) if bg_needs_upscale else ''})")
         log_fn(f"[EXPORT] Foreground: {fg_path}")
         log_fn(f"[EXPORT] Audio: {audio_path}")
@@ -3907,7 +3443,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         cmd.extend([
             "-filter_complex", filter_chain,
             "-map", "[vout]",
-            "-map", "[aout]",             # Audio from filter graph (volume-boosted)
+            "-map", "2:a",                # Audio from input 2
         ])
         
         # Explicit duration limit prevents hanging (critical with -filter_complex)
@@ -3918,54 +3454,48 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         cmd.extend([
             "-shortest",
             "-c:a", "aac",
-            "-b:a", "256k",
+            "-b:a", "192k",
         ])
         
         # Add video encoding parameters - GPU NVENC or CPU libx264
-        # CapCut-like H.264 High profile quality settings
         if use_gpu:
             log_fn(f"[EXPORT] ✓ GPU NVENC encoding: {nvenc_codec}, preset={NVENC_PRESET_SPEED}")
             cmd.extend([
                 "-c:v", nvenc_codec,
                 "-rc", "constqp",
-                "-qp", "20",
+                "-qp", "22",
                 "-b:v", "0",
                 "-preset", NVENC_PRESET_SPEED,
-                "-multipass", "fullres",
+                "-multipass", "0",
                 "-pix_fmt", "yuv420p",
-                "-profile:v", "high",
-                "-level", "4.2",
-                "-threads", "0"
+                "-profile:v", "high"
             ])
         else:
             log_fn("[EXPORT] Using CPU encoding (libx264)...")
             cmd.extend([
                 "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", "18",
+                "-preset", "ultrafast",
+                "-crf", "20",
                 "-pix_fmt", "yuv420p",
-                "-profile:v", "high",
-                "-level", "4.2",
                 "-threads", "0"
             ])
         
-        cmd.extend(["-movflags", "+faststart+use_metadata_tags"]
-                   + _CAPCUT_COLOR_FLAGS + _build_capcut_meta() + [output_path])
+        cmd.extend([
+            "-movflags", "+faststart",
+            output_path
+        ])
         
         log_fn("[EXPORT] Executing FFmpeg final encode...")
         log_fn(f"[EXPORT] Full command: {' '.join(cmd)}")
         
         # Run FFmpeg
         final_timeout = max(600, int((output_duration or 60) * 5))  # 5x duration, min 10 min
-        try:
-            result = _run_ffmpeg_with_stop_check(cmd, final_timeout, log_fn, label="FINAL-ENCODE")
-        except InterruptedError:
-            try:
-                import shutil
-                shutil.rmtree(bg_temp_dir)
-            except Exception:
-                pass
-            return False
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=final_timeout
+        )
         
         # Clean up background temp file
         try:
@@ -3979,7 +3509,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             return True
         else:
             log_fn(f"[EXPORT] ❌ FFmpeg failed with return code {result.returncode}")
-            log_fn("[EXPORT] FFmpeg stderr output:")
+            log_fn(f"[EXPORT] FFmpeg stderr output:")
             log_fn(f"{result.stderr[-1500:]}")
             return False
             
@@ -4134,14 +3664,14 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         if pre_rendered_fg_path:
             log(f"[compose] Pre-rendered foreground available: {pre_rendered_fg_path}")
         if mirror_video:
-            log("[compose] Mirror video: enabled")
+            log(f"[compose] Mirror video: enabled")
         if target_duration:
             log(f"[compose] Target duration: {target_duration:.2f}s")
     except Exception:
         pass
     
     # Background creation is deferred until needed (MoviePy fallback only).
-    # The primary FFmpeg export path creates the blurred background via native gblur/eq filters,
+    # The primary FFmpeg export path creates the blurred background via native boxblur/eq filters,
     # so this expensive per-frame MoviePy processing is skipped when FFmpeg export succeeds.
     bg_static = None  # Will be created lazily if MoviePy fallback is needed
 
@@ -4182,7 +3712,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         effect_settings.get('effect_vintage', False)
     ]):
         try:
-            log("[EFFECTS] Applying CapCut-style effects to video...")
+            log(f"[EFFECTS] Applying CapCut-style effects to video...")
             active_effects = []
             if effect_settings.get('effect_sharpness'): active_effects.append('Resilience')
             if effect_settings.get('effect_saturation'): active_effects.append('Vibrance')
@@ -4193,7 +3723,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             
             # Apply effects to each frame
             fg = fg.fl_image(lambda frame: apply_video_effects(frame, effect_settings))
-            log("[EFFECTS] ✓ Effects applied successfully")
+            log(f"[EFFECTS] ✓ Effects applied successfully")
         except Exception as e:
             log(f"[EFFECTS] Warning: Could not apply effects: {e}")
     
@@ -4280,9 +3810,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             caption_data_for_ffmpeg[i]['end'] = max(caption_data_for_ffmpeg[i]['start'], next_start - 0.01)
     
     try:
-        log("[COMPOSE] ═══════════════════════════════════════════════")
+        log(f"[COMPOSE] ═══════════════════════════════════════════════")
         log(f"[COMPOSE] Total caption segments prepared: {len(caption_data_for_ffmpeg)}")
-        log("[COMPOSE] ═══════════════════════════════════════════════")
+        log(f"[COMPOSE] ═══════════════════════════════════════════════")
     except Exception:
         pass
     
@@ -4302,11 +3832,6 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     for ffmpeg_attempt in range(MAX_FFMPEG_RETRIES):
         try:
             import tempfile
-            # Check stop event before starting export attempt
-            if _queue_stop_event.is_set():
-                log("[EXPORT] ⏹ Stop requested — aborting export")
-                raise InterruptedError("Export stopped by user")
-            
             # On second attempt, force CPU-only mode as fallback
             use_cpu_fallback = (ffmpeg_attempt > 0)
             if ffmpeg_attempt == 0:
@@ -4318,15 +3843,10 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             
             temp_dir = tempfile.mkdtemp(prefix="tiktok_ffmpeg_export_")
             
-            # Save audio to temp file (WAV for lossless volume preservation)
-            audio_temp_path = os.path.join(temp_dir, "audio.wav")
-            audio_clip.write_audiofile(audio_temp_path, fps=44100, verbose=False, logger=None)
+            # Save audio to temp file
+            audio_temp_path = os.path.join(temp_dir, "audio.mp3")
+            audio_clip.write_audiofile(audio_temp_path, fps=44100, codec='mp3', verbose=False, logger=None)
             log(f"[EXPORT] Audio saved to: {audio_temp_path}")
-            
-            # Check stop event after audio save
-            if _queue_stop_event.is_set():
-                log("[EXPORT] ⏹ Stop requested — aborting export")
-                raise InterruptedError("Export stopped by user")
             
             # Get foreground video path - use pre-rendered path if available
             fg_video_path = None
@@ -4341,19 +3861,15 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 fg_video_path = os.path.join(temp_dir, "foreground.mp4")
                 log(f"[EXPORT] No pre-rendered foreground - saving to: {fg_video_path}")
                 fg.write_videofile(fg_video_path, fps=FPS, codec='libx264', audio=False, verbose=False, logger=None, preset='ultrafast')
-                # Check stop event after foreground save
-                if _queue_stop_event.is_set():
-                    log("[EXPORT] ⏹ Stop requested — aborting export")
-                    raise InterruptedError("Export stopped by user")
             
             # Determine background source path
-            # Use the SAME foreground video as the background source to guarantee
-            # perfect frame-level timing sync. Using the original video would cause
-            # 1-2 second drift because of fps/duration mismatches between the
-            # speed-adjusted foreground and original video. The heavy blur makes any
-            # crop/scale differences invisible.
-            bg_source_path = fg_video_path
-            log("[EXPORT] Using foreground video as background source for perfect timing sync")
+            # Use original (uncropped) video for background blur - NOT the pre-rendered foreground.
+            # The foreground is already cropped/scaled; using it as bg would show wrong crop and bad blur.
+            bg_source_path = original_video_path if original_video_path and os.path.exists(original_video_path) else fg_video_path
+            if bg_source_path != fg_video_path:
+                log(f"[EXPORT] Using original video for background blur: {os.path.basename(bg_source_path)}")
+            else:
+                log(f"[EXPORT] ⚠️ No original video path available, using foreground as background source")
             
             # Export with FFmpeg filters
             ffmpeg_export_successful = _export_with_ffmpeg_filters(
@@ -4396,9 +3912,6 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                 last_ffmpeg_error = "FFmpeg returned non-zero exit code (check log above for stderr details)"
                 log(f"[EXPORT] ⚠️ FFmpeg export failed (attempt {ffmpeg_attempt + 1}/{MAX_FFMPEG_RETRIES}) - see FFmpeg stderr output above")
                 
-        except InterruptedError:
-            log("[EXPORT] ⏹ Export stopped by user — not retrying")
-            raise
         except Exception as e:
             last_ffmpeg_error = str(e)
             log(f"[EXPORT] ⚠️ FFmpeg export exception (attempt {ffmpeg_attempt + 1}/{MAX_FFMPEG_RETRIES}): {e}")
@@ -4418,7 +3931,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             # Verify audio clip before compositing
             if audio_clip is None:
                 try:
-                    log("[COMPOSE WARNING] ⚠️ audio_clip is None! Final video will have no audio!")
+                    log(f"[COMPOSE WARNING] ⚠️ audio_clip is None! Final video will have no audio!")
                 except Exception:
                     pass
             else:
@@ -4431,10 +3944,6 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             # This per-frame processing is expensive, so we skip it when FFmpeg export succeeds
             log("[COMPOSE] Creating blurred video background for MoviePy export...")
             img_w, img_h = video_clip.w, video_clip.h
-            if img_w <= 0:
-                img_w = 1
-            if img_h <= 0:
-                img_h = 1
             scale_needed = max(WIDTH / img_w, HEIGHT / img_h) * bg_scale_extra
             new_w = int(img_w * scale_needed)
             new_h = int(img_h * scale_needed)
@@ -4489,7 +3998,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
             
             final = CompositeVideoClip([bg_static, fg] + caption_clips, size=(WIDTH, HEIGHT)).set_audio(audio_clip)
             try:
-                log("[COMPOSE] ✓ Final composition created successfully")
+                log(f"[COMPOSE] ✓ Final composition created successfully")
                 log(f"[COMPOSE] Layers: background + foreground + {len(caption_clips)} caption overlays")
             except Exception:
                 pass
@@ -4522,7 +4031,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
                     fps=FPS,
                     codec=codec_name,
                     audio_codec="aac",
-                    audio_bitrate="256k",
+                    audio_bitrate="192k",
                     threads=threads_setting,
                     ffmpeg_params=ffmpeg_params,
                     verbose=False,
@@ -4699,7 +4208,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None, voice_gain=None, music_gain=None):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -4737,74 +4246,18 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         tts_lang_synced = TRANS_TO_TTS_LANG.get(target_language, target_language)
         tts_language = tts_lang_synced
     
-    # Determine audio gains - prefer per-job parameter over global
-    if voice_gain is None:
-        voice_gain = globals().get('VOICE_GAIN', VOICE_GAIN)
-    if music_gain is None:
-        music_gain = globals().get('MUSIC_GAIN', MUSIC_GAIN)
-    # Apply per-job gains to globals so compose functions pick them up.
-    # This is safe because jobs are processed sequentially (same pattern as
-    # IS_4K_MODE, WIDTH, HEIGHT globals set below).
-    globals()['VOICE_GAIN'] = voice_gain
-    globals()['MUSIC_GAIN'] = music_gain
-    
     # Set 4K mode if requested
-    # NOTE: Using global state for IS_4K_MODE, WIDTH, HEIGHT. This is safe because:
+    # NOTE: Using global state for IS_4K_MODE. This is safe because:
     # 1. Jobs are processed sequentially (one at a time) via queue_worker
     # 2. Single jobs via on_run_single run in separate threads but don't overlap
-    # 3. The old values are saved and restored in the finally block
+    # 3. The old value is saved and restored in the finally block
     old_is_4k = globals().get('IS_4K_MODE', False)
-    old_width = globals().get('WIDTH', 1080)
-    old_height = globals().get('HEIGHT', 1920)
-    old_caption_font_size = globals().get('CAPTION_FONT_SIZE', 56)
-    old_caption_stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)
     if use_4k:
         globals()['IS_4K_MODE'] = True
-        globals()['WIDTH'] = 2160
-        globals()['HEIGHT'] = 3840
-        # Auto-scale caption parameters from HD to 4K when values look like HD defaults.
-        # When queued from HD UI or loaded from an HD preset, font/offset/stroke are
-        # in 1080×1920 pixel space and must be doubled for 2160×3840.
-        _hd_auto_scaled = False
-        if caption_font_size is not None:
-            if caption_font_size < HD_FONT_SIZE_THRESHOLD:
-                # Per-job font size looks like HD value — scale up for 4K
-                caption_font_size = caption_font_size * 2
-                _hd_auto_scaled = True
-            globals()['CAPTION_FONT_SIZE'] = caption_font_size
-        elif globals().get('CAPTION_FONT_SIZE', 56) < HD_FONT_SIZE_THRESHOLD:
-            # Font size global looks like HD default — scale up for 4K
-            globals()['CAPTION_FONT_SIZE'] = DEFAULT_4K_FONT_SIZE
-            _hd_auto_scaled = True
-        # Scale caption Y offset from HD→4K when it looks like an HD-space value.
-        # The offset must be scaled independently of font scaling because the user
-        # may set a large font (≥80) in HD mode and still have the offset in HD
-        # pixel space.  HD offsets have |value| ≤ 1920 (HD height).
-        _y_raw = caption_y_offset if caption_y_offset is not None else globals().get('CAPTION_Y_OFFSET', 0)
-        if _y_raw != 0 and abs(_y_raw) <= 1920:
-            caption_y_offset = _y_raw * 2
-        # Scale stroke width (use resolved font size from globals to avoid None)
-        _resolved_fs = globals().get('CAPTION_FONT_SIZE', DEFAULT_4K_FONT_SIZE)
-        if caption_stroke_width is not None:
-            if _hd_auto_scaled:
-                caption_stroke_width = max(1, int(_resolved_fs * STROKE_WIDTH_RATIO))
-            globals()['CAPTION_STROKE_WIDTH'] = caption_stroke_width
-        else:
-            globals()['CAPTION_STROKE_WIDTH'] = max(1, int(_resolved_fs * STROKE_WIDTH_RATIO))
         log("[RESOLUTION] Job set to 4K mode (2160x3840)")
     else:
         globals()['IS_4K_MODE'] = False
-        globals()['WIDTH'] = 1080
-        globals()['HEIGHT'] = 1920
-        if caption_font_size is not None:
-            globals()['CAPTION_FONT_SIZE'] = caption_font_size
-        if caption_stroke_width is not None:
-            globals()['CAPTION_STROKE_WIDTH'] = caption_stroke_width
         log("[RESOLUTION] Job set to HD mode (1080x1920)")
-    
-    log(f"[CAPTION] Font size: {caption_font_size if caption_font_size is not None else globals().get('CAPTION_FONT_SIZE', 56)}px, "
-        f"Y offset: {caption_y_offset if caption_y_offset is not None else globals().get('CAPTION_Y_OFFSET', 0)}px, "
-        f"Stroke: {caption_stroke_width if caption_stroke_width is not None else globals().get('CAPTION_STROKE_WIDTH', 3)}px")
     
     try:
         load_preferred_font_cached(preferred_font or CAPTION_FONT_PREFERRED, CAPTION_FONT_SIZE, log=log)
@@ -4949,10 +4402,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
 
         temp_dir = tempfile.mkdtemp(prefix="tiktok_prerender_")
         temp_fg = os.path.join(temp_dir, "fg_prerender.mp4")
-        # Check stop event before starting the lengthy foreground pre-render
-        if _queue_stop_event.is_set():
-            log("⏹ Stop requested — skipping foreground pre-render")
-            raise InterruptedError("Stopped by user before foreground pre-render")
         log(f"Attempting ffmpeg pre-render -> {os.path.basename(temp_fg)} (nvenc={use_nvenc})")
         prer_ok = pre_render_foreground_ffmpeg(video_path, temp_fg, crop_x, crop_y, crop_w, crop_h, scale_w, scale_h, FPS, use_nvenc, log)
 
@@ -4978,10 +4427,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
 
         # Handle audio based on whether we have a voice file
         if voice_path and os.path.exists(voice_path):
-            if _queue_stop_event.is_set():
-                raise InterruptedError("Stopped by user before audio processing")
-            log(f"[AUDIO] Voice gain: {VOICE_GAIN:.1f}x (applied in FFmpeg), music gain: {MUSIC_GAIN:.2f}x (applied in MoviePy)")
-            voice_clip = AudioFileClip(voice_path)  # No volumex here — gain applied in FFmpeg to prevent WAV clipping
+            voice_clip = AudioFileClip(voice_path).volumex(VOICE_GAIN)
             music_clip = AudioFileClip(music_path)
             target_duration = voice_clip.duration
             log(f"Voice duration (target): {target_duration:.2f}s")
@@ -4992,8 +4438,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             
             # Transcribe captions ONLY if AI voice replacement is NOT enabled
             # If AI voice is enabled, we'll transcribe from the TTS audio later
-            if _queue_stop_event.is_set():
-                raise InterruptedError("Stopped by user before caption transcription")
             if not use_ai_voice:
                 log("[CAPTION] Transcribing captions from original voice...")
                 caption_segments = transcribe_captions(
@@ -5050,21 +4494,21 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     tts_duration = pre_generated_voice['tts_duration']
                     
                     # Load the pre-generated TTS audio
-                    tts_clip = AudioFileClip(compressed_tts_path)  # No volumex — gain applied in FFmpeg
+                    tts_clip = AudioFileClip(compressed_tts_path).volumex(VOICE_GAIN)
                     
                     log(f"[AI VOICE] TTS voice duration: {tts_duration:.2f}s")
-                    log("[AI VOICE] Keeping TTS voice at original speed (natural sound)")
+                    log(f"[AI VOICE] Keeping TTS voice at original speed (natural sound)")
                     
                     # Adjust music to match TTS duration
-                    log("[AI VOICE] Adjusting music to match TTS duration...")
+                    log(f"[AI VOICE] Adjusting music to match TTS duration...")
                     music_matched = make_music_match_duration(music_clip, tts_duration, log)
                     
                     # Composite ONLY TTS + music
-                    log("[AI VOICE] 🎬 Compositing audio tracks (TTS + Music only)...")
+                    log(f"[AI VOICE] 🎬 Compositing audio tracks (TTS + Music only)...")
                     mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(tts_duration)
                     
                     # Adjust VIDEO speed to match TTS duration
-                    log("[AI VOICE] 🎬 Adjusting video speed to sync with TTS voice...")
+                    log(f"[AI VOICE] 🎬 Adjusting video speed to sync with TTS voice...")
                     synced_video = adjust_video_speed(fg_clip, tts_duration, log, max_change=2.0)
                     
                     log("")
@@ -5089,8 +4533,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             # Inline voice generation (normal path or fallback from failed pre-generated)
             if not tts_successfully_applied and not pre_generated_voice:
                 if caption_segments:
-                    if _queue_stop_event.is_set():
-                        raise InterruptedError("Stopped by user before TTS voice generation")
                     log("")
                     log("━"*60)
                     log("[AI VOICE] 🎵 GENERATING AI VOICE REPLACEMENT")
@@ -5126,8 +4568,6 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                             # STEP 2: Re-transcribe captions from the SILENCE-REMOVED audio
                             # This ensures captions match exactly with the final compressed audio
                             # CapCut-style: transcribe from final audio for perfect sync
-                            if _queue_stop_event.is_set():
-                                raise InterruptedError("Stopped by user before TTS re-transcription")
                             log("")
                             log("[AI VOICE] 📝 TRANSCRIBING CAPTIONS FROM SILENCE-REMOVED TTS AUDIO")
                             log("[AI VOICE] CapCut-style: Captions generated from final compressed audio...")
@@ -5155,23 +4595,23 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                                     log(f"[AI VOICE] Extended last caption from {last_caption_end:.2f}s to {tts_final_duration:.2f}s (full video duration)")
                             
                             # Load the silence-removed TTS audio
-                            tts_clip = AudioFileClip(compressed_tts_path)  # No volumex — gain applied in FFmpeg
+                            tts_clip = AudioFileClip(compressed_tts_path).volumex(VOICE_GAIN)
                             
                             # Use TTS duration as the new target - DO NOT speed up/slow down the voice
                             tts_duration = tts_clip.duration
                             log(f"[AI VOICE] TTS voice duration (after silence removal): {tts_duration:.2f}s")
-                            log("[AI VOICE] Keeping TTS voice at original speed (natural sound)")
+                            log(f"[AI VOICE] Keeping TTS voice at original speed (natural sound)")
                             
                             # Adjust music to match TTS duration
-                            log("[AI VOICE] Adjusting music to match TTS duration...")
+                            log(f"[AI VOICE] Adjusting music to match TTS duration...")
                             music_matched = make_music_match_duration(music_clip, tts_duration, log)
                             
                             # Composite ONLY TTS + music (no original voice to avoid duplicate audio)
-                            log("[AI VOICE] 🎬 Compositing audio tracks (TTS + Music only)...")
+                            log(f"[AI VOICE] 🎬 Compositing audio tracks (TTS + Music only)...")
                             mixed_audio = CompositeAudioClip([music_matched, tts_clip.set_start(0)]).set_duration(tts_duration)
                             
                             # Adjust VIDEO speed to match TTS duration (slow down or speed up video)
-                            log("[AI VOICE] 🎬 Adjusting video speed to sync with TTS voice...")
+                            log(f"[AI VOICE] 🎬 Adjusting video speed to sync with TTS voice...")
                             synced_video = adjust_video_speed(fg_clip, tts_duration, log, max_change=2.0)
                             
                             log("")
@@ -5209,10 +4649,10 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         log("[FINAL COMPOSITION] Preparing to create final video...")
         if tts_successfully_applied:
             log("[FINAL COMPOSITION] 🎤 USING AI-GENERATED TTS VOICE")
-            log("[FINAL COMPOSITION] ✓ TTS voice successfully integrated")
+            log(f"[FINAL COMPOSITION] ✓ TTS voice successfully integrated")
         else:
             log("[FINAL COMPOSITION] 🎵 Using original voice/music audio")
-            log("[FINAL COMPOSITION] (AI voice was not enabled or failed)")
+            log(f"[FINAL COMPOSITION] (AI voice was not enabled or failed)")
         log(f"[FINAL COMPOSITION] Video duration: {synced_video.duration:.2f}s")
         log(f"[FINAL COMPOSITION] Audio duration: {mixed_audio.duration:.2f}s")
         log(f"[FINAL COMPOSITION] Caption segments: {len(caption_segments)}")
@@ -5229,16 +4669,11 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         elif synced_video and hasattr(synced_video, 'duration') and synced_video.duration:
             target_duration = synced_video.duration
         
-        if _queue_stop_event.is_set():
-            raise InterruptedError("Stopped by user before final compose/export")
         ok = _compose_with_pref_font(preferred_font, synced_video, mixed_audio, caption_segments, output_path, log, blur_radius=blur_radius, bg_scale_extra=bg_scale_extra, dim_factor=dim_factor, words_per_caption=words_per_caption, effect_settings=effect_settings, pre_rendered_fg_path=temp_fg, mirror_video=mirror_video, target_duration=target_duration, original_video_path=video_path, crop_top_ratio=custom_top_ratio, crop_bottom_ratio=custom_bottom_ratio, caption_text_color=caption_text_color, caption_stroke_color=caption_stroke_color, caption_stroke_width=caption_stroke_width, caption_font_size=caption_font_size, caption_y_offset=caption_y_offset)
         if ok:
             log(f"Job finished successfully. Output: {output_path}")
         else:
             log("Job finished with errors.")
-    except InterruptedError:
-        q.put("\n⏹ QUEUE STOPPED BY USER")
-        raise
     except Exception as e:
         q.put(f"Exception: {e}")
         import traceback
@@ -5298,13 +4733,9 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     except Exception:
         pass
     
-    # Restore IS_4K_MODE, WIDTH, HEIGHT, CAPTION_FONT_SIZE, CAPTION_STROKE_WIDTH
+    # Restore IS_4K_MODE
     try:
         globals()['IS_4K_MODE'] = old_is_4k
-        globals()['WIDTH'] = old_width
-        globals()['HEIGHT'] = old_height
-        globals()['CAPTION_FONT_SIZE'] = old_caption_font_size
-        globals()['CAPTION_STROKE_WIDTH'] = old_caption_stroke_width
     except Exception:
         pass
 
@@ -5346,7 +4777,7 @@ def _prepare_voice_for_job(job, job_index, total_jobs, q):
         tts_lang_synced = TRANS_TO_TTS_LANG.get(target_language, target_language)
         tts_language = tts_lang_synced
     
-    log("")
+    log(f"")
     log(f"[VOICE PREP {job_index}/{total_jobs}] 🎤 Starting voice generation for: {os.path.basename(video_path)}")
     
     temp_voice_path = None
@@ -5483,7 +4914,7 @@ def _submit_voice_for_job(job, job_index, total_jobs, q):
         tts_lang_synced = TRANS_TO_TTS_LANG.get(target_language, target_language)
         tts_language = tts_lang_synced
 
-    log("")
+    log(f"")
     log(f"[VOICE SUBMIT {job_index}/{total_jobs}] 🎤 Preparing: {os.path.basename(video_path)}")
 
     temp_voice_path = None
@@ -5714,10 +5145,6 @@ def _run_video_job(job, job_index, total_jobs, q, pre_generated_voice=None):
     """Run a single video processing job (Phase 2 of parallel pipeline)."""
     def log(s):
         q.put(str(s))
-    # Check stop event before starting this job
-    if _queue_stop_event.is_set():
-        log(f"\n⏹ SKIPPING JOB {job_index}/{total_jobs} — stop requested")
-        return
     log(f"\n===== START JOB {job_index}/{total_jobs} =====")
     # Release Whisper model before export to free GPU memory for NVENC encoding.
     # When pre_generated_voice is provided (multi-job pipeline), no transcription is needed
@@ -5745,9 +5172,7 @@ def _run_video_job(job, job_index, total_jobs, q, pre_generated_voice=None):
                        caption_stroke_width=job.get("caption_stroke_width"),
                        caption_font_size=job.get("caption_font_size"),
                        caption_y_offset=job.get("caption_y_offset"),
-                       pre_generated_voice=pre_generated_voice,
-                       voice_gain=job.get("voice_gain"),
-                       music_gain=job.get("music_gain"))
+                       pre_generated_voice=pre_generated_voice)
     log(f"===== END JOB {job_index} =====\n")
 
 
@@ -5762,21 +5187,9 @@ def queue_worker(jobs, q):
     if not any_ai_voice or len(jobs) <= 1:
         # No AI voice jobs or single job — use simple sequential processing
         for i, job in enumerate(jobs, start=1):
-            if _queue_stop_event.is_set():
-                log(f"\n⏹ QUEUE STOPPED after {i-1}/{len(jobs)} jobs")
-                break
-            try:
-                _run_video_job(job, i, len(jobs), q)
-            except InterruptedError:
-                log(f"\n⏹ QUEUE STOPPED during job {i}/{len(jobs)}")
-                break
-            except Exception as e:
-                log(f"\n❌ Job {i}/{len(jobs)} failed: {e}")
+            _run_video_job(job, i, len(jobs), q)
         # Final cleanup: release Whisper model to free GPU memory
         _release_whisper_model(log=log)
-        if _queue_stop_event.is_set():
-            log("[QUEUE_STOPPED]")
-            return
         log("[QUEUE_DONE]")
         return
     
@@ -5794,7 +5207,7 @@ def queue_worker(jobs, q):
     log("━"*60)
     log("[QUEUE] 🚀 INTERLEAVED NON-BLOCKING VOICE PIPELINE")
     log(f"[QUEUE] {total} jobs — submitting voices & processing videos concurrently")
-    log("[QUEUE] Each voice starts completion immediately after submission")
+    log(f"[QUEUE] Each voice starts completion immediately after submission")
     log("━"*60)
     log("")
     
@@ -5858,11 +5271,6 @@ def queue_worker(jobs, q):
     processed_count = 0
     
     while processed_count < total:
-        # Check stop event
-        if _queue_stop_event.is_set():
-            log(f"\n⏹ QUEUE STOPPED after {processed_count}/{total} jobs")
-            break
-        
         # Find the first unprocessed job whose voice is ready
         ready_idx = None
         
@@ -5873,8 +5281,8 @@ def queue_worker(jobs, q):
                 break
         
         if ready_idx is None:
-            # No voice is ready yet — wait for the shared signal (with timeout to check stop)
-            any_voice_ready.wait(timeout=0.2)
+            # No voice is ready yet — wait for the shared signal
+            any_voice_ready.wait()
             any_voice_ready.clear()
             # Now scan to find which one(s) finished
             for idx in range(total):
@@ -5895,13 +5303,7 @@ def queue_worker(jobs, q):
         else:
             log(f"\n[QUEUE] 🎬 Job {ready_idx + 1} ready — starting video (no pre-gen voice)")
         
-        try:
-            _run_video_job(job, ready_idx + 1, total, q, pre_generated_voice=voice_data)
-        except InterruptedError:
-            log(f"\n⏹ QUEUE STOPPED during job {ready_idx + 1}/{total}")
-            break
-        except Exception as e:
-            log(f"\n❌ Job {ready_idx + 1}/{total} failed: {e}")
+        _run_video_job(job, ready_idx + 1, total, q, pre_generated_voice=voice_data)
         
         processed[ready_idx] = True
         processed_count += 1
@@ -5914,25 +5316,17 @@ def queue_worker(jobs, q):
     for t in threads_to_join:
         t.join(timeout=10.0)
         if t.is_alive():
-            log("[QUEUE] ⚠️ Completion thread still running after timeout")
+            log(f"[QUEUE] ⚠️ Completion thread still running after timeout")
     
     # Final cleanup: release Whisper model to free GPU memory
     _release_whisper_model(log=log)
     
-    if _queue_stop_event.is_set():
-        log("")
-        log("━"*60)
-        log("[QUEUE] ⏹ QUEUE STOPPED BY USER")
-        log("━"*60)
-        log("")
-        log("[QUEUE_STOPPED]")
-    else:
-        log("")
-        log("━"*60)
-        log("[QUEUE] ✅ ALL JOBS COMPLETE (interleaved voice pipeline)")
-        log("━"*60)
-        log("")
-        log("[QUEUE_DONE]")
+    log("")
+    log("━"*60)
+    log("[QUEUE] ✅ ALL JOBS COMPLETE (interleaved voice pipeline)")
+    log("━"*60)
+    log("")
+    log("[QUEUE_DONE]")
 
 # ----------------- GUI: responsive layout with PanedWindow -----------------
 def seconds_to_hms(sec: float) -> str:
@@ -6117,6 +5511,7 @@ class App:
         def apply_dark_theme_to(root_widget):
             try:
                 import tkinter as _tk
+                from tkinter import ttk as _ttk
             except Exception:
                 return
 
@@ -6368,15 +5763,6 @@ class App:
         language_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
         language_combo.bind('<<ComboboxSelected>>', self.on_language_selected)
         ttk.Label(left_frame, text="(for captions)").grid(row=row, column=2, sticky='w', padx=(4,0))
-        row += 1
-
-        # --- OpenAI API Key for high-quality (ChatGPT) translation ---
-        ttk.Label(left_frame, text="OpenAI Key:").grid(row=row, column=0, sticky="e")
-        _saved_openai_key = globals().get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY') or ""
-        self.openai_api_key_var = tk.StringVar(value=_saved_openai_key)
-        self.openai_api_key_entry = ttk.Entry(left_frame, textvariable=self.openai_api_key_var, show="*", width=22)
-        self.openai_api_key_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
-        ttk.Button(left_frame, text="Set", width=4, command=self._apply_openai_key).grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
         self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
@@ -6763,9 +6149,6 @@ class App:
         ttk.Button(job_btns, text="Remove Selected", style='Danger.TButton', command=self.remove_job).pack(side="left", padx=4)
         self.run_queue_btn = ttk.Button(job_btns, text="▶ Run Queue", style='Success.TButton', command=self.run_queue)
         self.run_queue_btn.pack(side="left", padx=4)
-        self.stop_queue_btn = ttk.Button(job_btns, text="⏹ Stop", style='Danger.TButton', command=self.stop_queue)
-        self.stop_queue_btn.pack(side="left", padx=4)
-        self.stop_queue_btn.config(state="disabled")
         row += 1
 
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=8)
@@ -7214,19 +6597,6 @@ class App:
                 self.music_gain_label.config(text=_gain_to_db_str(gain))
         except Exception:
             pass
-
-    def _apply_openai_key(self):
-        """Apply the OpenAI API key for ChatGPT-quality translations."""
-        try:
-            key = self.openai_api_key_var.get().strip()
-            if key:
-                globals()['OPENAI_API_KEY'] = key
-                messagebox.showinfo("OpenAI Key", "OpenAI API key set — translations will use ChatGPT quality.")
-            else:
-                globals()['OPENAI_API_KEY'] = None
-                messagebox.showinfo("OpenAI Key", "OpenAI API key cleared — using Google Translate fallback.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to set OpenAI key: {e}")
     
     def on_translation_toggle(self):
         """Callback when translation checkbox is toggled"""
@@ -7515,11 +6885,6 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
-            # Refresh the mini preview so the caption indicator updates immediately
-            try:
-                self.update_mini_preview_immediate()
-            except Exception:
-                pass
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -7529,130 +6894,108 @@ class App:
             except Exception:
                 pass
 
-    def _calc_caption_y_for_preview(self, h, offset):
-        """Calculate the caption baseline Y position on the preview canvas.
-
-        Mirrors the exact FFmpeg drawtext formula:
-            y = h - text_h + y_offset - y_correction
-        where y_correction = fontsize * 0.08.
-
-        In preview coordinates, the bottom of the text sits at:
-            preview_y = h + (offset * preview_ratio) - small_correction
-        This matches the export so the user sees the real caption position.
-        """
-        preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
-        font_size = globals().get('CAPTION_FONT_SIZE', 56)
-        # Match FFmpeg y_correction = fontsize * 0.08, scaled to preview
-        y_correction = max(2, int(font_size * 0.08 * preview_ratio))
-        caption_baseline_from_bottom = int(-offset * preview_ratio)
-        caption_y = (h - y_correction) - caption_baseline_from_bottom
-        caption_y = max(5, min(h - 2, caption_y))
-        return caption_y
-
-    def _draw_caption_text_on_pil_image(self, composed, caption_y):
-        """Draw sample caption text directly on the PIL image for accurate preview.
-
-        Renders text as part of the image itself (same engine as export),
-        so it is never clipped by tkinter canvas widget boundaries.
+    def _draw_caption_indicator_on_preview(self, composed, h, top_y, bottom_y, offset):
+        """Draw the caption position indicator and SAMPLE TEXT on the mini preview canvas.
+        
+        Args:
+            composed: The composed PIL image
+            h: Canvas height
+            top_y: Top crop line Y position
+            bottom_y: Bottom crop line Y position
+            offset: Caption Y offset value
         """
         try:
+            # DELETE old caption indicator items first to prevent stacking
+            self.mini_canvas.delete("caption_line")
+            self.mini_canvas.delete("caption_box")
+            self.mini_canvas.delete("caption_label")
+            self.mini_canvas.delete("caption_sample")
+            self.mini_canvas.delete("caption_sample_stroke")
+            
+            # Calculate where caption will appear on the preview
+            # offset: negative = move up, positive = move down
+            # In actual video: y = HEIGHT - caption_height + offset
+            # In preview: caption_y = h - (scaled distance from bottom)
+            # distance_from_bottom in video = HEIGHT - (HEIGHT - caption_height + offset) = caption_height - offset
+            # For indicator baseline (bottom of caption): distance_from_bottom = -offset (approximately, ignoring caption height)
+            preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
+            caption_baseline_from_bottom = int(-offset * preview_ratio)  # Negative offset means higher (less from bottom)
+            caption_y = h - caption_baseline_from_bottom
+            
+            # DO NOT clamp to crop lines - show actual caption position even if outside crop area
+            # Only clamp to canvas boundaries (0 to h)
+            caption_y = max(5, min(h - 5, caption_y))
+            
+            # Draw green dashed line showing caption baseline - PERMANENT
+            self.mini_canvas.create_line(0, caption_y, composed.width, caption_y, 
+                                        fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
+            
+            # Get current caption settings for the SAMPLE TEXT preview
             font_size = globals().get('CAPTION_FONT_SIZE', 56)
             text_color = globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255))
             stroke_color = globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 255))
-            stroke_width_val = globals().get('CAPTION_STROKE_WIDTH', 3)
-            words_per_caption = globals().get('WORDS_PER_GROUP', 2)
-            font_path = globals().get('LOADED_FONT_PATH', None)
-
-            h = composed.height
-            preview_ratio = h / HEIGHT if HEIGHT > 0 else 1.0
+            stroke_width = globals().get('CAPTION_STROKE_WIDTH', 3)  # Get actual stroke width
+            words_per_caption = globals().get('WORDS_PER_GROUP', 2)  # Get words per caption
+            font_family = globals().get('LOADED_FONT_FAMILY', None) or globals().get('CAPTION_FONT_PREFERRED', 'Arial')
+            
+            # Scale font size for mini preview (mini canvas is much smaller than 1920px)
+            # Mini canvas height is about 380px vs 1920px actual
             scaled_font_size = max(10, int(font_size * preview_ratio))
-            scaled_stroke = max(1, int(stroke_width_val * preview_ratio))
-
-            # Load font at preview-scaled size using the same font as export
-            pil_font = None
+            
+            # Scale stroke width for mini preview (proportional to font size scaling)
+            scaled_stroke_width = max(1, int(stroke_width * preview_ratio))
+            
+            # Convert RGB tuple to hex color
             try:
-                if font_path and os.path.isfile(str(font_path)):
-                    pil_font = ImageFont.truetype(str(font_path), scaled_font_size)
+                text_hex = '#%02x%02x%02x' % (text_color[0], text_color[1], text_color[2])
             except Exception:
-                pass
-            if pil_font is None:
-                try:
-                    pil_font = ImageFont.truetype("DejaVuSans-Bold.ttf", scaled_font_size)
-                except Exception:
-                    try:
-                        pil_font = ImageFont.truetype("DejaVuSans.ttf", scaled_font_size)
-                    except Exception:
-                        pil_font = ImageFont.load_default()
-
-            # Generate sample text
+                text_hex = '#FFFFFF'  # Default white
+            
+            try:
+                stroke_hex = '#%02x%02x%02x' % (stroke_color[0], stroke_color[1], stroke_color[2])
+            except Exception:
+                stroke_hex = '#000000'  # Default black
+            
+            # Create font tuple for tkinter canvas
+            # Use the loaded font family name, tkinter handles unknown fonts gracefully
+            canvas_font = (font_family if font_family else "Arial", scaled_font_size, "bold")
+            
+            # Generate sample text based on words per caption setting (max 3 words)
             word_list = ["WORD", "ONE", "TWO"]
             sample_words = word_list[:min(words_per_caption, len(word_list))]
             sample_text = " ".join(sample_words)
-
-            # Create transparent overlay for text compositing
-            img_rgba = composed.convert("RGBA")
-            txt_layer = Image.new("RGBA", img_rgba.size, (0, 0, 0, 0))
-            draw = ImageDraw.Draw(txt_layer)
-
-            # Get text dimensions for centering
-            bbox = draw.textbbox((0, 0), sample_text, font=pil_font)
-            text_w = bbox[2] - bbox[0]
-            text_h = bbox[3] - bbox[1]
-
-            # Center horizontally; bottom of text sits at caption_y
-            text_x = (composed.width - text_w) // 2
-            text_y = caption_y - text_h - scaled_stroke
-
-            # Prepare colors (ensure 4-tuple RGBA)
-            text_fill = (int(text_color[0]), int(text_color[1]), int(text_color[2]), 255)
-            stroke_fill = (int(stroke_color[0]), int(stroke_color[1]), int(stroke_color[2]), 255)
-
-            # Draw text with stroke using Pillow's built-in stroke support
-            try:
-                draw.text((text_x, text_y), sample_text, font=pil_font,
-                          fill=text_fill, stroke_width=scaled_stroke, stroke_fill=stroke_fill)
-            except TypeError:
-                # Fallback for older Pillow without stroke_width parameter
-                for dx in range(-scaled_stroke, scaled_stroke + 1):
-                    for dy in range(-scaled_stroke, scaled_stroke + 1):
-                        if abs(dx) + abs(dy) <= scaled_stroke * 2:
-                            draw.text((text_x + dx, text_y + dy), sample_text,
-                                      font=pil_font, fill=stroke_fill)
-                draw.text((text_x, text_y), sample_text, font=pil_font, fill=text_fill)
-
-            return Image.alpha_composite(img_rgba, txt_layer)
-
-        except Exception:
-            return composed
-
-    def _draw_caption_indicator_on_preview(self, composed, h, top_y, bottom_y, offset):
-        """Draw the caption position indicator line and info label on the canvas.
-
-        The sample text is rendered on the PIL image (via _draw_caption_text_on_pil_image)
-        before it reaches the canvas, so only the green guide line and info label are
-        drawn here as canvas overlays.
-        """
-        try:
-            self.mini_canvas.delete("caption_line")
-            self.mini_canvas.delete("caption_label")
-
-            caption_y = self._calc_caption_y_for_preview(h, offset)
-
-            # Draw green dashed line showing caption baseline
-            self.mini_canvas.create_line(0, caption_y, composed.width, caption_y,
-                                        fill="#00FF00", dash=(6, 4), width=2, tags="caption_line")
-
-            # Info label — include resolution mode so user sees the difference
-            font_size = globals().get('CAPTION_FONT_SIZE', 56)
-            words_per_caption = globals().get('WORDS_PER_GROUP', 2)
-            res_tag = "4K" if globals().get('IS_4K_MODE', False) else "HD"
-            info_text = f"{res_tag} | Y: {offset}px | Size: {font_size}px | Words: {words_per_caption}"
-            label_y = min(h - 2, caption_y + 12)
-            self.mini_canvas.create_text(composed.width // 2, label_y,
-                                        text=info_text, anchor="s",
-                                        fill="#00FF00", font=("Arial", 8),
+            
+            text_x = composed.width // 2
+            text_y = caption_y - scaled_font_size // 2
+            
+            # Draw stroke (outline) effect by drawing text at the outer boundary only
+            # This is more efficient than drawing at every pixel of the stroke width
+            stroke_offsets = [
+                (-scaled_stroke_width, -scaled_stroke_width), (-scaled_stroke_width, scaled_stroke_width),
+                (scaled_stroke_width, -scaled_stroke_width), (scaled_stroke_width, scaled_stroke_width),
+                (-scaled_stroke_width, 0), (scaled_stroke_width, 0),
+                (0, -scaled_stroke_width), (0, scaled_stroke_width)
+            ]
+            
+            for dx, dy in stroke_offsets:
+                self.mini_canvas.create_text(text_x + dx, text_y + dy, 
+                                            text=sample_text, 
+                                            fill=stroke_hex, font=canvas_font, 
+                                            tags="caption_sample_stroke")
+            
+            # Draw main caption text
+            self.mini_canvas.create_text(text_x, text_y, 
+                                        text=sample_text, 
+                                        fill=text_hex, font=canvas_font, 
+                                        tags="caption_sample")
+            
+            # Draw small info label below the sample text
+            info_text = f"Y: {offset}px | Size: {font_size}px | Words: {words_per_caption}"
+            self.mini_canvas.create_text(text_x, caption_y + 10, 
+                                        text=info_text, 
+                                        fill="#00FF00", font=("Arial", 8), 
                                         tags="caption_label")
-
+                
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -7665,21 +7008,12 @@ class App:
         """Helper to redraw the entire mini canvas with crop lines and caption indicator.
         
         This ensures the caption indicator is ALWAYS drawn on every mini preview update.
-        Caption sample text is rendered on the PIL image (not as canvas overlay)
-        so it is never clipped by the canvas widget boundaries.
         """
         try:
+            photo = ImageTk.PhotoImage(composed)
             h = composed.height
             top_y = int(round(h * top_pct))
             bottom_y = int(round(h * (1.0 - bottom_pct)))
-            y_offset = globals().get('CAPTION_Y_OFFSET', 0)
-
-            # Render caption sample text on the PIL image BEFORE creating PhotoImage.
-            # This avoids canvas clipping and matches the export rendering engine.
-            caption_y = self._calc_caption_y_for_preview(h, y_offset)
-            composed_with_text = self._draw_caption_text_on_pil_image(composed, caption_y)
-
-            photo = ImageTk.PhotoImage(composed_with_text)
             
             # Clear and redraw canvas
             self.mini_canvas.delete("all")
@@ -7840,12 +7174,6 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
-
-            # Also refresh TikTok preview so font size change is immediately visible
-            try:
-                self.on_tiktok_preview_refresh()
-            except Exception:
-                pass
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -7895,12 +7223,109 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
-
-            # Also refresh TikTok preview so words-per-caption change is visible
+        except Exception as e:
             try:
-                self.on_tiktok_preview_refresh()
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[WORDS-ERR] {e}\n")
+                self.log_widget.config(state='disabled')
             except Exception:
                 pass
+
+    def on_caption_font_size_changed(self, val):
+        """Callback when caption font size slider changes."""
+        try:
+            # val comes as string; set global and update label
+            try:
+                size = int(float(val))
+            except Exception:
+                try:
+                    size = int(val)
+                except Exception:
+                    size = 56
+            # Clamp to valid range
+            size = max(20, min(120, size))
+            globals()['CAPTION_FONT_SIZE'] = size
+            try:
+                if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
+                    self.caption_font_size_label.config(text=f"{size}px")
+            except Exception:
+                pass
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[FONT-SIZE-CHANGE] Font size changed to: {size}px\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+            
+            # Update mini preview to show new font size - FORCE REDRAW
+            try:
+                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
+                    # Redraw the mini preview with updated caption
+                    top_pct = float(self.top_percent_var.get())/100.0
+                    bottom_pct = float(self.bottom_percent_var.get())/100.0
+                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
+                    # Use centralized redraw method that includes caption indicator
+                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
+                    # Force canvas update
+                    self.mini_canvas.update_idletasks()
+                    
+            except Exception as e:
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[FONT-SIZE-UPDATE-ERR] {e}\n")
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[FONT-SIZE-ERR] {e}\n")
+                self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def on_words_per_caption_changed(self, *args):
+        """Callback when words per caption spinbox changes."""
+        try:
+            # Get the new value from spinbox
+            try:
+                words = self.words_per_caption_var.get()
+            except Exception:
+                words = 2
+            # Clamp to valid range
+            words = max(1, min(3, words))
+            
+            # Update the global WORDS_PER_GROUP
+            globals()['WORDS_PER_GROUP'] = words
+            
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[WORDS-PER-CAPTION] Changed to: {words} words\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+            
+            # Update mini preview to show new sample text - FORCE REDRAW
+            try:
+                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
+                    # Redraw the mini preview with updated caption
+                    top_pct = float(self.top_percent_var.get())/100.0
+                    bottom_pct = float(self.bottom_percent_var.get())/100.0
+                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
+                    # Use centralized redraw method that includes caption indicator
+                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
+                    # Force canvas update
+                    self.mini_canvas.update_idletasks()
+                    
+            except Exception as e:
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[WORDS-UPDATE-ERR] {e}\n")
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -8090,23 +7515,10 @@ class App:
                     self._preview_clip = VideoFileClip(path)
                     dur = self._preview_clip.duration
                 except Exception:
-                    # VideoFileClip failed (corrupt file or FFmpeg issue).
-                    # Use ffprobe to get duration without reading frames.
-                    self._preview_clip = None
-                    dur = None
-                    try:
-                        import subprocess
-                        probe_result = subprocess.run(
-                            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                             "-of", "default=noprint_wrappers=1:nokey=1", path],
-                            capture_output=True, text=True, timeout=10
-                        )
-                        if probe_result.returncode == 0 and probe_result.stdout.strip():
-                            dur = float(probe_result.stdout.strip())
-                    except Exception:
-                        pass
-                    if dur is None:
-                        dur = 1.0  # safe fallback
+                    # fallback if caching fails
+                    clip = VideoFileClip(path)
+                    dur = clip.duration
+                    clip.close()
                 try:
                     self.time_scale.to = max(0.1, dur)
                     self.time_scale.set(min(self.time_var.get(), self.time_scale.to))
@@ -8130,6 +7542,96 @@ class App:
                     except Exception:
                         pass
             self._mini_update_worker_async()
+
+    def _rgba_from_hex(self, hx):
+        try:
+            if hx.startswith('#'): hx = hx[1:]
+            if len(hx) == 6:
+                r = int(hx[0:2],16); g = int(hx[2:4],16); b = int(hx[4:6],16)
+                return (r,g,b,255)
+            if len(hx) == 8:
+                r = int(hx[0:2],16); g = int(hx[2:4],16); b = int(hx[4:6],16); a = int(hx[6:8],16)
+                return (r,g,b,a)
+        except Exception:
+            pass
+        return (255,255,255,255)
+
+    def _update_color_canvases(self):
+        try:
+            try:
+                txt = CAPTION_TEXT_COLOR
+                col = '#%02x%02x%02x' % (txt[0], txt[1], txt[2])
+                if hasattr(self, 'text_color_canvas') and self.text_color_canvas:
+                    self.text_color_canvas.delete('all')
+                    self.text_color_canvas.create_oval(2,2,26,26, fill=col, outline='white')
+            except Exception:
+                pass
+            try:
+                st = CAPTION_STROKE_COLOR
+                col2 = '#%02x%02x%02x' % (st[0], st[1], st[2])
+                if hasattr(self, 'stroke_color_canvas') and self.stroke_color_canvas:
+                    self.stroke_color_canvas.delete('all')
+                    self.stroke_color_canvas.create_oval(2,2,26,26, fill=col2, outline='white')
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def on_pick_text_color(self):
+        try:
+            from tkinter import colorchooser
+            col = colorchooser.askcolor(title='Choose caption text color')
+            if col and col[1]:
+                rgba = self._rgba_from_hex(col[1])
+                globals()['CAPTION_TEXT_COLOR'] = rgba
+                self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def on_pick_stroke_color(self):
+        try:
+            from tkinter import colorchooser
+            col = colorchooser.askcolor(title='Choose caption stroke color')
+            if col and col[1]:
+                rgba = self._rgba_from_hex(col[1])
+                if len(rgba) == 4 and rgba[3] == 255:
+                    rgba = (rgba[0], rgba[1], rgba[2], 150)
+                globals()['CAPTION_STROKE_COLOR'] = rgba
+                self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def _set_text_color_hex(self, hx):
+        try:
+            rgba = self._rgba_from_hex(hx)
+            globals()['CAPTION_TEXT_COLOR'] = rgba
+            self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
+        except Exception:
+            pass
+
+    def _set_stroke_color_hex(self, hx):
+        try:
+            rgba = self._rgba_from_hex(hx)
+            rgba = (rgba[0], rgba[1], rgba[2], 150)
+            globals()['CAPTION_STROKE_COLOR'] = rgba
+            self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
+        except Exception:
+            pass
+
 
     def safe_close_clip(self, clip):
         """Închide în siguranță un VideoFileClip/reader fără a arunca excepții."""
@@ -8301,7 +7803,7 @@ class App:
             use_custom = self.use_custom_crop_var.get()
             top_val = self.top_percent_var.get()
             bottom_val = self.bottom_percent_var.get()
-            self.log_to_console("\n[DEBUG JOB] Creating job with:")
+            self.log_to_console(f"\n[DEBUG JOB] Creating job with:")
             self.log_to_console(f"[DEBUG JOB] Selected font name: {selected_font_name}")
             self.log_to_console(f"[DEBUG JOB] Selected font path: {selected_font_path}")
             self.log_to_console(f"[DEBUG JOB] Validated font (will use): {pref_font}")
@@ -8331,9 +7833,6 @@ class App:
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
                 "silence_threshold_ms": self.silence_threshold_var.get(),
-                # Audio gain settings (per-job volume capture)
-                "voice_gain": self.voice_gain_var.get(),
-                "music_gain": self.music_gain_var.get(),
                 # Font and border settings (per-job caption styling)
                 "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
                 "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
@@ -8580,9 +8079,6 @@ class App:
                    "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                    "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
                    "silence_threshold_ms": self.silence_threshold_var.get(),
-                   # Audio gain settings (per-job volume capture)
-                   "voice_gain": self.voice_gain_var.get(),
-                   "music_gain": self.music_gain_var.get(),
                    # Font and border settings
                    "caption_text_color": globals().get('CAPTION_TEXT_COLOR', (255, 255, 255, 255)),
                    "caption_stroke_color": globals().get('CAPTION_STROKE_COLOR', (0, 0, 0, 150)),
@@ -8627,52 +8123,8 @@ class App:
                 'blur_overlay_h': job.get("blur_overlay_h", 15.0),
                 'blur_overlay_intensity': job.get("blur_overlay_intensity", 20)
             }
-            # Enable stop button and disable run buttons (same as run_queue)
-            _queue_stop_event.clear()
-            self.run_queue_btn.config(state="disabled")
-            self.run_single_btn.config(state="disabled")
-            self.stop_queue_btn.config(state="normal")
-            # Clear log
-            self.log_widget.config(state="normal")
-            self.log_widget.delete("1.0", tk.END)
-            self.log_widget.config(state="disabled")
-            # Wrapper that sends [SINGLE_DONE] when the job finishes
-            single_kwargs = {
-                "custom_top_ratio": job.get("custom_top_ratio"),
-                "custom_bottom_ratio": job.get("custom_bottom_ratio"),
-                "mirror_video": job.get("mirror_video", False),
-                "words_per_caption": job.get("words_per_caption", 2),
-                "use_4k": job.get("use_4k", False),
-                "blur_radius": job.get("blur_radius"),
-                "bg_scale_extra": job.get("bg_scale_extra"),
-                "dim_factor": job.get("dim_factor"),
-                "effect_settings": effect_settings,
-                "use_ai_voice": job.get("use_ai_voice", False),
-                "target_language": job.get("target_language", 'none'),
-                "translation_enabled": job.get("translation_enabled", False),
-                "tts_language": job.get("tts_language", 'en'),
-                "caption_text_color": job.get("caption_text_color"),
-                "caption_stroke_color": job.get("caption_stroke_color"),
-                "caption_stroke_width": job.get("caption_stroke_width"),
-                "caption_font_size": job.get("caption_font_size"),
-                "caption_y_offset": job.get("caption_y_offset"),
-                "voice_gain": job.get("voice_gain"),
-                "music_gain": job.get("music_gain"),
-            }
-            def _single_job_wrapper():
-                try:
-                    process_single_job(job["video"], job["voice"], job["music"], job["output"], q, job.get("font"), **single_kwargs)
-                except InterruptedError:
-                    pass  # Clean stop — not an error
-                except Exception as exc:
-                    q.put(f"[SINGLE JOB ERROR] {exc}\n")
-                finally:
-                    if _queue_stop_event.is_set():
-                        q.put("[QUEUE_STOPPED]")
-                    else:
-                        q.put("[SINGLE_DONE]")
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=_single_job_wrapper, daemon=True)
+            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en'), "caption_text_color": job.get("caption_text_color"), "caption_stroke_color": job.get("caption_stroke_color"), "caption_stroke_width": job.get("caption_stroke_width"), "caption_font_size": job.get("caption_font_size"), "caption_y_offset": job.get("caption_y_offset")}, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')
@@ -8691,43 +8143,113 @@ class App:
         translation_enabled = self.translation_enabled_var.get()
         tts_language = self.tts_language_var.get()
         silence_threshold_ms = self.silence_threshold_var.get()
-        voice_gain = self.voice_gain_var.get()
-        music_gain = self.music_gain_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms, voice_gain=voice_gain, music_gain=music_gain)
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
         if not self.jobs:
             messagebox.showerror("Empty queue", "Nu ai niciun job în listă")
             return
-        _queue_stop_event.clear()
         self.run_queue_btn.config(state="disabled")
         self.run_single_btn.config(state="disabled")
-        self.stop_queue_btn.config(state="normal")
         self.log_widget.config(state="normal")
         self.log_widget.delete("1.0", tk.END)
         self.log_widget.config(state="disabled")
         t = threading.Thread(target=queue_worker, args=(list(self.jobs), self.q), daemon=True)
         t.start()
 
-    def stop_queue(self):
-        _queue_stop_event.set()
-        # Kill any running FFmpeg process immediately
-        with _active_ffmpeg_lock:
-            proc = _active_ffmpeg_proc
-        if proc is not None:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        self.stop_queue_btn.config(state="disabled")
-        self.log_widget.config(state="normal")
-        self.log_widget.insert(tk.END, "\n⏹ Stop requested — killing current FFmpeg process...\n")
-        self.log_widget.config(state="disabled")
-        self.log_widget.see(tk.END)
-
     def on_mini_refresh_clicked(self):
         self._mini_update_worker_async()
+
+    def _rgba_from_hex(self, hx):
+        try:
+            if hx.startswith('#'): hx = hx[1:]
+            if len(hx) == 6:
+                r = int(hx[0:2],16); g = int(hx[2:4],16); b = int(hx[4:6],16)
+                return (r,g,b,255)
+            if len(hx) == 8:
+                r = int(hx[0:2],16); g = int(hx[2:4],16); b = int(hx[4:6],16); a = int(hx[6:8],16)
+                return (r,g,b,a)
+        except Exception:
+            pass
+        return (255,255,255,255)
+
+    def _update_color_canvases(self):
+        try:
+            try:
+                txt = CAPTION_TEXT_COLOR
+                col = '#%02x%02x%02x' % (txt[0], txt[1], txt[2])
+                if hasattr(self, 'text_color_canvas') and self.text_color_canvas:
+                    self.text_color_canvas.delete('all')
+                    self.text_color_canvas.create_oval(2,2,26,26, fill=col, outline='white')
+            except Exception:
+                pass
+            try:
+                st = CAPTION_STROKE_COLOR
+                col2 = '#%02x%02x%02x' % (st[0], st[1], st[2])
+                if hasattr(self, 'stroke_color_canvas') and self.stroke_color_canvas:
+                    self.stroke_color_canvas.delete('all')
+                    self.stroke_color_canvas.create_oval(2,2,26,26, fill=col2, outline='white')
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def on_pick_text_color(self):
+        try:
+            from tkinter import colorchooser
+            col = colorchooser.askcolor(title='Choose caption text color')
+            if col and col[1]:
+                rgba = self._rgba_from_hex(col[1])
+                globals()['CAPTION_TEXT_COLOR'] = rgba
+                self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def on_pick_stroke_color(self):
+        try:
+            from tkinter import colorchooser
+            col = colorchooser.askcolor(title='Choose caption stroke color')
+            if col and col[1]:
+                rgba = self._rgba_from_hex(col[1])
+                if len(rgba) == 4 and rgba[3] == 255:
+                    rgba = (rgba[0], rgba[1], rgba[2], 150)
+                globals()['CAPTION_STROKE_COLOR'] = rgba
+                self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def _set_text_color_hex(self, hx):
+        try:
+            rgba = self._rgba_from_hex(hx)
+            globals()['CAPTION_TEXT_COLOR'] = rgba
+            self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
+        except Exception:
+            pass
+
+    def _set_stroke_color_hex(self, hx):
+        try:
+            rgba = self._rgba_from_hex(hx)
+            rgba = (rgba[0], rgba[1], rgba[2], 150)
+            globals()['CAPTION_STROKE_COLOR'] = rgba
+            self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
+        except Exception:
+            pass
+
 
     def _get_current_effect_settings(self):
         """Get current effect settings from UI for preview."""
@@ -8793,6 +8315,7 @@ class App:
             top_pct = float(self.top_percent_var.get())/100.0
             bottom_pct = float(self.bottom_percent_var.get())/100.0
             composed = overlay_crop_on_image(img, top_pct, bottom_pct)
+            photo = ImageTk.PhotoImage(composed)
             def apply():
                 self.mini_canvas.config(width=composed.width, height=composed.height)
                 # Use centralized redraw method that ALWAYS includes caption indicator
@@ -8963,6 +8486,117 @@ class App:
             except Exception:
                 pass
 
+    def _rgba_from_hex(self, hx):
+        try:
+            if hx.startswith('#'): hx = hx[1:]
+            if len(hx) == 6:
+                r = int(hx[0:2],16); g = int(hx[2:4],16); b = int(hx[4:6],16)
+                return (r,g,b,255)
+            if len(hx) == 8:
+                r = int(hx[0:2],16); g = int(hx[2:4],16); b = int(hx[4:6],16); a = int(hx[6:8],16)
+                return (r,g,b,a)
+        except Exception:
+            pass
+        return (255,255,255,255)
+
+    def _update_color_canvases(self):
+        try:
+            try:
+                txt = CAPTION_TEXT_COLOR
+                col = '#%02x%02x%02x' % (txt[0], txt[1], txt[2])
+                if hasattr(self, 'text_color_canvas') and self.text_color_canvas:
+                    self.text_color_canvas.delete('all')
+                    self.text_color_canvas.create_oval(2,2,26,26, fill=col, outline='white')
+            except Exception:
+                pass
+            try:
+                st = CAPTION_STROKE_COLOR
+                col2 = '#%02x%02x%02x' % (st[0], st[1], st[2])
+                if hasattr(self, 'stroke_color_canvas') and self.stroke_color_canvas:
+                    self.stroke_color_canvas.delete('all')
+                    self.stroke_color_canvas.create_oval(2,2,26,26, fill=col2, outline='white')
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def on_pick_text_color(self):
+        try:
+            from tkinter import colorchooser
+            col = colorchooser.askcolor(title='Choose caption text color')
+            if col and col[1]:
+                rgba = self._rgba_from_hex(col[1])
+                globals()['CAPTION_TEXT_COLOR'] = rgba
+                self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def on_pick_stroke_color(self):
+        try:
+            from tkinter import colorchooser
+            col = colorchooser.askcolor(title='Choose caption stroke color')
+            if col and col[1]:
+                rgba = self._rgba_from_hex(col[1])
+                if len(rgba) == 4 and rgba[3] == 255:
+                    rgba = (rgba[0], rgba[1], rgba[2], 150)
+                globals()['CAPTION_STROKE_COLOR'] = rgba
+                self._update_color_canvases()
+                # Trigger live preview update
+                self._mini_update_worker_async()
+        except Exception as e:
+            try:
+                self.log_widget.config(state='normal'); self.log_widget.insert('end', f"[COLOR-ERR] {e}\n"); self.log_widget.config(state='disabled')
+            except Exception:
+                pass
+
+    def _set_text_color_hex(self, hx):
+        try:
+            rgba = self._rgba_from_hex(hx)
+            globals()['CAPTION_TEXT_COLOR'] = rgba
+            self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
+        except Exception:
+            pass
+
+    def _set_stroke_color_hex(self, hx):
+        try:
+            rgba = self._rgba_from_hex(hx)
+            rgba = (rgba[0], rgba[1], rgba[2], 150)
+            globals()['CAPTION_STROKE_COLOR'] = rgba
+            self._update_color_canvases()
+            # Trigger live preview update
+            self._mini_update_worker_async()
+        except Exception:
+            pass
+
+            return
+        top_pct = float(self.top_percent_var.get())/100.0
+        bottom_pct = float(self.bottom_percent_var.get())/100.0
+        if top_pct + bottom_pct > 0.95:
+            bottom_pct = max(0.0, 0.95 - top_pct)
+            self.bottom_percent_var.set(bottom_pct*100)
+        composed = overlay_crop_on_image(self.mini_base_img.copy(), top_pct, bottom_pct)
+        photo = ImageTk.PhotoImage(composed)
+        self.mini_canvas.config(width=composed.width, height=composed.height)
+        self.mini_canvas.delete("all")
+        self.mini_canvas.create_image(0, 0, anchor="nw", image=photo, tags="base_img")
+        self.mini_image_ref = photo
+        h = composed.height
+        top_y = int(round(h * top_pct))
+        bottom_y = int(round(h * (1.0 - bottom_pct)))
+        self.mini_canvas.create_rectangle(0, top_y-4, composed.width, top_y+4, fill="#000000", stipple="gray50", tags="line_top")
+        self.mini_canvas.create_rectangle(0, bottom_y-4, composed.width, bottom_y+4, fill="#000000", stipple="gray50", tags="line_bottom")
+        self.mini_canvas.create_text(6, max(6, top_y-18), anchor="nw", text=f"Top {int(top_pct*100)}% ({top_y}px)", fill="#fff", font=("Arial",9), tags="label_top")
+        self.mini_canvas.create_text(6, min(h-18, bottom_y+6), anchor="nw", text=f"Bottom {int(bottom_pct*100)}% ({h - bottom_y}px)", fill="#fff", font=("Arial",9), tags="label_bottom")
+        self.top_label.config(text=f"{self.top_percent_var.get():.1f}%")
+        self.bottom_label.config(text=f"{self.bottom_percent_var.get():.1f}%")
+
     def on_time_changed(self, _=None):
         # update the time label immediately
         t = float(self.time_var.get())
@@ -9004,33 +8638,14 @@ class App:
             
             # Load video clip at current time
             from moviepy.editor import VideoFileClip
-            video_clip = None
-            try:
-                video_clip = VideoFileClip(video_path)
-                
-                # Get frame at current time
-                if current_time > video_clip.duration:
-                    current_time = 0.0
-                
-                frame = video_clip.get_frame(current_time)
-            except (OSError, Exception) as ve:
-                # Video file may be corrupt, locked, or FFmpeg cannot decode it
-                print(f"[TIKTOK-PREVIEW] Cannot read video: {ve}")
-                try:
-                    self.log_widget.config(state='normal')
-                    self.log_widget.insert('end', f"[PREVIEW] Cannot read video file: {os.path.basename(video_path)}\n")
-                    self.log_widget.insert('end', "[PREVIEW] Ensure the file is a valid video and FFmpeg is up to date.\n")
-                    self.log_widget.see('end')
-                    self.log_widget.config(state='disabled')
-                except Exception:
-                    pass
-                return
-            finally:
-                if video_clip is not None:
-                    try:
-                        video_clip.close()
-                    except Exception:
-                        pass
+            video_clip = VideoFileClip(video_path)
+            
+            # Get frame at current time
+            if current_time > video_clip.duration:
+                current_time = 0.0
+            
+            frame = video_clip.get_frame(current_time)
+            video_clip.close()
             
             # Get crop settings
             crop_top_ratio = float(self.top_percent_var.get()) / 100.0
@@ -9048,10 +8663,6 @@ class App:
             
             # Apply zoom scaling — MUST match export scaling (processing_job)
             zoom = float(self.zoom_var.get())
-            if crop_w <= 0:
-                crop_w = 1
-            if crop_h <= 0:
-                crop_h = 1
             width_scale = WIDTH / crop_w
             base_scale_factor = 1.03
             
@@ -9071,6 +8682,7 @@ class App:
             scaled_w = max(2, int(crop_w * fg_scale))
             
             from PIL import Image, ImageFilter, ImageEnhance
+            import numpy as np
             
             pil_img = Image.fromarray(cropped_frame)
             pil_img = pil_img.resize((scaled_w, scaled_h), Image.Resampling.LANCZOS)
@@ -9127,18 +8739,16 @@ class App:
                 if not isinstance(cap_img, Image.Image):
                     cap_img = Image.fromarray(cap_img)
                 cap_img = cap_img.convert('RGBA')
-                # Position: FFmpeg uses y = h - th + y_offset for text top.
-                # PIL caption image includes extra padding that FFmpeg's th doesn't.
-                # We compensate with bottom_pad so the visible text aligns with
-                # the FFmpeg position, then clamp so no part is clipped by paste().
+                # Position: FFmpeg uses y = h - th + y_offset for text top
+                # PIL image includes padding above and below text that FFmpeg's th doesn't.
+                # Below the text: padding_y(24) + 2*extra_bottom_margin + 4px of padding.
+                # We shift the image down by this amount so the visible text aligns with FFmpeg.
                 font_size = globals().get('CAPTION_FONT_SIZE', 56)
                 extra_bottom_margin = int(font_size * 0.35)
                 bottom_pad = 24 + 2 * extra_bottom_margin + 4  # padding below text in PIL image
                 cap_x = (WIDTH - cap_img.width) // 2
                 cap_y = HEIGHT - cap_img.height + y_off + bottom_pad
-                # Clamp so the ENTIRE caption image stays within the canvas.
-                # Without this, paste() silently clips the bottom of the text.
-                cap_y = max(0, min(cap_y, HEIGHT - cap_img.height))
+                cap_y = max(0, cap_y)
                 canvas_rgba = canvas.convert('RGBA')
                 canvas_rgba.paste(cap_img, (cap_x, cap_y), cap_img)
                 canvas = canvas_rgba.convert('RGB')
@@ -9385,7 +8995,7 @@ class App:
             # Apply audio settings
             self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
             self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
-            # Sync globals — var.set() doesn't trigger Scale command callbacks
+            # var.set() doesn't trigger Scale callbacks, so sync globals + dB labels manually
             self.on_voice_gain_changed(str(self.voice_gain_var.get()))
             self.on_music_gain_changed(str(self.music_gain_var.get()))
             
@@ -9491,7 +9101,7 @@ class App:
             # Apply audio settings
             self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
             self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
-            # Sync globals — var.set() doesn't trigger Scale command callbacks
+            # var.set() doesn't trigger Scale callbacks, so sync globals + dB labels manually
             self.on_voice_gain_changed(str(self.voice_gain_var.get()))
             self.on_music_gain_changed(str(self.music_gain_var.get()))
             
@@ -9585,9 +9195,9 @@ class App:
             # Reset audio settings
             self.voice_gain_var.set(VOICE_GAIN)
             self.music_gain_var.set(MUSIC_GAIN)
-            # Sync globals — var.set() doesn't trigger Scale command callbacks
-            self.on_voice_gain_changed(str(VOICE_GAIN))
-            self.on_music_gain_changed(str(MUSIC_GAIN))
+            # var.set() doesn't trigger Scale callbacks, so sync globals + dB labels manually
+            self.on_voice_gain_changed(str(self.voice_gain_var.get()))
+            self.on_music_gain_changed(str(self.music_gain_var.get()))
             
             # Reset translation/TTS settings
             self.translation_enabled_var.set(TRANSLATION_ENABLED)
@@ -9664,18 +9274,8 @@ class App:
                 if msg == "[QUEUE_DONE]":
                     self.run_queue_btn.config(state="normal")
                     self.run_single_btn.config(state="normal")
-                    self.stop_queue_btn.config(state="disabled")
                     self.log_widget.config(state="normal")
                     self.log_widget.insert(tk.END, "\n✔ ALL JOBS FINISHED\n")
-                    self.log_widget.config(state="disabled")
-                    self.log_widget.see(tk.END)
-                    continue
-                if msg == "[QUEUE_STOPPED]":
-                    self.run_queue_btn.config(state="normal")
-                    self.run_single_btn.config(state="normal")
-                    self.stop_queue_btn.config(state="disabled")
-                    self.log_widget.config(state="normal")
-                    self.log_widget.insert(tk.END, "\n⏹ QUEUE STOPPED BY USER\n")
                     self.log_widget.config(state="disabled")
                     self.log_widget.see(tk.END)
                     continue

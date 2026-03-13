@@ -46,7 +46,7 @@ def test_pass1_hwaccel_gated_on_gpu_filters():
         if isinstance(node, ast.FunctionDef) and node.name == "_export_with_ffmpeg_filters":
             src = ast.get_source_segment(source, node)
             # Must check gpu_filters before adding hwaccel
-            assert "gpu_filters and not bg_needs_stream_loop" in src, (
+            assert "gpu_filters and not needs_stream_loop" in src, (
                 "Pass 1 -hwaccel cuda must be gated on gpu_filters"
             )
             print("✓ Pass 1 gates -hwaccel cuda on gpu_filters")
@@ -97,13 +97,13 @@ def test_pytorch_cu130_in_requirements():
     print("✓ requirements.txt includes cu130 nightly URL")
 
 
-def test_nvenc_preset_is_p4_quality():
-    """NVENC preset must be p4 (CapCut-like quality/speed balance)."""
+def test_nvenc_preset_is_p1_fastest():
+    """NVENC preset must be p1 (fastest) for maximum export speed."""
     source = _load_source()
-    assert 'NVENC_PRESET_SPEED = "p4"' in source, (
-        "NVENC_PRESET_SPEED must be p4 (CapCut-like quality/speed balance)"
+    assert 'NVENC_PRESET_SPEED = "p1"' in source, (
+        "NVENC_PRESET_SPEED must be p1 (fastest preset)"
     )
-    print("✓ NVENC preset is p4 (CapCut-like quality)")
+    print("✓ NVENC preset is p1 (fastest)")
 
 
 def test_get_export_settings_exists():
