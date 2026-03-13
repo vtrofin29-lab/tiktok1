@@ -1314,6 +1314,19 @@ def map_timestamps_after_silence_removal(segments, silence_map, log=None):
     
     return mapped_segments
 
+def _get_genaipro_api_key():
+    """Return GenAI Pro API key from tts_config.json, or None if unavailable."""
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                key = config.get("api_key", "").strip()
+                return key if key else None
+    except Exception:
+        pass
+    return None
+
 def generate_tts_audio(text, language='en', output_path=None, log=None):
     """
     Generate Text-to-Speech audio from text.
@@ -1335,15 +1348,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
         Path to generated audio file or None if failed
     """
     # --- Strategy 1: GenAI Pro (separate API key from tts_config.json) ---
-    api_key = None
-    try:
-        config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                api_key = config.get("api_key", "").strip()
-    except Exception:
-        pass
+    api_key = _get_genaipro_api_key()
     
     if api_key:
         if log:
@@ -1403,16 +1408,7 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
         Path to generated audio file or None if failed
     """
     # Check if any TTS engine is available (GenAI Pro via tts_config.json, or gTTS)
-    has_genaipro = False
-    try:
-        _cfg_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
-        if os.path.exists(_cfg_path):
-            with open(_cfg_path, 'r') as _f:
-                _cfg = json.load(_f)
-                has_genaipro = bool(_cfg.get("api_key", "").strip())
-    except Exception:
-        pass
-    if not TTS_AVAILABLE and not has_genaipro:
+    if not TTS_AVAILABLE and not _get_genaipro_api_key():
         if log:
             log("[TTS] No TTS engine available (no gTTS, no GenAI Pro) - cannot replace voice")
         return None
