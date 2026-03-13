@@ -123,3 +123,68 @@ def test_loaded_key_applied_to_global():
         r"globals\(\)\['OPENAI_API_KEY'\]\s*=\s*saved_openai_key",
         source
     ), "Loading from openai_config.json should set OPENAI_API_KEY global"
+
+
+# ─── Verify Button ───────────────────────────────────────────────────
+
+def test_verify_button_exists():
+    """GUI should have a Verify button for testing the OpenAI key."""
+    source = _read_source()
+    assert re.search(r'text="Verify".*command=self\._verify_openai_key', source), \
+        "Verify button should call _verify_openai_key"
+
+def test_verify_openai_key_method_defined():
+    """_verify_openai_key method should be defined."""
+    source = _read_source()
+    assert re.search(r'def _verify_openai_key\(self\)', source), \
+        "_verify_openai_key method should be defined"
+
+def test_verify_uses_gpt4o_mini():
+    """Verify should test with gpt-4o-mini model."""
+    source = _read_source()
+    # Find the verify method
+    idx = source.find('def _verify_openai_key')
+    assert idx != -1
+    method_body = source[idx:idx+2000]
+    assert 'gpt-4o-mini' in method_body, \
+        "Verify should use gpt-4o-mini model"
+
+def test_verify_checks_401_status():
+    """Verify should handle 401 (invalid key) response."""
+    source = _read_source()
+    idx = source.find('def _verify_openai_key')
+    assert idx != -1
+    method_body = source[idx:idx+3000]
+    assert '401' in method_body, \
+        "Verify should check for 401 unauthorized status"
+
+def test_verify_shows_platform_url():
+    """Verify success should mention platform.openai.com/usage."""
+    source = _read_source()
+    idx = source.find('def _verify_openai_key')
+    assert idx != -1
+    method_body = source[idx:idx+3000]
+    assert 'platform.openai.com/usage' in method_body, \
+        "Verify should show platform.openai.com/usage link"
+
+
+# ─── API ≠ ChatGPT Logging ──────────────────────────────────────────
+
+def test_startup_log_mentions_platform():
+    """Startup config load should log platform.openai.com/usage URL."""
+    source = _read_source()
+    # Look near the config loading section
+    assert 'platform.openai.com/usage' in source, \
+        "Should mention platform.openai.com/usage in logging"
+
+def test_startup_log_clarifies_not_chatgpt():
+    """Startup should clarify that API calls don't appear on chat.openai.com."""
+    source = _read_source()
+    assert 'chat.openai.com' in source, \
+        "Should clarify API calls don't show on chat.openai.com"
+
+def test_translate_logs_which_engine():
+    """translate_segments should log whether OpenAI or googletrans is used."""
+    source = _read_source()
+    assert 'No OpenAI API key set' in source, \
+        "Should log when no API key is set (falling back to googletrans)"

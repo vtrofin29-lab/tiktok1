@@ -377,6 +377,9 @@ def translate_segments(segments, target_language='en', log=None):
     # --- Strategy 1: OpenAI contextual translation (best quality) ---
     api_key = globals().get('OPENAI_API_KEY')
     if api_key and REQUESTS_AVAILABLE:
+        if log:
+            log(f"[TRANSLATE] Using OpenAI GPT-4o-mini (API key: ...{api_key[-4:]})")
+            log(f"[TRANSLATE] Check API usage at: https://platform.openai.com/usage")
         openai_results = _openai_translate_segments(segments, target_language, log=log)
         if openai_results:
             translated = []
@@ -386,10 +389,12 @@ def translate_segments(segments, target_language='en', log=None):
                 new_seg["text"] = openai_results[i]
                 translated.append(new_seg)
             if log:
-                log("[TRANSLATE] OpenAI translation complete!")
+                log("[TRANSLATE] ✓ OpenAI GPT-4o-mini translation complete!")
             return translated
         if log:
             log("[TRANSLATE] OpenAI failed, falling back to googletrans...")
+    elif not api_key and log:
+        log("[TRANSLATE] No OpenAI API key set - using googletrans (free, lower quality)")
     
     if not TRANSLATION_AVAILABLE:
         if log:
@@ -6120,6 +6125,9 @@ class App:
                     saved_openai_key = openai_cfg.get("openai_api_key", "")
                     if saved_openai_key:
                         globals()['OPENAI_API_KEY'] = saved_openai_key
+                        print("[OpenAI] API key loaded from openai_config.json")
+                        print("[OpenAI] NOTE: API calls do NOT appear on chat.openai.com")
+                        print("[OpenAI] Check your API usage at: https://platform.openai.com/usage")
         except Exception:
             pass
         self.openai_key_var = tk.StringVar(value=saved_openai_key)
@@ -6127,6 +6135,7 @@ class App:
         self.openai_key_entry.pack(side="left", fill="x", expand=True)
         ttk.Button(openai_frame, text="Set", style='Bordered.TButton', command=self._apply_openai_key, width=4).pack(side="left", padx=(4,0))
         ttk.Button(openai_frame, text="Save", style='Bordered.TButton', command=self._save_openai_key, width=5).pack(side="left", padx=(4,0))
+        ttk.Button(openai_frame, text="Verify", style='Bordered.TButton', command=self._verify_openai_key, width=6).pack(side="left", padx=(4,0))
         row += 1
 
         # Custom translation prompt (uses {language} placeholder for selected target language)
@@ -7000,6 +7009,8 @@ class App:
                 globals()['OPENAI_API_KEY'] = key
                 if hasattr(self, 'log'):
                     self.log("[OpenAI] API key set - contextual translations enabled")
+                    self.log("[OpenAI] Use 'Verify' button to test your key")
+                    self.log("[OpenAI] API usage visible at: https://platform.openai.com/usage")
             else:
                 globals()['OPENAI_API_KEY'] = None
                 if hasattr(self, 'log'):
@@ -7034,6 +7045,69 @@ class App:
                 messagebox.showerror("Save Error", f"Failed to save OpenAI API key: {e}")
         except Exception as e:
             print(f"Save OpenAI key error: {e}")
+
+    def _verify_openai_key(self):
+        """Verify the OpenAI API key works by making a small test API call."""
+        try:
+            key = self.openai_key_var.get().strip()
+            if not key:
+                messagebox.showwarning("No API Key", "Please enter an OpenAI API key first.")
+                return
+            if not REQUESTS_AVAILABLE:
+                messagebox.showerror("Missing Library", "The 'requests' library is required. Install with: pip install requests")
+                return
+            import requests as _requests
+            if hasattr(self, 'log'):
+                self.log("[OpenAI] Verifying API key...")
+            response = _requests.post(
+                'https://api.openai.com/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {key}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': 'gpt-4o-mini',
+                    'temperature': 0,
+                    'max_tokens': 10,
+                    'messages': [
+                        {'role': 'user', 'content': 'Say OK'}
+                    ]
+                },
+                timeout=15
+            )
+            if response.status_code == 200:
+                globals()['OPENAI_API_KEY'] = key
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] ✓ API key is VALID - translations will use GPT-4o-mini")
+                    self.log("[OpenAI] NOTE: API usage is visible at https://platform.openai.com/usage")
+                    self.log("[OpenAI] API calls do NOT appear on chat.openai.com (that is a different product)")
+                messagebox.showinfo("API Key Valid",
+                    "✓ Your OpenAI API key is working!\n\n"
+                    "Translations will use GPT-4o-mini.\n\n"
+                    "IMPORTANT: API calls do NOT appear on chat.openai.com.\n"
+                    "Check your API usage at:\nhttps://platform.openai.com/usage")
+            elif response.status_code == 401:
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] ✗ API key is INVALID or expired")
+                messagebox.showerror("Invalid API Key",
+                    "✗ Your OpenAI API key is invalid or expired.\n\n"
+                    "Please check your key at:\nhttps://platform.openai.com/api-keys")
+            elif response.status_code == 429:
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] ✗ Rate limit or quota exceeded")
+                messagebox.showwarning("Rate Limit",
+                    "Your API key is valid but rate-limited or out of quota.\n\n"
+                    "Check your billing at:\nhttps://platform.openai.com/usage")
+            else:
+                if hasattr(self, 'log'):
+                    self.log(f"[OpenAI] ✗ API returned status {response.status_code}: {response.text[:200]}")
+                messagebox.showerror("API Error",
+                    f"API returned status {response.status_code}.\n\n{response.text[:200]}")
+        except Exception as e:
+            if hasattr(self, 'log'):
+                self.log(f"[OpenAI] ✗ Verification failed: {e}")
+            messagebox.showerror("Connection Error",
+                f"Could not connect to OpenAI API:\n{e}")
 
     def _apply_translation_prompt(self):
         """Apply the custom translation prompt from the GUI entry field."""
