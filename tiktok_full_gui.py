@@ -6820,7 +6820,7 @@ class App:
             if key:
                 globals()['OPENAI_API_KEY'] = key
                 if hasattr(self, 'log'):
-                    self.log(f"[OpenAI] API key set ({len(key)} chars) - contextual translations enabled")
+                    self.log("[OpenAI] API key set - contextual translations enabled")
             else:
                 globals()['OPENAI_API_KEY'] = None
                 if hasattr(self, 'log'):
