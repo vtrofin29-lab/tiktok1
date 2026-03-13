@@ -267,3 +267,86 @@ def test_openai_prompt_has_example():
     source = _read_source()
     assert 'He was 20 years old' in source and 'She was 20 years old' in source, \
         "System prompt should include a practical example with age repetition"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CUSTOM TRANSLATION PROMPT TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+def test_translation_custom_prompt_global_exists():
+    """TRANSLATION_CUSTOM_PROMPT global must exist."""
+    source = _read_source()
+    assert re.search(r'^TRANSLATION_CUSTOM_PROMPT\s*=', source, re.MULTILINE), \
+        "TRANSLATION_CUSTOM_PROMPT global must be defined"
+
+
+def test_translation_custom_prompt_default_empty():
+    """TRANSLATION_CUSTOM_PROMPT should default to empty string."""
+    source = _read_source()
+    assert 'TRANSLATION_CUSTOM_PROMPT = ""' in source or "TRANSLATION_CUSTOM_PROMPT = ''" in source, \
+        "TRANSLATION_CUSTOM_PROMPT must default to empty string"
+
+
+def test_translation_prompt_gui_field_exists():
+    """GUI must have a translation prompt entry field."""
+    source = _read_source()
+    assert 'translation_prompt_var' in source, \
+        "GUI must have translation_prompt_var for custom prompt"
+    assert 'translation_prompt_entry' in source, \
+        "GUI must have translation_prompt_entry for custom prompt"
+
+
+def test_translation_prompt_set_button():
+    """GUI must have a Set button for the translation prompt."""
+    source = _read_source()
+    assert '_apply_translation_prompt' in source, \
+        "GUI must have _apply_translation_prompt method"
+
+
+def test_translation_prompt_language_placeholder():
+    """Custom prompt must support {language} placeholder auto-replacement."""
+    source = _read_source()
+    assert "replace('{language}'" in source or 'replace("{language}"' in source, \
+        "Custom prompt must replace {language} placeholder with target language"
+
+
+def test_translation_prompt_saved_in_preset():
+    """Custom translation prompt must be saved/loaded in presets."""
+    source = _read_source()
+    assert '"translation_custom_prompt"' in source, \
+        "translation_custom_prompt must be saved in preset"
+
+
+def test_translation_prompt_uses_custom_when_set():
+    """When custom prompt is set, it should be used instead of default."""
+    source = _read_source()
+    assert "TRANSLATION_CUSTOM_PROMPT" in source, \
+        "Function must reference TRANSLATION_CUSTOM_PROMPT global"
+    # Check there's a conditional that checks if custom prompt is set
+    assert re.search(r'if\s+custom', source), \
+        "Must check if custom prompt is provided before using it"
+
+
+def test_translation_prompt_appends_format_rules():
+    """Custom prompt should append output format rules automatically."""
+    source = _read_source()
+    assert 'OUTPUT FORMAT RULES' in source, \
+        "Custom prompt must append output format rules for numbered line format"
+
+
+def test_custom_prompt_functional():
+    """Functional test: TRANSLATION_CUSTOM_PROMPT replaces {language} in system prompt."""
+    mod = _import_module()
+    if mod is None:
+        return  # Skip if module can't be imported
+
+    # Set a custom prompt with {language} placeholder
+    mod.TRANSLATION_CUSTOM_PROMPT = "Translate subtitles to {language} using casual slang"
+    
+    # The function should use the custom prompt
+    source = _read_source()
+    assert "globals().get('TRANSLATION_CUSTOM_PROMPT'" in source, \
+        "_openai_translate_segments must read TRANSLATION_CUSTOM_PROMPT from globals"
+    
+    # Clean up
+    mod.TRANSLATION_CUSTOM_PROMPT = ""

@@ -253,19 +253,32 @@ def _openai_translate_segments(segments, target_language='en', log=None):
     }
     lang_name = lang_names.get(target_language, target_language)
     
-    system_prompt = (
-        f"You are a professional subtitle translator. Translate the following numbered lines to {lang_name}.\n"
-        f"IMPORTANT RULES:\n"
-        f"1. Return ONLY the numbered translations, one per line, in the same format: '1. translated text'\n"
-        f"2. Use natural, flowing language - AVOID repetition. If two consecutive lines say similar things, "
-        f"use pronouns, 'the same', 'likewise', 'too', etc. instead of repeating words.\n"
-        f"   Example: Instead of 'He was 20 years old' then 'She was 20 years old', "
-        f"translate as 'He was 20 years old' then 'She was too' or 'And so was she'.\n"
-        f"3. Keep translations concise - these are video subtitles with limited screen time.\n"
-        f"4. Preserve the meaning and emotional tone of the original.\n"
-        f"5. Keep the same number of lines as the input.\n"
-        f"6. Do NOT add any extra text, explanations, or notes."
-    )
+    # Use custom prompt if set, otherwise use default
+    custom = globals().get('TRANSLATION_CUSTOM_PROMPT', '').strip()
+    if custom:
+        # Replace {language} placeholder with actual target language name
+        system_prompt = custom.replace('{language}', lang_name)
+        # Always append output format rules so OpenAI returns numbered lines
+        system_prompt += (
+            f"\n\nOUTPUT FORMAT RULES:\n"
+            f"1. Return ONLY the numbered translations, one per line, in the same format: '1. translated text'\n"
+            f"2. Keep the same number of lines as the input.\n"
+            f"3. Do NOT add any extra text, explanations, or notes."
+        )
+    else:
+        system_prompt = (
+            f"You are a professional subtitle translator. Translate the following numbered lines to {lang_name}.\n"
+            f"IMPORTANT RULES:\n"
+            f"1. Return ONLY the numbered translations, one per line, in the same format: '1. translated text'\n"
+            f"2. Use natural, flowing language - AVOID repetition. If two consecutive lines say similar things, "
+            f"use pronouns, 'the same', 'likewise', 'too', etc. instead of repeating words.\n"
+            f"   Example: Instead of 'He was 20 years old' then 'She was 20 years old', "
+            f"translate as 'He was 20 years old' then 'She was too' or 'And so was she'.\n"
+            f"3. Keep translations concise - these are video subtitles with limited screen time.\n"
+            f"4. Preserve the meaning and emotional tone of the original.\n"
+            f"5. Keep the same number of lines as the input.\n"
+            f"6. Do NOT add any extra text, explanations, or notes."
+        )
     
     if log:
         log(f"[OpenAI TRANSLATE] Sending {len(segments)} segments to GPT-4o-mini for {lang_name} translation...")
@@ -1447,6 +1460,7 @@ TRANS_TO_TTS_LANG = {'zh-cn': 'zh', 'zh-tw': 'zh'}
 TTS_ENGINE = 'gtts'  # Options: 'gtts' (free, basic), 'elevenlabs', 'openai', 'azure'
 ELEVENLABS_API_KEY = None
 OPENAI_API_KEY = None
+TRANSLATION_CUSTOM_PROMPT = ""  # User-defined prompt for OpenAI translation; {language} is auto-replaced
 STOP_REQUESTED = False
 AZURE_SPEECH_KEY = None
 AZURE_SPEECH_REGION = None
@@ -6102,6 +6116,20 @@ class App:
         ttk.Button(openai_frame, text="Set", style='Bordered.TButton', command=self._apply_openai_key, width=4).pack(side="left", padx=(4,0))
         row += 1
 
+        # Custom translation prompt (uses {language} placeholder for selected target language)
+        ttk.Label(left_frame, text="Prompt:").grid(row=row, column=0, sticky="ne")
+        prompt_frame = ttk.Frame(left_frame)
+        prompt_frame.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        self.translation_prompt_var = tk.StringVar(value=TRANSLATION_CUSTOM_PROMPT)
+        self.translation_prompt_entry = ttk.Entry(prompt_frame, textvariable=self.translation_prompt_var, width=30)
+        self.translation_prompt_entry.pack(side="left", fill="x", expand=True)
+        ttk.Button(prompt_frame, text="Set", style='Bordered.TButton', command=self._apply_translation_prompt, width=4).pack(side="left", padx=(4,0))
+        row += 1
+        ttk.Label(left_frame, text="").grid(row=row-1, column=0, sticky="w")
+        prompt_hint = ttk.Label(left_frame, text="  Use {language} for auto target lang", font=('Segoe UI', 7))
+        prompt_hint.grid(row=row, column=1, columnspan=2, sticky='w', padx=(6,0))
+        row += 1
+
         self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
         ttk.Checkbutton(left_frame, text="Replace voice with AI (TTS)", variable=self.use_ai_voice_var,
                        command=self.on_ai_voice_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
@@ -6966,6 +6994,19 @@ class App:
                     self.log("[OpenAI] API key cleared - using googletrans")
         except Exception as e:
             print(f"OpenAI key apply error: {e}")
+
+    def _apply_translation_prompt(self):
+        """Apply the custom translation prompt from the GUI entry field."""
+        try:
+            prompt = self.translation_prompt_var.get().strip()
+            globals()['TRANSLATION_CUSTOM_PROMPT'] = prompt
+            if hasattr(self, 'log'):
+                if prompt:
+                    self.log(f"[Translation] Custom prompt set: {prompt[:60]}...")
+                else:
+                    self.log("[Translation] Custom prompt cleared - using default")
+        except Exception as e:
+            print(f"Translation prompt apply error: {e}")
     
     def on_language_selected(self, event=None):
         """Callback when target language is selected. Auto-syncs TTS language when TTS is enabled."""
@@ -9268,6 +9309,7 @@ class App:
                 # Translation/TTS settings
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get(),
+                "translation_custom_prompt": self.translation_prompt_var.get() if hasattr(self, 'translation_prompt_var') else "",
                 "use_ai_voice": self.use_ai_voice_var.get(),
                 "tts_language": self.tts_language_var.get(),
                 "tts_voice": self.tts_voice_var.get(),
@@ -9368,6 +9410,10 @@ class App:
             # Apply translation/TTS settings
             self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
             self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            if hasattr(self, 'translation_prompt_var'):
+                saved_prompt = preset_data.get("translation_custom_prompt", "")
+                self.translation_prompt_var.set(saved_prompt)
+                globals()['TRANSLATION_CUSTOM_PROMPT'] = saved_prompt
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
@@ -9474,6 +9520,10 @@ class App:
             # Apply translation/TTS settings
             self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
             self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            if hasattr(self, 'translation_prompt_var'):
+                saved_prompt = preset_data.get("translation_custom_prompt", "")
+                self.translation_prompt_var.set(saved_prompt)
+                globals()['TRANSLATION_CUSTOM_PROMPT'] = saved_prompt
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
