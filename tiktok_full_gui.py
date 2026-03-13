@@ -7022,6 +7022,11 @@ class App:
             try:
                 with open(config_path, 'w') as f:
                     json.dump(config, f)
+                # Restrict file permissions to owner only (API key security)
+                try:
+                    os.chmod(config_path, 0o600)
+                except Exception:
+                    pass  # Windows doesn't support chmod the same way
                 if hasattr(self, 'log'):
                     self.log("[OpenAI] API key saved and activated")
                 messagebox.showinfo("API Key Saved", "OpenAI API key saved successfully!")
