@@ -202,9 +202,147 @@ def translate_text(text, target_language='en', log=None):
             log(f"[TRANSLATE ERROR] Failed to translate: {e}")
         return text
 
+
+def _openai_translate_segments(segments, target_language='en', log=None):
+    """
+    Translate caption segments using OpenAI GPT-4o-mini for natural,
+    context-aware translations that avoid repetition.
+    
+    Sends all segments as numbered lines so the model can see full context
+    and produce natural translations (e.g. using pronouns, "the same", etc.
+    instead of repeating identical phrases).
+    
+    Args:
+        segments: List of caption segments with 'text' keys
+        target_language: Target language code
+        log: Optional logging function
+    
+    Returns:
+        List of translated text strings (same order as input segments),
+        or None if translation fails (caller should fall back).
+    """
+    api_key = globals().get('OPENAI_API_KEY')
+    if not api_key:
+        return None
+    
+    if not REQUESTS_AVAILABLE:
+        if log:
+            log("[OpenAI TRANSLATE] requests library not available")
+        return None
+    
+    import requests as _requests
+    
+    # Build numbered lines from segment texts
+    lines = []
+    for i, seg in enumerate(segments):
+        text = seg.get("text", "").strip()
+        if text:
+            lines.append(f"{i+1}. {text}")
+        else:
+            lines.append(f"{i+1}. ")
+    
+    numbered_text = "\n".join(lines)
+    
+    # Language name mapping for clearer prompts
+    lang_names = {
+        'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+        'it': 'Italian', 'pt': 'Portuguese', 'ro': 'Romanian', 'ru': 'Russian',
+        'zh-cn': 'Chinese (Simplified)', 'ja': 'Japanese', 'ko': 'Korean',
+        'zh': 'Chinese', 'ar': 'Arabic', 'hi': 'Hindi', 'tr': 'Turkish',
+        'pl': 'Polish', 'nl': 'Dutch', 'sv': 'Swedish', 'da': 'Danish',
+    }
+    lang_name = lang_names.get(target_language, target_language)
+    
+    system_prompt = (
+        f"You are a professional subtitle translator. Translate the following numbered lines to {lang_name}.\n"
+        f"IMPORTANT RULES:\n"
+        f"1. Return ONLY the numbered translations, one per line, in the same format: '1. translated text'\n"
+        f"2. Use natural, flowing language - AVOID repetition. If two consecutive lines say similar things, "
+        f"use pronouns, 'the same', 'likewise', 'too', etc. instead of repeating words.\n"
+        f"   Example: Instead of 'He was 20 years old' then 'She was 20 years old', "
+        f"translate as 'He was 20 years old' then 'She was too' or 'And so was she'.\n"
+        f"3. Keep translations concise - these are video subtitles with limited screen time.\n"
+        f"4. Preserve the meaning and emotional tone of the original.\n"
+        f"5. Keep the same number of lines as the input.\n"
+        f"6. Do NOT add any extra text, explanations, or notes."
+    )
+    
+    if log:
+        log(f"[OpenAI TRANSLATE] Sending {len(segments)} segments to GPT-4o-mini for {lang_name} translation...")
+    
+    try:
+        response = _requests.post(
+            'https://api.openai.com/v1/chat/completions',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'model': 'gpt-4o-mini',
+                'temperature': 0.3,
+                'messages': [
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': numbered_text}
+                ]
+            },
+            timeout=60
+        )
+        
+        if response.status_code != 200:
+            if log:
+                log(f"[OpenAI TRANSLATE ERROR] API returned {response.status_code}: {response.text[:200]}")
+            return None
+        
+        data = response.json()
+        reply = data['choices'][0]['message']['content'].strip()
+        
+        # Parse numbered lines from response
+        result_lines = reply.split('\n')
+        translated_texts = [''] * len(segments)
+        
+        import re
+        for line in result_lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Match "1. text" or "1) text" or just "1 text"
+            m = re.match(r'^(\d+)[.\)]\s*(.*)', line)
+            if m:
+                idx = int(m.group(1)) - 1  # Convert 1-based to 0-based
+                if 0 <= idx < len(segments):
+                    translated_texts[idx] = m.group(2).strip()
+        
+        # Verify we got translations for most segments
+        filled = sum(1 for t in translated_texts if t)
+        if filled < len(segments) * 0.5:
+            if log:
+                log(f"[OpenAI TRANSLATE WARNING] Only {filled}/{len(segments)} lines parsed, falling back")
+            return None
+        
+        # Fill any missing translations with originals
+        for i in range(len(segments)):
+            if not translated_texts[i]:
+                translated_texts[i] = segments[i].get("text", "").strip()
+        
+        if log:
+            log(f"[OpenAI TRANSLATE] Successfully translated {filled}/{len(segments)} segments")
+        
+        return translated_texts
+        
+    except Exception as e:
+        if log:
+            log(f"[OpenAI TRANSLATE ERROR] {e}")
+        return None
+
+
 def translate_segments(segments, target_language='en', log=None):
     """
     Translate all caption segments to target language.
+    
+    Uses OpenAI GPT-4o-mini when OPENAI_API_KEY is set for natural,
+    context-aware translations that avoid repetition.
+    Falls back to googletrans batch translation (with ||| separator
+    for context), then per-segment translation as last resort.
     
     Args:
         segments: List of caption segments from Whisper
@@ -214,19 +352,71 @@ def translate_segments(segments, target_language='en', log=None):
     Returns:
         List of segments with translated text
     """
-    if not TRANSLATION_AVAILABLE or target_language == 'none':
+    if target_language == 'none':
+        return segments
+    
+    if not segments:
         return segments
     
     if log:
         log(f"[TRANSLATE] Translating {len(segments)} segments to {target_language}...")
     
+    # --- Strategy 1: OpenAI contextual translation (best quality) ---
+    api_key = globals().get('OPENAI_API_KEY')
+    if api_key and REQUESTS_AVAILABLE:
+        openai_results = _openai_translate_segments(segments, target_language, log=log)
+        if openai_results:
+            translated = []
+            for i, seg in enumerate(segments):
+                new_seg = seg.copy()
+                new_seg["original_text"] = seg.get("text", "")
+                new_seg["text"] = openai_results[i]
+                translated.append(new_seg)
+            if log:
+                log("[TRANSLATE] OpenAI translation complete!")
+            return translated
+        if log:
+            log("[TRANSLATE] OpenAI failed, falling back to googletrans...")
+    
+    if not TRANSLATION_AVAILABLE:
+        if log:
+            log("[TRANSLATE] googletrans not available - skipping translation")
+        return segments
+    
+    # --- Strategy 2: Batch googletrans with ||| separator for context ---
+    try:
+        texts = [seg.get("text", "").strip() for seg in segments]
+        batch_text = " ||| ".join(texts)
+        
+        translator = Translator()
+        result = translator.translate(batch_text, dest=target_language)
+        
+        if result and result.text:
+            parts = result.text.split("|||")
+            if len(parts) >= len(segments):
+                translated = []
+                for i, seg in enumerate(segments):
+                    new_seg = seg.copy()
+                    new_seg["original_text"] = seg.get("text", "")
+                    new_seg["text"] = parts[i].strip()
+                    translated.append(new_seg)
+                if log:
+                    log("[TRANSLATE] Batch translation complete!")
+                return translated
+            else:
+                if log:
+                    log(f"[TRANSLATE] Batch split mismatch ({len(parts)} vs {len(segments)}), falling back to per-segment")
+    except Exception as e:
+        if log:
+            log(f"[TRANSLATE] Batch translation failed ({e}), falling back to per-segment")
+    
+    # --- Strategy 3: Per-segment fallback ---
     translated = []
     for i, seg in enumerate(segments):
         try:
             original_text = seg.get("text", "")
             translated_text = translate_text(original_text, target_language, log=None)
             
-            # Create new segment with translated text
             new_seg = seg.copy()
             new_seg["text"] = translated_text
             new_seg["original_text"] = original_text
@@ -5765,6 +5955,16 @@ class App:
         ttk.Label(left_frame, text="(for captions)").grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
+        # OpenAI API Key for natural contextual translations
+        ttk.Label(left_frame, text="OpenAI Key:").grid(row=row, column=0, sticky="e")
+        openai_frame = ttk.Frame(left_frame)
+        openai_frame.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        self.openai_key_var = tk.StringVar(value="")
+        self.openai_key_entry = ttk.Entry(openai_frame, textvariable=self.openai_key_var, show="*", width=22)
+        self.openai_key_entry.pack(side="left", fill="x", expand=True)
+        ttk.Button(openai_frame, text="Set", style='Bordered.TButton', command=self._apply_openai_key, width=4).pack(side="left", padx=(4,0))
+        row += 1
+
         self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
         ttk.Checkbutton(left_frame, text="Replace voice with AI (TTS)", variable=self.use_ai_voice_var,
                        command=self.on_ai_voice_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
@@ -6612,6 +6812,21 @@ class App:
                 globals()['TRANSLATION_ENABLED'] = False
         except Exception as e:
             print(f"Translation toggle error: {e}")
+    
+    def _apply_openai_key(self):
+        """Apply the OpenAI API key from the GUI entry field."""
+        try:
+            key = self.openai_key_var.get().strip()
+            if key:
+                globals()['OPENAI_API_KEY'] = key
+                if hasattr(self, 'log'):
+                    self.log(f"[OpenAI] API key set ({len(key)} chars) - contextual translations enabled")
+            else:
+                globals()['OPENAI_API_KEY'] = None
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] API key cleared - using googletrans")
+        except Exception as e:
+            print(f"OpenAI key apply error: {e}")
     
     def on_language_selected(self, event=None):
         """Callback when target language is selected. Auto-syncs TTS language when TTS is enabled."""
