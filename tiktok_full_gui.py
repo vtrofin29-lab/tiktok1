@@ -260,24 +260,25 @@ def _openai_translate_segments(segments, target_language='en', log=None):
         system_prompt = custom.replace('{language}', lang_name)
         # Always append output format rules so OpenAI returns numbered lines
         system_prompt += (
-            f"\n\nOUTPUT FORMAT RULES:\n"
-            f"1. Return ONLY the numbered translations, one per line, in the same format: '1. translated text'\n"
-            f"2. Keep the same number of lines as the input.\n"
-            f"3. Do NOT add any extra text, explanations, or notes."
+            f"\n\nREGULI FORMAT IEȘIRE:\n"
+            f"1. Returnează DOAR traducerile numerotate, una pe linie, în formatul: '1. text tradus'\n"
+            f"2. Păstrează același număr de linii ca în original.\n"
+            f"3. Poți adăuga cuvinte pentru ca povestea să aibă sens și logică.\n"
+            f"4. NU traduce cuvânt cu cuvânt — folosește un limbaj natural și coerent."
         )
     else:
         system_prompt = (
             f"You are a professional subtitle translator. Translate the following numbered lines to {lang_name}.\n"
-            f"IMPORTANT RULES:\n"
-            f"1. Return ONLY the numbered translations, one per line, in the same format: '1. translated text'\n"
-            f"2. Use natural, flowing language - AVOID repetition. If two consecutive lines say similar things, "
-            f"use pronouns, 'the same', 'likewise', 'too', etc. instead of repeating words.\n"
-            f"   Example: Instead of 'He was 20 years old' then 'She was 20 years old', "
-            f"translate as 'He was 20 years old' then 'She was too' or 'And so was she'.\n"
-            f"3. Keep translations concise - these are video subtitles with limited screen time.\n"
-            f"4. Preserve the meaning and emotional tone of the original.\n"
-            f"5. Keep the same number of lines as the input.\n"
-            f"6. Do NOT add any extra text, explanations, or notes."
+            f"REGULI IMPORTANTE:\n"
+            f"1. Returnează DOAR traducerile numerotate, una pe linie, în formatul: '1. text tradus'\n"
+            f"2. Folosește un limbaj natural și curgător — EVITĂ repetițiile. Dacă două linii consecutive spun lucruri similare, "
+            f"folosește pronume, 'la fel', 'de asemenea', 'și el/ea' etc. în loc să repeți cuvinte.\n"
+            f"   Exemplu: În loc de 'El avea 20 de ani' apoi 'Ea avea 20 de ani', "
+            f"traduce ca 'El avea 20 de ani' apoi 'Și ea la fel'.\n"
+            f"3. Poți adăuga cuvinte pentru ca povestea să aibă sens și logică — NU traduce cuvânt cu cuvânt.\n"
+            f"4. Păstrează traducerile concise — sunt subtitrări video cu timp limitat pe ecran.\n"
+            f"5. Păstrează sensul și tonul emoțional al originalului.\n"
+            f"6. Păstrează același număr de linii ca în original."
         )
     
     if log:
@@ -1329,12 +1330,10 @@ def _get_genaipro_api_key():
 
 def generate_tts_audio(text, language='en', output_path=None, log=None):
     """
-    Generate Text-to-Speech audio from text using GenAI Pro.
-    
-    Uses GenAI Pro (tts_config.json API key) for high-quality voice synthesis.
-    
-    Note: OpenAI API key is used ONLY for translation (GPT-4o-mini),
-    NOT for voice generation (TTS).
+    Generate Text-to-Speech audio using a 3-tier fallback chain:
+    1. GenAI Pro (tts_config.json API key) — highest quality
+    2. OpenAI TTS (OPENAI_API_KEY) — high quality, uses tts-1 model
+    3. gTTS (Google Text-to-Speech) — free fallback, no API key needed
     
     Args:
         text: Text to convert to speech
@@ -1345,35 +1344,73 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    api_key = _get_genaipro_api_key()
-    
-    if not api_key:
-        if log:
-            log("[TTS] ⚠️  No GenAI Pro API key found in tts_config.json")
-            log("[TTS] Voice generation requires a GenAI Pro API key.")
-            log("[TTS] Please configure tts_config.json with your API key.")
-        return None
-    
     if not text or not text.strip():
         return None
     
-    if log:
-        log("="*60)
-        log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
-        log(f"[TTS] Using GenAI Pro API for high-quality synthesis")
-        log(f"[TTS] Text length: {len(text)} characters")
-        log(f"[TTS] Language: {language}")
-        log("="*60)
-    result = generate_tts_with_genaipro(text, language, output_path, api_key, log)
-    if result:
+    # --- Tier 1: GenAI Pro ---
+    api_key = _get_genaipro_api_key()
+    if api_key:
         if log:
             log("="*60)
-            log("[TTS] ✅ AI VOICE GENERATION COMPLETE!")
-            log(f"[TTS] Audio file ready: {result}")
+            log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
+            log(f"[TTS] Using GenAI Pro API for high-quality synthesis")
+            log(f"[TTS] Text length: {len(text)} characters")
+            log(f"[TTS] Language: {language}")
             log("="*60)
-        return result
+        result = generate_tts_with_genaipro(text, language, output_path, api_key, log)
+        if result:
+            if log:
+                log("="*60)
+                log("[TTS] ✅ AI VOICE GENERATION COMPLETE!")
+                log(f"[TTS] Audio file ready: {result}")
+                log("="*60)
+            return result
+        if log:
+            log("[TTS] ⚠️  GenAI Pro failed — trying OpenAI TTS...")
+    else:
+        if log:
+            log("[TTS] No GenAI Pro key — trying OpenAI TTS...")
+    
+    # --- Tier 2: OpenAI TTS ---
+    openai_result = _openai_tts_generate(text, language=language, output_path=output_path, log=log)
+    if openai_result:
+        if log:
+            log("="*60)
+            log("[TTS] ✅ OpenAI TTS VOICE GENERATION COMPLETE!")
+            log(f"[TTS] Audio file ready: {openai_result}")
+            log("="*60)
+        return openai_result
     if log:
-        log("[TTS] ❌ GenAI Pro voice generation failed")
+        if globals().get('OPENAI_API_KEY'):
+            log("[TTS] ⚠️  OpenAI TTS failed — trying gTTS...")
+        else:
+            log("[TTS] No OpenAI key — trying gTTS...")
+    
+    # --- Tier 3: gTTS (free fallback) ---
+    if TTS_AVAILABLE and gTTS:
+        try:
+            if output_path is None:
+                fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='gtts_')
+                os.close(fd)
+            if log:
+                log(f"[TTS] 🔊 Using gTTS (Google Text-to-Speech) for '{language}'...")
+            tts_obj = gTTS(text=text, lang=language)
+            tts_obj.save(output_path)
+            if log:
+                log("="*60)
+                log("[TTS] ✅ gTTS VOICE GENERATION COMPLETE!")
+                log(f"[TTS] Audio file ready: {output_path}")
+                log("="*60)
+            return output_path
+        except Exception as e:
+            if log:
+                log(f"[TTS] ❌ gTTS failed: {e}")
+    else:
+        if log:
+            log("[TTS] ❌ gTTS not available (pip install gTTS)")
+    
+    if log:
+        log("[TTS] ❌ All TTS engines failed. No voice generated.")
     return None
 
 def replace_voice_with_tts(caption_segments, language='en', log=None):
@@ -1388,12 +1425,14 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    # Check if GenAI Pro is available (required for voice generation)
-    if not _get_genaipro_api_key():
+    # Check if at least one TTS engine is available
+    has_genaipro = bool(_get_genaipro_api_key())
+    has_openai = bool(globals().get('OPENAI_API_KEY'))
+    has_gtts = TTS_AVAILABLE and gTTS is not None
+    if not has_genaipro and not has_openai and not has_gtts:
         if log:
-            log("[TTS] ⚠️  No GenAI Pro API key found in tts_config.json")
-            log("[TTS] Voice generation requires a GenAI Pro API key.")
-            log("[TTS] Please configure tts_config.json with your API key.")
+            log("[TTS] ⚠️  No TTS engine available!")
+            log("[TTS] Configure one of: tts_config.json (GenAI Pro), OpenAI API key, or pip install gTTS")
         return None
     
     if log:
@@ -7220,15 +7259,21 @@ class App:
         try:
             enabled = self.use_ai_voice_var.get()
             globals()['USE_AI_VOICE_REPLACEMENT'] = enabled
-            if enabled and not _get_genaipro_api_key():
-                messagebox.showwarning(
-                    "GenAI Pro Key Required",
-                    "No GenAI Pro API key found in tts_config.json.\n"
-                    "Voice generation requires a GenAI Pro API key.\n"
-                    "Please configure tts_config.json with your API key."
-                )
-                self.use_ai_voice_var.set(False)
-                globals()['USE_AI_VOICE_REPLACEMENT'] = False
+            if enabled:
+                has_genaipro = bool(_get_genaipro_api_key())
+                has_openai = bool(globals().get('OPENAI_API_KEY'))
+                has_gtts = TTS_AVAILABLE and gTTS is not None
+                if not has_genaipro and not has_openai and not has_gtts:
+                    messagebox.showwarning(
+                        "No TTS Engine Available",
+                        "No TTS engine is available.\n"
+                        "Configure one of:\n"
+                        "• tts_config.json (GenAI Pro)\n"
+                        "• OpenAI API key\n"
+                        "• pip install gTTS"
+                    )
+                    self.use_ai_voice_var.set(False)
+                    globals()['USE_AI_VOICE_REPLACEMENT'] = False
         except Exception as e:
             print(f"AI voice toggle error: {e}")
     

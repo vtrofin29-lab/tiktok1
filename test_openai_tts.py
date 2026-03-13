@@ -1,10 +1,11 @@
-"""Tests for TTS (Text-to-Speech) — OpenAI NOT used for voice generation.
+"""Tests for TTS (Text-to-Speech) — 3-tier fallback: GenAI Pro → OpenAI TTS → gTTS.
 
 Validates that:
-1. OpenAI is used ONLY for translation, NOT for TTS voice generation
-2. generate_tts_audio uses GenAI Pro only (no gTTS fallback)
-3. Verify success message does NOT promise OpenAI TTS
-4. _openai_tts_generate function still exists (dormant, not called by TTS pipeline)
+1. generate_tts_audio uses a 3-tier fallback: GenAI Pro → OpenAI TTS → gTTS
+2. replace_voice_with_tts checks all TTS engines (not just GenAI Pro)
+3. on_ai_voice_toggle accepts any available TTS engine
+4. _openai_tts_generate function exists and is called by generate_tts_audio
+5. Translation prompt rules are in Romanian and allow adding text for story coherence
 """
 import os
 import re
@@ -17,53 +18,46 @@ def _read_source():
         return f.read()
 
 
-# ─── OpenAI NOT Used for TTS ────────────────────────────────────────
+# ─── 3-Tier TTS Fallback ────────────────────────────────────────────
 
-def test_generate_tts_audio_does_not_call_openai():
-    """generate_tts_audio should NOT call _openai_tts_generate."""
+def test_generate_tts_audio_calls_openai_tts():
+    """generate_tts_audio should call _openai_tts_generate as Tier 2 fallback."""
     source = _read_source()
     func_match = re.search(r'def generate_tts_audio\(.*?\n(?=def |\Z)', source, re.DOTALL)
     assert func_match, "Should find generate_tts_audio function"
     func_body = func_match.group(0)
-    assert '_openai_tts_generate(' not in func_body, \
-        "generate_tts_audio should NOT call _openai_tts_generate — OpenAI is for translation only"
-
-def test_generate_tts_audio_does_not_check_openai_key():
-    """generate_tts_audio should NOT check OPENAI_API_KEY."""
-    source = _read_source()
-    func_match = re.search(r'def generate_tts_audio\(.*?\n(?=def |\Z)', source, re.DOTALL)
-    assert func_match, "Should find generate_tts_audio function"
-    func_body = func_match.group(0)
-    assert 'OPENAI_API_KEY' not in func_body, \
-        "generate_tts_audio should NOT reference OPENAI_API_KEY — OpenAI is for translation only"
+    assert '_openai_tts_generate(' in func_body, \
+        "generate_tts_audio should call _openai_tts_generate as Tier 2"
 
 def test_generate_tts_audio_uses_genaipro():
-    """generate_tts_audio should try GenAI Pro."""
+    """generate_tts_audio should try GenAI Pro as Tier 1."""
     source = _read_source()
     func_match = re.search(r'def generate_tts_audio\(.*?\n(?=def |\Z)', source, re.DOTALL)
     assert func_match, "Should find generate_tts_audio function"
     func_body = func_match.group(0)
     assert 'generate_tts_with_genaipro(' in func_body, \
-        "generate_tts_audio should use GenAI Pro for TTS"
+        "generate_tts_audio should use GenAI Pro as Tier 1"
 
-def test_generate_tts_audio_does_not_use_gtts():
-    """generate_tts_audio should NOT fall back to gTTS — uses GenAI Pro only."""
+def test_generate_tts_audio_uses_gtts_fallback():
+    """generate_tts_audio should use gTTS as Tier 3 fallback."""
     source = _read_source()
     func_match = re.search(r'def generate_tts_audio\(.*?\n(?=def |\Z)', source, re.DOTALL)
     assert func_match, "Should find generate_tts_audio function"
     func_body = func_match.group(0)
-    assert 'gTTS(' not in func_body, \
-        "generate_tts_audio should NOT use gTTS — voice generation uses GenAI Pro only"
+    assert 'gTTS(' in func_body, \
+        "generate_tts_audio should use gTTS as Tier 3 fallback"
 
-def test_generate_tts_audio_docstring_mentions_no_openai():
-    """generate_tts_audio docstring should clarify OpenAI is NOT used for TTS."""
+def test_generate_tts_audio_tier_order():
+    """generate_tts_audio should try GenAI Pro first, then OpenAI, then gTTS."""
     source = _read_source()
     func_match = re.search(r'def generate_tts_audio\(.*?\n(?=def |\Z)', source, re.DOTALL)
     assert func_match, "Should find generate_tts_audio function"
     func_body = func_match.group(0)
-    assert 'NOT for voice generation' in func_body or 'not for TTS' in func_body.lower() or \
-           'ONLY for translation' in func_body, \
-        "Docstring should clarify OpenAI is NOT used for voice generation"
+    pos_genaipro = func_body.find('generate_tts_with_genaipro(')
+    pos_openai = func_body.find('_openai_tts_generate(')
+    pos_gtts = func_body.find('gTTS(')
+    assert pos_genaipro < pos_openai < pos_gtts, \
+        "Order should be: GenAI Pro → OpenAI TTS → gTTS"
 
 
 # ─── Verify Message Does NOT Promise OpenAI TTS ─────────────────────
@@ -87,16 +81,16 @@ def test_verify_messagebox_mentions_translation_only():
         "Verify messagebox should still mention translation"
 
 
-# ─── replace_voice_with_tts Does NOT Check OpenAI ───────────────────
+# ─── replace_voice_with_tts Checks Multiple Engines ─────────────────
 
-def test_replace_voice_does_not_check_openai_key():
-    """replace_voice_with_tts should NOT check for OPENAI_API_KEY."""
+def test_replace_voice_checks_multiple_engines():
+    """replace_voice_with_tts should check for multiple TTS engines."""
     source = _read_source()
     func_match = re.search(r'def replace_voice_with_tts\(.*?\n(?=def |\Z)', source, re.DOTALL)
     assert func_match, "Should find replace_voice_with_tts function"
     func_body = func_match.group(0)
-    assert 'OPENAI_API_KEY' not in func_body, \
-        "replace_voice_with_tts should NOT reference OPENAI_API_KEY"
+    assert 'OPENAI_API_KEY' in func_body or 'has_openai' in func_body, \
+        "replace_voice_with_tts should check OpenAI availability"
 
 
 # ─── OpenAI Translation Still Works ─────────────────────────────────
@@ -117,48 +111,66 @@ def test_translate_segments_tries_openai_first():
         "translate_segments should use OpenAI for translation"
 
 
-# ─── _openai_tts_generate Still Exists (dormant) ────────────────────
+# ─── _openai_tts_generate Exists and Is Active ──────────────────────
 
-def test_openai_tts_function_still_exists():
-    """_openai_tts_generate function should still exist (dormant, unused by pipeline)."""
+def test_openai_tts_function_exists():
+    """_openai_tts_generate function should exist."""
     source = _read_source()
     assert re.search(r'def _openai_tts_generate\(', source), \
-        "_openai_tts_generate function should still be defined"
+        "_openai_tts_generate function should be defined"
 
 
-# ─── Voice Pipeline Does NOT Use gTTS ────────────────────────────────
+# ─── Voice Pipeline Uses GenAI Pro (not gTTS directly) ──────────────
 
 def test_submit_voice_does_not_use_gtts():
-    """_submit_voice_for_job should NOT fall back to gTTS."""
+    """_submit_voice_for_job should NOT fall back to gTTS directly."""
     source = _read_source()
     func_match = re.search(r'def _submit_voice_for_job\(.*?\n(?=    def |\nclass |\Z)', source, re.DOTALL)
     assert func_match, "Should find _submit_voice_for_job function"
     func_body = func_match.group(0)
     assert 'gTTS(' not in func_body, \
-        "_submit_voice_for_job should NOT use gTTS — voice generation uses GenAI Pro only"
+        "_submit_voice_for_job should NOT use gTTS directly — gTTS is in generate_tts_audio fallback chain"
 
 def test_complete_voice_does_not_use_gtts():
-    """_complete_voice_for_job should NOT fall back to gTTS."""
+    """_complete_voice_for_job should NOT fall back to gTTS directly."""
     source = _read_source()
     func_match = re.search(r'def _complete_voice_for_job\(.*?\n(?=    def |\nclass |\Z)', source, re.DOTALL)
     assert func_match, "Should find _complete_voice_for_job function"
     func_body = func_match.group(0)
     assert 'gTTS(' not in func_body, \
-        "_complete_voice_for_job should NOT use gTTS — voice generation uses GenAI Pro only"
+        "_complete_voice_for_job should NOT use gTTS directly — gTTS is in generate_tts_audio fallback chain"
 
-def test_verify_messagebox_does_not_mention_gtts():
-    """Verify success messagebox should NOT mention gTTS."""
-    source = _read_source()
-    assert 'GenAI Pro / gTTS' not in source, \
-        "Verify messagebox should NOT mention gTTS — voice generation uses GenAI Pro only"
 
-def test_voice_toggle_checks_genaipro_not_gtts():
-    """on_ai_voice_toggle should check GenAI Pro key, not gTTS availability."""
+# ─── on_ai_voice_toggle Checks All Engines ───────────────────────────
+
+def test_voice_toggle_checks_multiple_engines():
+    """on_ai_voice_toggle should check for any available TTS engine."""
     source = _read_source()
     func_match = re.search(r'def on_ai_voice_toggle\(.*?\n(?=    def |\nclass |\Z)', source, re.DOTALL)
     assert func_match, "Should find on_ai_voice_toggle function"
     func_body = func_match.group(0)
-    assert 'gTTS' not in func_body and 'gtts' not in func_body, \
-        "on_ai_voice_toggle should NOT reference gTTS"
     assert '_get_genaipro_api_key' in func_body, \
         "on_ai_voice_toggle should check GenAI Pro API key"
+    assert 'OPENAI_API_KEY' in func_body or 'has_openai' in func_body, \
+        "on_ai_voice_toggle should also check for OpenAI key"
+
+
+# ─── Translation Prompt in Romanian ─────────────────────────────────
+
+def test_translation_prompt_in_romanian():
+    """Translation system prompt rules should be in Romanian."""
+    source = _read_source()
+    assert 'REGULI FORMAT' in source or 'REGULI IMPORTANTE' in source, \
+        "Translation rules should be in Romanian"
+
+def test_translation_allows_adding_text():
+    """Translation rules should allow OpenAI to add text for story coherence."""
+    source = _read_source()
+    assert 'povestea' in source or 'logică' in source or 'sens' in source, \
+        "Rules should mention allowing text for story coherence (povestea/logică/sens)"
+
+def test_translation_no_word_for_word():
+    """Translation rules should NOT force word-for-word translation."""
+    source = _read_source()
+    assert 'cuvânt cu cuvânt' in source, \
+        "Rules should mention NOT translating word-for-word (cuvânt cu cuvânt)"

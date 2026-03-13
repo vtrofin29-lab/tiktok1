@@ -256,16 +256,19 @@ def test_build_short_reference_identical():
 # ═══════════════════════════════════════════════════════════════════
 
 def test_openai_prompt_has_anti_repetition():
-    """OpenAI system prompt must instruct to avoid repetition."""
+    """OpenAI system prompt must instruct to avoid repetition (in Romanian)."""
     source = _read_source()
-    assert 'AVOID repetition' in source, \
+    assert 'EVITĂ repetițiile' in source or 'AVOID repetition' in source, \
         "System prompt must mention avoiding repetition"
 
 
 def test_openai_prompt_has_example():
     """OpenAI system prompt must include a practical example of anti-repetition."""
     source = _read_source()
-    assert 'He was 20 years old' in source and 'She was 20 years old' in source, \
+    # Romanian: "El avea 20 de ani" / "Ea avea 20 de ani"
+    has_ro = 'El avea 20 de ani' in source and 'Ea avea 20 de ani' in source
+    has_en = 'He was 20 years old' in source and 'She was 20 years old' in source
+    assert has_ro or has_en, \
         "System prompt should include a practical example with age repetition"
 
 
@@ -328,9 +331,9 @@ def test_translation_prompt_uses_custom_when_set():
 
 
 def test_translation_prompt_appends_format_rules():
-    """Custom prompt should append output format rules automatically."""
+    """Custom prompt should append output format rules automatically (Romanian)."""
     source = _read_source()
-    assert 'OUTPUT FORMAT RULES' in source, \
+    assert 'REGULI FORMAT' in source or 'OUTPUT FORMAT RULES' in source, \
         "Custom prompt must append output format rules for numbered line format"
 
 
