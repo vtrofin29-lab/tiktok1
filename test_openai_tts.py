@@ -124,3 +124,41 @@ def test_openai_tts_function_still_exists():
     source = _read_source()
     assert re.search(r'def _openai_tts_generate\(', source), \
         "_openai_tts_generate function should still be defined"
+
+
+# ─── Voice Pipeline Does NOT Use gTTS ────────────────────────────────
+
+def test_submit_voice_does_not_use_gtts():
+    """_submit_voice_for_job should NOT fall back to gTTS."""
+    source = _read_source()
+    func_match = re.search(r'def _submit_voice_for_job\(.*?\n(?=    def |\nclass |\Z)', source, re.DOTALL)
+    assert func_match, "Should find _submit_voice_for_job function"
+    func_body = func_match.group(0)
+    assert 'gTTS(' not in func_body, \
+        "_submit_voice_for_job should NOT use gTTS — voice generation uses GenAI Pro only"
+
+def test_complete_voice_does_not_use_gtts():
+    """_complete_voice_for_job should NOT fall back to gTTS."""
+    source = _read_source()
+    func_match = re.search(r'def _complete_voice_for_job\(.*?\n(?=    def |\nclass |\Z)', source, re.DOTALL)
+    assert func_match, "Should find _complete_voice_for_job function"
+    func_body = func_match.group(0)
+    assert 'gTTS(' not in func_body, \
+        "_complete_voice_for_job should NOT use gTTS — voice generation uses GenAI Pro only"
+
+def test_verify_messagebox_does_not_mention_gtts():
+    """Verify success messagebox should NOT mention gTTS."""
+    source = _read_source()
+    assert 'GenAI Pro / gTTS' not in source, \
+        "Verify messagebox should NOT mention gTTS — voice generation uses GenAI Pro only"
+
+def test_voice_toggle_checks_genaipro_not_gtts():
+    """on_ai_voice_toggle should check GenAI Pro key, not gTTS availability."""
+    source = _read_source()
+    func_match = re.search(r'def on_ai_voice_toggle\(.*?\n(?=    def |\nclass |\Z)', source, re.DOTALL)
+    assert func_match, "Should find on_ai_voice_toggle function"
+    func_body = func_match.group(0)
+    assert 'gTTS' not in func_body and 'gtts' not in func_body, \
+        "on_ai_voice_toggle should NOT reference gTTS"
+    assert '_get_genaipro_api_key' in func_body, \
+        "on_ai_voice_toggle should check GenAI Pro API key"

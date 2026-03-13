@@ -5338,7 +5338,7 @@ def _submit_voice_for_job(job, job_index, total_jobs, q):
     The dict contains:
         - needs_polling: True if GenAI Pro task was submitted (needs polling later)
         - task_id, headers: GenAI Pro task info (only if needs_polling)
-        - tts_audio_path: Path to already-generated TTS audio (only if NOT needs_polling, e.g. gTTS)
+        - tts_audio_path: Path to already-generated TTS audio (only if NOT needs_polling)
         - caption_segments: Transcribed caption segments
         - tts_language: Language used for TTS
         - silence_threshold_ms: Silence threshold for post-processing
@@ -5432,28 +5432,9 @@ def _submit_voice_for_job(job, job_index, total_jobs, q):
                     'silence_threshold_ms': silence_threshold_ms,
                     'full_text': full_text,
                 }
-            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ⚠️ GenAI Pro failed, trying gTTS...")
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ GenAI Pro submission failed")
 
-        # Fallback: gTTS (synchronous but fast)
-        if TTS_AVAILABLE:
-            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] Generating voice with gTTS...")
-            fd, tts_path = tempfile.mkstemp(suffix='.mp3', prefix=f'tts_submit_{job_index}_')
-            os.close(fd)
-            try:
-                tts_obj = gTTS(text=full_text, lang=tts_language, slow=False)
-                tts_obj.save(tts_path)
-                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ✅ gTTS voice generated")
-                return {
-                    'needs_polling': False,
-                    'tts_audio_path': tts_path,
-                    'caption_segments': caption_segments,
-                    'tts_language': tts_language,
-                    'silence_threshold_ms': silence_threshold_ms,
-                }
-            except Exception as e:
-                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ gTTS failed: {e}")
-
-        log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ All TTS methods failed")
+        log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ Voice generation failed — please check your GenAI Pro API key in tts_config.json")
         return None
 
     except Exception as e:
@@ -5497,21 +5478,7 @@ def _complete_voice_for_job(submission, job_index, total_jobs, q):
             )
             if not tts_audio_path:
                 log(f"[VOICE COMPLETE {job_index}/{total_jobs}] ❌ GenAI Pro failed")
-                # Try gTTS fallback
-                full_text = submission.get('full_text', '')
-                if not full_text:
-                    full_text = " ".join([seg.get("text", "") for seg in submission.get('caption_segments', [])])
-                if full_text and TTS_AVAILABLE:
-                    log(f"[VOICE COMPLETE {job_index}/{total_jobs}] Trying gTTS fallback...")
-                    fd, tts_audio_path = tempfile.mkstemp(suffix='.mp3', prefix=f'tts_fallback_{job_index}_')
-                    os.close(fd)
-                    try:
-                        tts_obj = gTTS(text=full_text, lang=submission.get('tts_language', 'en'), slow=False)
-                        tts_obj.save(tts_audio_path)
-                    except Exception:
-                        tts_audio_path = None
-                if not tts_audio_path:
-                    return None
+                return None
         else:
             tts_audio_path = submission.get('tts_audio_path')
 
@@ -7188,7 +7155,7 @@ class App:
                 messagebox.showinfo("API Key Valid",
                     "✓ Your OpenAI API key is working!\n\n"
                     "• Translations will use GPT-4o-mini\n"
-                    "• Voice generation uses GenAI Pro / gTTS (NOT OpenAI)\n\n"
+                    "• Voice generation uses GenAI Pro (NOT OpenAI)\n\n"
                     "IMPORTANT: API calls do NOT appear on chat.openai.com.\n"
                     "Check your API usage at:\nhttps://platform.openai.com/usage")
             elif response.status_code == 401:
@@ -7253,10 +7220,12 @@ class App:
         try:
             enabled = self.use_ai_voice_var.get()
             globals()['USE_AI_VOICE_REPLACEMENT'] = enabled
-            if enabled and not TTS_AVAILABLE:
+            if enabled and not _get_genaipro_api_key():
                 messagebox.showwarning(
-                    "TTS Unavailable",
-                    "Text-to-Speech library (gTTS) is not installed.\nPlease install it with: pip install gtts"
+                    "GenAI Pro Key Required",
+                    "No GenAI Pro API key found in tts_config.json.\n"
+                    "Voice generation requires a GenAI Pro API key.\n"
+                    "Please configure tts_config.json with your API key."
                 )
                 self.use_ai_voice_var.set(False)
                 globals()['USE_AI_VOICE_REPLACEMENT'] = False
