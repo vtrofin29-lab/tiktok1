@@ -157,5 +157,5 @@ def test_background_still_uses_boxblur():
     """Background should still have the main boxblur filter (just no spot blur)."""
     src = _load_source()
     # The background pre-render should still have boxblur for the full blur effect
-    assert 'boxblur={small_blur}:{small_blur}' in src or 'boxblur=' in src, \
+    assert re.search(r'boxblur=', src), \
         "Background should still have boxblur filter for full blur"
