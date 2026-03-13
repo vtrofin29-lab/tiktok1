@@ -7221,11 +7221,9 @@ class App:
             key = self.openai_api_key_var.get().strip()
             if key:
                 globals()['OPENAI_API_KEY'] = key
-                os.environ['OPENAI_API_KEY'] = key
                 messagebox.showinfo("OpenAI Key", "OpenAI API key set — translations will use ChatGPT quality.")
             else:
                 globals()['OPENAI_API_KEY'] = None
-                os.environ.pop('OPENAI_API_KEY', None)
                 messagebox.showinfo("OpenAI Key", "OpenAI API key cleared — using Google Translate fallback.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to set OpenAI key: {e}")
