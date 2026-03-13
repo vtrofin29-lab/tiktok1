@@ -361,8 +361,6 @@ def _openai_translate_segments(segments, target_language='en', log=None):
         except Exception as e:
             if log:
                 log(f"[OpenAI TRANSLATE ERROR] {e}")
-            if attempt < max_retries - 1:
-                continue
             return None
     
     # All retries exhausted (429 on every attempt)

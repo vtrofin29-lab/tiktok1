@@ -244,7 +244,8 @@ def test_verify_429_mentions_billing_credit():
 def test_verify_429_mentions_free_tier():
     """429 verify message should explain that free-tier keys have no quota."""
     source = _read_source()
-    assert 'free-tier' in source.lower() or 'Free-tier' in source or 'free tier' in source.lower(), \
+    lower = source.lower()
+    assert 'free-tier' in lower or 'free tier' in lower, \
         "429 message should explain free-tier keys have no quota"
 
 def test_verify_429_has_billing_url():
