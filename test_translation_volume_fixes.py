@@ -351,3 +351,122 @@ def test_openai_translate_uses_gpt4o_mini():
     func_body = source[func_start:func_end]
     assert 'gpt-4o-mini' in func_body, \
         "OpenAI translation should use gpt-4o-mini model"
+
+
+# ─── dB volume display (CapCut-style) ──────────────────────────────
+
+def test_gain_to_db_str_exists():
+    """Helper function _gain_to_db_str should exist for CapCut-style dB display."""
+    source = _read_source()
+    assert "def _gain_to_db_str(" in source, \
+        "_gain_to_db_str helper function should exist"
+
+
+def test_gain_to_db_str_mute():
+    """gain=0 should show 'Mute'."""
+    source = _read_source()
+    assert "import math" in source, "math module must be imported for log10"
+    func_start = source.find("def _gain_to_db_str(")
+    assert func_start != -1
+    func_end = source.find("\n\n", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert '"Mute"' in func_body or "'Mute'" in func_body, \
+        "_gain_to_db_str should return 'Mute' for zero gain"
+
+
+def test_gain_to_db_str_uses_log10():
+    """Should use 20*log10(gain) formula for dB conversion."""
+    source = _read_source()
+    func_start = source.find("def _gain_to_db_str(")
+    assert func_start != -1
+    func_end = source.find("\n\n", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert "log10" in func_body, \
+        "_gain_to_db_str should use log10 for dB conversion"
+
+
+def test_volume_label_shows_db():
+    """Volume slider labels should show dB values (CapCut-style), not just multiplier."""
+    source = _read_source()
+    # Voice label should use _gain_to_db_str
+    assert re.search(r'voice_gain_label.*_gain_to_db_str', source), \
+        "Voice gain label should display dB via _gain_to_db_str"
+    # Music label should use _gain_to_db_str
+    assert re.search(r'music_gain_label.*_gain_to_db_str', source), \
+        "Music gain label should display dB via _gain_to_db_str"
+
+
+def test_voice_callback_shows_db():
+    """on_voice_gain_changed callback should display dB, not multiplier."""
+    source = _read_source()
+    func_start = source.find("def on_voice_gain_changed(")
+    assert func_start != -1
+    func_end = source.find("\n    def ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert "_gain_to_db_str" in func_body, \
+        "Voice gain callback should use _gain_to_db_str for dB display"
+
+
+def test_music_callback_shows_db():
+    """on_music_gain_changed callback should display dB, not multiplier."""
+    source = _read_source()
+    func_start = source.find("def on_music_gain_changed(")
+    assert func_start != -1
+    func_end = source.find("\n    def ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert "_gain_to_db_str" in func_body, \
+        "Music gain callback should use _gain_to_db_str for dB display"
+
+
+def test_gain_to_db_str_positive_format():
+    """Positive dB should be formatted with '+' prefix."""
+    source = _read_source()
+    func_start = source.find("def _gain_to_db_str(")
+    assert func_start != -1
+    func_end = source.find("\n\n", func_start + 10)
+    func_body = source[func_start:func_end]
+    # Should format positive values with "+" prefix
+    assert '"+' in func_body or "f\"+{" in func_body or 'f"+{' in func_body, \
+        "Positive dB values should have '+' prefix (e.g. '+14.0 dB')"
+
+
+# ─── OpenAI API key in GUI ─────────────────────────────────────────
+
+def test_openai_key_gui_field_exists():
+    """GUI should have an OpenAI API key input field for ChatGPT translations."""
+    source = _read_source()
+    assert "openai_api_key_var" in source, \
+        "GUI should have an openai_api_key_var for the API key input"
+    assert "openai_api_key_entry" in source or "OpenAI Key" in source, \
+        "GUI should have an OpenAI Key label and entry field"
+
+
+def test_apply_openai_key_method_exists():
+    """Should have a method to apply the OpenAI key from the GUI."""
+    source = _read_source()
+    assert "def _apply_openai_key(" in source, \
+        "_apply_openai_key method should exist to apply the key"
+
+
+def test_apply_openai_key_sets_global():
+    """_apply_openai_key should set the global OPENAI_API_KEY."""
+    source = _read_source()
+    func_start = source.find("def _apply_openai_key(")
+    assert func_start != -1
+    func_end = source.find("\n    def ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert "OPENAI_API_KEY" in func_body, \
+        "_apply_openai_key should set OPENAI_API_KEY global"
+
+
+def test_openai_prompt_mentions_context():
+    """OpenAI translation prompt should mention context for natural translations."""
+    source = _read_source()
+    func_start = source.find("def _openai_translate_segments(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end].lower()
+    assert "context" in func_body, \
+        "OpenAI prompt should mention context for better translations"
+    assert "natural" in func_body, \
+        "OpenAI prompt should emphasize natural translations"

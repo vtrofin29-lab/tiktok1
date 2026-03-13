@@ -99,6 +99,7 @@ def get_validated_font(selected_font_name, selected_font_path):
 
 
 import sys
+import math
 import threading
 import queue
 import subprocess
@@ -330,11 +331,13 @@ def _openai_translate_segments(segments, target_language, log=None):
     numbered_lines = "\n".join(f"{i+1}. {t}" for i, t in enumerate(originals))
     
     system_prompt = (
-        f"You are an expert translator. Translate the following numbered lines into {lang_name}. "
-        f"Produce natural, fluent translations that preserve the original meaning and tone. "
-        f"Keep the same numbering format. Each line is a subtitle caption -- keep translations "
-        f"concise but meaningful. Do NOT add explanations or notes. "
-        f"Output ONLY the numbered translated lines."
+        f"You are a professional translator who produces natural, fluent {lang_name} translations. "
+        f"Translate the following numbered subtitle lines into {lang_name}. "
+        f"The lines are consecutive subtitles from a video — use the full context to produce "
+        f"translations that sound natural and make sense as a whole, not just literal word-by-word. "
+        f"Adapt idioms, slang, and expressions to sound native in {lang_name}. "
+        f"Keep the same numbering. Keep translations concise (subtitle length). "
+        f"Output ONLY the numbered translated lines, nothing else."
     )
     
     try:
@@ -1142,6 +1145,15 @@ MIN_FG_HEIGHT_RATIO = 0.35  # Foreground fills at least 35% of canvas height (67
 
 VOICE_GAIN = 5.0  # Default: 5.0x — applied as FFmpeg output volume (not in MoviePy, to prevent clipping)
 MUSIC_GAIN = 0.25  # Default: 0.25x quieter for subtle background music (applied in MoviePy for voice:music ratio)
+
+def _gain_to_db_str(gain):
+    """Convert linear gain multiplier to dB string (CapCut-style display)."""
+    if gain <= 0:
+        return "Mute"
+    db = 20.0 * math.log10(gain)
+    if db >= 0:
+        return f"+{db:.1f} dB"
+    return f"{db:.1f} dB"
 CAPTION_FONT_PREFERRED = "Bangers"
 CAPTION_FONT_SIZE = 56
 
@@ -6324,7 +6336,7 @@ class App:
         self.voice_gain_var = tk.DoubleVar(value=VOICE_GAIN)
         self.voice_gain_scale = tk.Scale(left_frame, from_=0.0, to=20.0, resolution=0.1, orient='horizontal', length=120, showvalue=0, variable=self.voice_gain_var, command=self.on_voice_gain_changed)
         self.voice_gain_scale.grid(row=row, column=1, padx=(6,0))
-        self.voice_gain_label = ttk.Label(left_frame, text=f"{self.voice_gain_var.get():.1f}x")
+        self.voice_gain_label = ttk.Label(left_frame, text=_gain_to_db_str(self.voice_gain_var.get()))
         self.voice_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
@@ -6333,7 +6345,7 @@ class App:
         self.music_gain_var = tk.DoubleVar(value=MUSIC_GAIN)
         self.music_gain_scale = tk.Scale(left_frame, from_=0.0, to=5.0, resolution=0.05, orient='horizontal', length=120, showvalue=0, variable=self.music_gain_var, command=self.on_music_gain_changed)
         self.music_gain_scale.grid(row=row, column=1, padx=(6,0))
-        self.music_gain_label = ttk.Label(left_frame, text=f"{self.music_gain_var.get():.2f}x")
+        self.music_gain_label = ttk.Label(left_frame, text=_gain_to_db_str(self.music_gain_var.get()))
         self.music_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
@@ -6356,6 +6368,15 @@ class App:
         language_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
         language_combo.bind('<<ComboboxSelected>>', self.on_language_selected)
         ttk.Label(left_frame, text="(for captions)").grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        # --- OpenAI API Key for high-quality (ChatGPT) translation ---
+        ttk.Label(left_frame, text="OpenAI Key:").grid(row=row, column=0, sticky="e")
+        _saved_openai_key = globals().get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY') or ""
+        self.openai_api_key_var = tk.StringVar(value=_saved_openai_key)
+        self.openai_api_key_entry = ttk.Entry(left_frame, textvariable=self.openai_api_key_var, show="*", width=22)
+        self.openai_api_key_entry.grid(row=row, column=1, sticky="we", padx=(6,0))
+        ttk.Button(left_frame, text="Set", width=4, command=self._apply_openai_key).grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
         self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
@@ -7175,24 +7196,39 @@ class App:
                 pass
 
     def on_voice_gain_changed(self, val):
-        """Callback when voice volume slider changes"""
+        """Callback when voice volume slider changes — displays dB like CapCut"""
         try:
             gain = float(val)
             globals()['VOICE_GAIN'] = gain
             if hasattr(self, 'voice_gain_label') and self.voice_gain_label:
-                self.voice_gain_label.config(text=f"{gain:.1f}x")
+                self.voice_gain_label.config(text=_gain_to_db_str(gain))
         except Exception:
             pass
 
     def on_music_gain_changed(self, val):
-        """Callback when music volume slider changes"""
+        """Callback when music volume slider changes — displays dB like CapCut"""
         try:
             gain = float(val)
             globals()['MUSIC_GAIN'] = gain
             if hasattr(self, 'music_gain_label') and self.music_gain_label:
-                self.music_gain_label.config(text=f"{gain:.2f}x")
+                self.music_gain_label.config(text=_gain_to_db_str(gain))
         except Exception:
             pass
+
+    def _apply_openai_key(self):
+        """Apply the OpenAI API key for ChatGPT-quality translations."""
+        try:
+            key = self.openai_api_key_var.get().strip()
+            if key:
+                globals()['OPENAI_API_KEY'] = key
+                os.environ['OPENAI_API_KEY'] = key
+                messagebox.showinfo("OpenAI Key", "OpenAI API key set — translations will use ChatGPT quality.")
+            else:
+                globals()['OPENAI_API_KEY'] = None
+                os.environ.pop('OPENAI_API_KEY', None)
+                messagebox.showinfo("OpenAI Key", "OpenAI API key cleared — using Google Translate fallback.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to set OpenAI key: {e}")
     
     def on_translation_toggle(self):
         """Callback when translation checkbox is toggled"""
