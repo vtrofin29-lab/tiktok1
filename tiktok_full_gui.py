@@ -208,13 +208,8 @@ def translate_segments(segments, target_language='en', log=None):
     """
     Translate all caption segments to target language.
     
-    Uses batch translation (joining all segments with a separator, translating
-    once, then splitting) so the translation engine sees the full context.
-    This produces significantly better results than translating each short
-    segment in isolation, where the engine lacks context and often produces
-    nonsensical output.
-    
-    Falls back to per-segment translation if batch splitting fails.
+    Tries OpenAI (ChatGPT) first for highest quality context-aware translations.
+    Falls back to Google Translate batch translation, then per-segment translation.
     
     Args:
         segments: List of caption segments from Whisper
@@ -224,7 +219,7 @@ def translate_segments(segments, target_language='en', log=None):
     Returns:
         List of segments with translated text
     """
-    if not TRANSLATION_AVAILABLE or target_language == 'none':
+    if target_language == 'none':
         return segments
     
     if not segments:
@@ -232,6 +227,18 @@ def translate_segments(segments, target_language='en', log=None):
     
     if log:
         log(f"[TRANSLATE] Translating {len(segments)} segments to {target_language}...")
+    
+    # --- Try OpenAI translation first (best quality) ---
+    openai_result = _openai_translate_segments(segments, target_language, log=log)
+    if openai_result is not None:
+        if log:
+            log("[TRANSLATE] Translation complete! (OpenAI)")
+        return openai_result
+    
+    if not TRANSLATION_AVAILABLE:
+        if log:
+            log("[TRANSLATE] No translation engine available (install googletrans or set OPENAI_API_KEY)")
+        return segments
     
     # --- Batch translation for better context ---
     _SEP = " ||| "
@@ -281,6 +288,98 @@ def translate_segments(segments, target_language='en', log=None):
         log("[TRANSLATE] Translation complete!")
     
     return translated
+
+
+# ----------------- OPENAI TRANSLATION (ChatGPT-like quality) -----------------
+
+def _openai_translate_segments(segments, target_language, log=None):
+    """
+    Translate caption segments using OpenAI ChatGPT API for high-quality,
+    context-aware translations that preserve meaning and natural phrasing.
+    
+    Returns translated segments list, or None if OpenAI is not available/fails.
+    """
+    api_key = globals().get('OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY')
+    if not api_key:
+        return None
+    
+    if not segments:
+        return segments
+    
+    try:
+        import openai
+    except ImportError:
+        if log:
+            log("[TRANSLATE] openai package not installed -- falling back to Google Translate")
+        return None
+    
+    # Language name mapping for better prompts
+    _LANG_NAMES = {
+        'ro': 'Romanian', 'en': 'English', 'es': 'Spanish', 'fr': 'French',
+        'de': 'German', 'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch',
+        'pl': 'Polish', 'ru': 'Russian', 'ja': 'Japanese', 'ko': 'Korean',
+        'zh': 'Chinese', 'ar': 'Arabic', 'hi': 'Hindi', 'tr': 'Turkish',
+        'sv': 'Swedish', 'da': 'Danish', 'fi': 'Finnish', 'no': 'Norwegian',
+        'cs': 'Czech', 'hu': 'Hungarian', 'el': 'Greek', 'bg': 'Bulgarian',
+        'hr': 'Croatian', 'sk': 'Slovak', 'sl': 'Slovenian', 'uk': 'Ukrainian',
+        'th': 'Thai', 'vi': 'Vietnamese', 'id': 'Indonesian', 'ms': 'Malay',
+    }
+    lang_name = _LANG_NAMES.get(target_language, target_language)
+    
+    originals = [seg.get("text", "").strip() for seg in segments]
+    numbered_lines = "\n".join(f"{i+1}. {t}" for i, t in enumerate(originals))
+    
+    system_prompt = (
+        f"You are an expert translator. Translate the following numbered lines into {lang_name}. "
+        f"Produce natural, fluent translations that preserve the original meaning and tone. "
+        f"Keep the same numbering format. Each line is a subtitle caption -- keep translations "
+        f"concise but meaningful. Do NOT add explanations or notes. "
+        f"Output ONLY the numbered translated lines."
+    )
+    
+    try:
+        client = openai.OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": numbered_lines},
+            ],
+            temperature=0.3,
+            max_tokens=max(len(numbered_lines) * 3, 256),
+        )
+        
+        raw = response.choices[0].message.content.strip()
+        
+        # Parse numbered output: "1. translated text"
+        import re as _re
+        parsed = {}
+        for line in raw.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            m = _re.match(r"(\d+)\.\s*(.*)", line)
+            if m:
+                parsed[int(m.group(1))] = m.group(2).strip()
+        
+        if len(parsed) >= len(segments) * 0.8:
+            translated = []
+            for i, seg in enumerate(segments):
+                new_seg = seg.copy()
+                new_seg["text"] = parsed.get(i + 1, originals[i])
+                new_seg["original_text"] = originals[i]
+                translated.append(new_seg)
+            if log:
+                log(f"[TRANSLATE] OpenAI translation succeeded ({len(parsed)}/{len(segments)} segments)")
+            return translated
+        else:
+            if log:
+                log(f"[TRANSLATE] OpenAI returned {len(parsed)}/{len(segments)} segments -- falling back")
+            return None
+    except Exception as e:
+        if log:
+            log(f"[TRANSLATE] OpenAI translation failed: {e} -- falling back to Google Translate")
+        return None
 
 # ----------------- AI VOICE REPLACEMENT FUNCTIONS -----------------
 
@@ -1038,9 +1137,8 @@ CROP_BOTTOM_RATIO = 0.35
 # If the width-scaled foreground would be shorter than this, it scales up more (zooms in, clips sides).
 MIN_FG_HEIGHT_RATIO = 0.35  # Foreground fills at least 35% of canvas height (672px on 1920px canvas)
 
-VOICE_GAIN = 5.0  # Default: 5.0x louder for strong voice clarity
-MUSIC_GAIN = 0.25  # Default: 0.25x quieter for subtle background music
-FFMPEG_OUTPUT_VOLUME_BOOST = 2.0  # Overall audio boost applied in FFmpeg to ensure adequate output volume
+VOICE_GAIN = 5.0  # Default: 5.0x — applied as FFmpeg output volume (not in MoviePy, to prevent clipping)
+MUSIC_GAIN = 0.25  # Default: 0.25x quieter for subtle background music (applied in MoviePy for voice:music ratio)
 CAPTION_FONT_PREFERRED = "Bangers"
 CAPTION_FONT_SIZE = 56
 
@@ -3707,12 +3805,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         # Label the filter output for mapping
         filter_parts[-1] += "[vout]"
         
-        # Add audio volume boost filter — applies the pre-mixed volume levels
-        # faithfully to the final output, compensating for any signal loss in the
-        # MoviePy → WAV → FFmpeg pipeline.  The voice/music balance is already baked
-        # into the mixed audio via MoviePy's volumex(); this 2× overall boost
-        # ensures the output is at a comfortable listening level.
-        filter_parts.append(f"[2:a]volume={FFMPEG_OUTPUT_VOLUME_BOOST}[aout]")
+        # Add audio volume boost filter — VOICE_GAIN is applied here (not in MoviePy)
+        # to prevent WAV clipping.  The voice:music balance is already set in MoviePy
+        # (music gets MUSIC_GAIN, voice stays at 1.0).  VOICE_GAIN controls overall
+        # output loudness applied losslessly in FFmpeg's 32-bit float pipeline.
+        filter_parts.append(f"[2:a]volume={VOICE_GAIN}[aout]")
         
         # Join all filter parts with semicolons
         filter_chain = ";".join(filter_parts)
@@ -4868,8 +4965,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
         if voice_path and os.path.exists(voice_path):
             if _queue_stop_event.is_set():
                 raise InterruptedError("Stopped by user before audio processing")
-            log(f"[AUDIO] Applying voice gain: {VOICE_GAIN:.1f}x (music gain: {MUSIC_GAIN:.2f}x)")
-            voice_clip = AudioFileClip(voice_path).volumex(VOICE_GAIN)
+            log(f"[AUDIO] Voice gain: {VOICE_GAIN:.1f}x (applied in FFmpeg), music gain: {MUSIC_GAIN:.2f}x (applied in MoviePy)")
+            voice_clip = AudioFileClip(voice_path)  # No volumex here — gain applied in FFmpeg to prevent WAV clipping
             music_clip = AudioFileClip(music_path)
             target_duration = voice_clip.duration
             log(f"Voice duration (target): {target_duration:.2f}s")
@@ -4938,7 +5035,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     tts_duration = pre_generated_voice['tts_duration']
                     
                     # Load the pre-generated TTS audio
-                    tts_clip = AudioFileClip(compressed_tts_path).volumex(VOICE_GAIN)
+                    tts_clip = AudioFileClip(compressed_tts_path)  # No volumex — gain applied in FFmpeg
                     
                     log(f"[AI VOICE] TTS voice duration: {tts_duration:.2f}s")
                     log("[AI VOICE] Keeping TTS voice at original speed (natural sound)")
@@ -5043,7 +5140,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                                     log(f"[AI VOICE] Extended last caption from {last_caption_end:.2f}s to {tts_final_duration:.2f}s (full video duration)")
                             
                             # Load the silence-removed TTS audio
-                            tts_clip = AudioFileClip(compressed_tts_path).volumex(VOICE_GAIN)
+                            tts_clip = AudioFileClip(compressed_tts_path)  # No volumex — gain applied in FFmpeg
                             
                             # Use TTS duration as the new target - DO NOT speed up/slow down the voice
                             tts_duration = tts_clip.duration

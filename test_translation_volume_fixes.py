@@ -271,5 +271,83 @@ def test_music_slider_max_is_5():
 def test_audio_gain_debug_logging():
     """Audio processing should log the actual gain values being applied."""
     source = _read_source()
-    assert '[AUDIO] Applying voice gain:' in source, \
+    assert '[AUDIO] Voice gain:' in source, \
         "Audio processing should log voice gain values for debugging"
+
+
+# ─── Voice gain applied in FFmpeg (not MoviePy) ────────────────────
+
+def test_voice_gain_not_in_moviepy():
+    """Voice clips should NOT have volumex(VOICE_GAIN) — gain is applied in FFmpeg."""
+    source = _read_source()
+    assert '.volumex(VOICE_GAIN)' not in source, \
+        "Voice gain should NOT be applied via MoviePy volumex (causes WAV clipping). " \
+        "It should be applied in FFmpeg's volume filter instead."
+
+
+def test_voice_gain_in_ffmpeg_filter():
+    """FFmpeg filter should use VOICE_GAIN (not a fixed constant) for audio volume."""
+    source = _read_source()
+    export_fn = source[source.find('def _export_with_ffmpeg_filters'):]
+    assert 'volume={VOICE_GAIN}' in export_fn, \
+        "FFmpeg audio filter should use dynamic VOICE_GAIN value, not a fixed constant"
+
+
+def test_no_ffmpeg_output_volume_boost_constant():
+    """The fixed FFMPEG_OUTPUT_VOLUME_BOOST constant should be removed."""
+    source = _read_source()
+    assert 'FFMPEG_OUTPUT_VOLUME_BOOST' not in source, \
+        "FFMPEG_OUTPUT_VOLUME_BOOST constant should be removed (replaced by VOICE_GAIN in FFmpeg)"
+
+
+# ─── OpenAI translation integration ────────────────────────────────
+
+def test_openai_translate_function_exists():
+    """The _openai_translate_segments function should exist."""
+    source = _read_source()
+    assert 'def _openai_translate_segments(' in source, \
+        "_openai_translate_segments function should exist for ChatGPT-quality translations"
+
+
+def test_translate_segments_tries_openai_first():
+    """translate_segments should try OpenAI translation before Google Translate."""
+    source = _read_source()
+    func_start = source.find("def translate_segments(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert '_openai_translate_segments' in func_body, \
+        "translate_segments should call _openai_translate_segments first for best quality"
+
+
+def test_openai_translate_uses_api_key():
+    """OpenAI translation should use OPENAI_API_KEY from globals or environment."""
+    source = _read_source()
+    func_start = source.find("def _openai_translate_segments(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'OPENAI_API_KEY' in func_body, \
+        "OpenAI translation should use OPENAI_API_KEY"
+
+
+def test_openai_translate_falls_back_gracefully():
+    """OpenAI translation should return None when API key is missing (fallback to googletrans)."""
+    source = _read_source()
+    func_start = source.find("def _openai_translate_segments(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'return None' in func_body, \
+        "OpenAI translation should return None on failure for graceful fallback"
+
+
+def test_openai_translate_uses_gpt4o_mini():
+    """OpenAI translation should use gpt-4o-mini model for cost efficiency."""
+    source = _read_source()
+    func_start = source.find("def _openai_translate_segments(")
+    assert func_start != -1
+    func_end = source.find("\ndef ", func_start + 10)
+    func_body = source[func_start:func_end]
+    assert 'gpt-4o-mini' in func_body, \
+        "OpenAI translation should use gpt-4o-mini model"
