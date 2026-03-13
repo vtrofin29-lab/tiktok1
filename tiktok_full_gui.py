@@ -402,7 +402,7 @@ def translate_segments(segments, target_language='en', log=None):
                     translated.append(new_seg)
                 if log:
                     log("[TRANSLATE] Batch translation complete!")
-                return translated
+                return _reduce_translation_repetition(translated, log=log)
             else:
                 if log:
                     log(f"[TRANSLATE] Batch split mismatch ({len(parts)} vs {len(segments)}), falling back to per-segment")
@@ -429,7 +429,132 @@ def translate_segments(segments, target_language='en', log=None):
     if log:
         log(f"[TRANSLATE] Translation complete!")
     
-    return translated
+    return _reduce_translation_repetition(translated, log=log)
+
+
+def _reduce_translation_repetition(segments, log=None):
+    """
+    Post-process translated segments to reduce repetitive phrasing.
+    
+    When consecutive segments share substantial text, replaces the
+    repeated portion with shorter references (e.g., 'la fel', 'the same',
+    'de asemenea', etc.) based on target language detection.
+    
+    This is used for the googletrans path which lacks contextual awareness.
+    OpenAI translations already handle this via the system prompt.
+    """
+    if not segments or len(segments) < 2:
+        return segments
+    
+    import re
+    
+    for i in range(1, len(segments)):
+        prev_text = segments[i - 1].get("text", "").strip()
+        curr_text = segments[i].get("text", "").strip()
+        
+        if not prev_text or not curr_text:
+            continue
+        
+        # Normalize for comparison: lowercase, strip punctuation
+        def _normalize(t):
+            return re.sub(r'[^\w\s]', '', t.lower()).strip()
+        
+        prev_norm = _normalize(prev_text)
+        curr_norm = _normalize(curr_text)
+        
+        # Skip very short segments (less than 4 words)
+        prev_words = prev_norm.split()
+        curr_words = curr_norm.split()
+        if len(curr_words) < 4 or len(prev_words) < 4:
+            continue
+        
+        # Check if segments are very similar (>70% word overlap)
+        prev_set = set(prev_words)
+        curr_set = set(curr_words)
+        if not prev_set or not curr_set:
+            continue
+        overlap = len(prev_set & curr_set) / max(len(prev_set), len(curr_set))
+        
+        if overlap < 0.7:
+            continue
+        
+        # Find the differing words between segments
+        # Try to identify what changed (e.g., "el" -> "ea", "he" -> "she")
+        diff_words = []
+        for w in curr_words:
+            if w not in prev_set:
+                diff_words.append(w)
+        
+        if not diff_words:
+            # Segments are essentially identical - use "la fel" / "the same"
+            segments[i]["text"] = _build_short_reference(curr_text, prev_text, diff_words=[])
+        elif len(diff_words) <= 2:
+            # Only 1-2 words differ - build a concise reference
+            segments[i]["text"] = _build_short_reference(curr_text, prev_text, diff_words=diff_words)
+        # else: too many differences, keep original
+    
+    if log:
+        log("[TRANSLATE] Applied anti-repetition post-processing")
+    
+    return segments
+
+
+def _build_short_reference(curr_text, prev_text, diff_words):
+    """
+    Build a shorter version of curr_text that references prev_text.
+    
+    Examples:
+    - "He was 20" / "She was 20" -> "She, too" or "She la fel"
+    - "El avea 20 de ani" / "Ea avea 20 de ani" -> "Ea la fel"
+    """
+    import re
+    
+    # Detect language heuristics based on common words
+    lower = curr_text.lower()
+    
+    # Romanian detection
+    ro_markers = ['și', 'este', 'avea', 'ani', 'de', 'la', 'că', 'într', 'pentru']
+    is_romanian = any(m in lower for m in ro_markers)
+    
+    # Spanish detection
+    es_markers = ['ella', 'también', 'tenía', 'años', 'pero', 'como']
+    is_spanish = any(m in lower for m in es_markers)
+    
+    # French detection
+    fr_markers = ['elle', 'aussi', 'avait', 'mais', 'comme', 'les']
+    is_french = any(m in lower for m in fr_markers)
+    
+    # German detection
+    de_markers = ['sie', 'auch', 'hatte', 'aber', 'wie', 'und']
+    is_german = any(m in lower for m in de_markers)
+    
+    if not diff_words:
+        # Identical segments
+        if is_romanian:
+            return "La fel"
+        elif is_spanish:
+            return "Lo mismo"
+        elif is_french:
+            return "Pareil"
+        elif is_german:
+            return "Genauso"
+        else:
+            return "The same"
+    
+    # Build reference with the differing subject + short connector
+    subject = " ".join(diff_words)
+    
+    if is_romanian:
+        return f"{subject.capitalize()} la fel"
+    elif is_spanish:
+        return f"{subject.capitalize()} también"
+    elif is_french:
+        return f"{subject.capitalize()} aussi"
+    elif is_german:
+        return f"{subject.capitalize()} auch"
+    else:
+        return f"{subject.capitalize()} too"
+
 
 # ----------------- AI VOICE REPLACEMENT FUNCTIONS -----------------
 
@@ -1322,6 +1447,7 @@ TRANS_TO_TTS_LANG = {'zh-cn': 'zh', 'zh-tw': 'zh'}
 TTS_ENGINE = 'gtts'  # Options: 'gtts' (free, basic), 'elevenlabs', 'openai', 'azure'
 ELEVENLABS_API_KEY = None
 OPENAI_API_KEY = None
+STOP_REQUESTED = False
 AZURE_SPEECH_KEY = None
 AZURE_SPEECH_REGION = None
 
@@ -4019,6 +4145,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     
     MAX_FFMPEG_RETRIES = 2
     last_ffmpeg_error = None
+    if globals().get('STOP_REQUESTED', False):
+        log("[STOP] ⛔ Processing stopped by user.")
+        return False
     for ffmpeg_attempt in range(MAX_FFMPEG_RETRIES):
         try:
             import tempfile
@@ -4401,6 +4530,10 @@ def make_music_match_duration(music_clip, target_duration, log):
 def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None):
     def log(s):
         q.put(str(s))
+    def _check_stop():
+        if globals().get('STOP_REQUESTED', False):
+            log("[STOP] ⛔ Processing stopped by user.")
+            raise InterruptedError("Stop requested by user")
     old_stdout, old_stderr = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = QueueWriter(q)
     temp_fg = None
@@ -4494,6 +4627,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             return
 
         # Load video first to get dimensions
+        _check_stop()
         original_clip = VideoFileClip(video_path)
         cropped = crop_precise_top_bottom_return_cropped(original_clip, log, top_ratio=custom_top_ratio, bottom_ratio=custom_bottom_ratio)
 
@@ -4630,6 +4764,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             # If AI voice is enabled, we'll transcribe from the TTS audio later
             if not use_ai_voice:
                 log("[CAPTION] Transcribing captions from original voice...")
+                _check_stop()
                 caption_segments = transcribe_captions(
                     voice_path, 
                     log, 
@@ -4864,6 +4999,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             log(f"Job finished successfully. Output: {output_path}")
         else:
             log("Job finished with errors.")
+    except InterruptedError:
+        log("[STOP] ⛔ Job was stopped by user.")
     except Exception as e:
         q.put(f"Exception: {e}")
         import traceback
@@ -6364,6 +6501,8 @@ class App:
         bottom_controls.grid(row=row, column=0, columnspan=3, sticky="we")
         self.run_single_btn = ttk.Button(bottom_controls, text="▶ Run (Single)", style='Success.TButton', command=self.on_run_single)
         self.run_single_btn.pack(side="left", padx=4)
+        self.stop_btn = ttk.Button(bottom_controls, text="⏹ Stop", style='Danger.TButton', command=self._on_stop)
+        self.stop_btn.pack(side="left", padx=4)
         ttk.Button(bottom_controls, text="Toggle Fullscreen", style='Info.TButton', command=self.toggle_fullscreen).pack(side="left", padx=4)
         ttk.Button(bottom_controls, text="Quit", style='Danger.TButton', command=root.quit).pack(side="left", padx=4)
 
@@ -8255,8 +8394,20 @@ class App:
         except Exception as e:
             messagebox.showerror("Error loading job", str(e))
 
+    def _on_stop(self):
+        """Stop the current processing job."""
+        globals()['STOP_REQUESTED'] = True
+        try:
+            self.log_widget.config(state='normal')
+            self.log_widget.insert('end', "[STOP] Stop requested — finishing current step…\n")
+            self.log_widget.see('end')
+            self.log_widget.config(state='disabled')
+        except Exception:
+            pass
+
     def on_run_single(self):
         try:
+            globals()['STOP_REQUESTED'] = False
             video = self.video_var.get().strip()
             voice = self.voice_var.get().strip()
             music = self.music_var.get().strip()
