@@ -3473,6 +3473,33 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
+
+        # ── Extra background crop when spot blur is active ──
+        # When spot blur is enabled, the background (blurred version of same video)
+        # still shows the content the spot blur is trying to hide. To prevent this,
+        # crop the background to exclude the vertical range of the spot blur area,
+        # keeping the larger portion (above or below), then zoom in to fill the frame.
+        _blur_ov = effect_settings or {}
+        if _blur_ov.get('blur_overlay_enabled', False):
+            _by_pct = float(_blur_ov.get('blur_overlay_y', 10))
+            _bh_pct = float(_blur_ov.get('blur_overlay_h', 15))
+            _blur_top = _by_pct / 100.0           # top edge of blur area (fraction)
+            _blur_bottom = (_by_pct + _bh_pct) / 100.0  # bottom edge (fraction)
+            # Portion above vs below the blur area
+            _above = _blur_top                     # fraction of video above blur
+            _below = 1.0 - _blur_bottom            # fraction of video below blur
+            if _above >= _below and _above > 0.15:
+                # Keep the portion above the blur area
+                bg_crop_part = f"crop=iw:ih*{_above:.4f}:0:0,"
+                log_fn(f"[EXPORT]   Background spot-blur crop: keeping top {_above*100:.1f}% (above blur at y={_by_pct:.0f}%)")
+            elif _below > 0.15:
+                # Keep the portion below the blur area
+                bg_crop_part = f"crop=iw:ih*{_below:.4f}:0:ih*{_blur_bottom:.4f},"
+                log_fn(f"[EXPORT]   Background spot-blur crop: keeping bottom {_below*100:.1f}% (below blur at y+h={_blur_bottom*100:.0f}%)")
+            else:
+                # Blur area is too large to crop around – keep default crop
+                log_fn(f"[EXPORT]   Background spot-blur crop: blur area too large ({_bh_pct:.0f}%), using default crop")
+
         if gpu_filters and USE_HARDWARE_DECODING and not needs_stream_loop:
             # GPU-accelerated decode + CPU boxblur: identical quality to CPU-only path.
             # GPU handles fast decode via -hwaccel cuda, then hwdownload transfers frames
@@ -3517,13 +3544,12 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
         # Add filter threading for CPU filter processing.
-        # GPU path: GPU handles decode, CPU handles crop + scale + boxblur.
-        # When GPU is active, use half CPU cores to keep CPU at ~50-60%.
+        # Use all available CPU cores for maximum throughput.
         total_cores = os.cpu_count() or 4
         if use_gpu:
-            cpu_threads = max(2, min(total_cores // 2, 8))
+            cpu_threads = max(2, total_cores // 2)
         else:
-            cpu_threads = min(total_cores, 8)
+            cpu_threads = total_cores
         bg_cmd.extend(["-filter_threads", str(cpu_threads)])
         # When spot blur is enabled on the background, we need -filter_complex
         # because the split→crop→overlay graph requires named streams.
@@ -3819,18 +3845,15 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         cmd.extend(["-i", audio_path])
         
         # Use multiple threads for CPU filter processing (captions, effects, etc.).
-        # Limit to ~half CPU cores when GPU is active to keep CPU at 50-60% and let GPU
-        # handle encoding + overlay. This prevents CPU from saturating all cores while
-        # the GPU encoder waits, providing a better CPU/GPU balance.
+        # Use all available CPU cores for maximum throughput.
         if not use_gpu_overlay:
             total_cores = os.cpu_count() or 4
             if use_gpu:
-                # GPU active: use half the cores for filters, rest of CPU headroom for
-                # decoding, OS tasks, etc. GPU handles encoding + overlay.
-                cpu_threads = max(2, min(total_cores // 2, 8))
+                # GPU active: use half the cores for filters, GPU handles encoding.
+                cpu_threads = max(2, total_cores // 2)
             else:
                 # CPU-only: use all available cores for maximum throughput.
-                cpu_threads = min(total_cores, 8)
+                cpu_threads = total_cores
             cmd.extend(["-filter_threads", str(cpu_threads), "-filter_complex_threads", str(cpu_threads)])
             log_fn(f"[EXPORT] ✓ CPU filter threading: {cpu_threads} threads")
         
