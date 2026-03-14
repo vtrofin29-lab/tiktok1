@@ -144,6 +144,34 @@ def test_gpu_path_uses_half_cores():
     print("✓ GPU path uses half CPU cores (no cap)")
 
 
+def test_bg_filter_complex_threads():
+    """Background pass must set -filter_complex_threads alongside -filter_threads."""
+    src = _get_source()
+    assert '"filter_complex_threads"' in src or "'filter_complex_threads'" in src or \
+           '"-filter_complex_threads"' in src or "'-filter_complex_threads'" in src, (
+        "Background pass must include -filter_complex_threads for full CPU utilization"
+    )
+    print("✓ Background pass sets -filter_complex_threads")
+
+
+def test_bg_cpu_encode_threads():
+    """Background CPU encode (libx264) must include -threads 0 for maximum throughput."""
+    src = _get_source()
+    # Find the bg cpu encode block - it should have both ultrafast and threads
+    # Look for the bg_cmd line that has libx264 and ultrafast and threads
+    lines = src.split('\n')
+    found_bg_threads = False
+    for line in lines:
+        if 'libx264' in line and 'ultrafast' in line and 'threads' in line:
+            found_bg_threads = True
+            break
+    assert found_bg_threads, (
+        "Background CPU encode must include -threads 0 alongside -preset ultrafast "
+        "for maximum encoding throughput"
+    )
+    print("✓ Background CPU encode includes -threads 0")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

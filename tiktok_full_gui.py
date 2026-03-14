@@ -3550,7 +3550,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             cpu_threads = max(2, total_cores // 2)
         else:
             cpu_threads = total_cores
-        bg_cmd.extend(["-filter_threads", str(cpu_threads)])
+        bg_cmd.extend(["-filter_threads", str(cpu_threads), "-filter_complex_threads", str(cpu_threads)])
         # When spot blur is enabled on the background, we need -filter_complex
         # because the split→crop→overlay graph requires named streams.
         if bg_spot_blur:
@@ -3563,7 +3563,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if use_gpu:
             bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "constqp", "-qp", "30", "-b:v", "0", "-multipass", "0"])
         else:
-            bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
+            bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-threads", "0"])
         
         # Limit bg to same duration as output
         bg_duration_limit = None
