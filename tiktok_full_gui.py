@@ -4472,7 +4472,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         for codec in codec_try_order:
             for attempt in range(MAX_ATTEMPTS_PER_CODEC):
                 ffmpeg_params = _make_ffmpeg_params_for_codec(codec)
-                threads_setting = 4  # Use 4 threads for better performance (was 0/auto)
+                threads_setting = os.cpu_count() or 4  # Use all CPU cores for maximum export speed
                 # Log GPU usage status for user clarity
                 gpu_status = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
                 log(f"[EXPORT] Starting export with {gpu_status}")
@@ -7616,7 +7616,7 @@ class App:
                 pass
 
     def on_caption_position_changed(self, val):
-        """Callback when caption vertical position slider changes."""
+        """Callback when caption vertical position slider changes (debounced)."""
         try:
             # val comes as string; set global and update label
             try:
@@ -7627,6 +7627,23 @@ class App:
                 except Exception:
                     offset = 0
             globals()['CAPTION_Y_OFFSET'] = offset
+
+            # Cancel any pending debounced preview update
+            pending = getattr(self, '_caption_pos_debounce_id', None)
+            if pending is not None:
+                self.after_cancel(pending)
+                self._caption_pos_debounce_id = None
+
+            # Schedule the heavy preview update after a short delay (debounce)
+            self._caption_pos_debounce_id = self.after(80, self._do_caption_position_update)
+        except Exception:
+            pass
+
+    def _do_caption_position_update(self):
+        """Deferred caption position preview update (called after debounce delay)."""
+        self._caption_pos_debounce_id = None
+        try:
+            offset = globals().get('CAPTION_Y_OFFSET', 0)
             try:
                 self.log_widget.config(state='normal')
                 self.log_widget.insert('end', f"[CAPTION-POS-CHANGE] Y offset changed to: {offset}px\n")
@@ -7634,19 +7651,14 @@ class App:
                 self.log_widget.see('end')
             except Exception:
                 pass
-            
-            # Update mini preview to show new caption position - FORCE REDRAW
+
+            # Update mini preview to show new caption position
             try:
                 if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    # Redraw the mini preview with updated caption indicator
                     top_pct = float(self.top_percent_var.get())/100.0
                     bottom_pct = float(self.bottom_percent_var.get())/100.0
                     composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    # Use centralized redraw method that ALWAYS includes caption indicator
                     self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    # Force canvas update
-                    self.mini_canvas.update_idletasks()
-                    
             except Exception as e:
                 try:
                     self.log_widget.config(state='normal')
@@ -7654,7 +7666,7 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
-            
+
             # Also refresh TikTok preview to show caption at exact final position
             try:
                 self.on_tiktok_preview_refresh()
@@ -7677,28 +7689,22 @@ class App:
             offset = max(min_val, min(200, offset))
             self.caption_y_offset_var.set(offset)
             globals()['CAPTION_Y_OFFSET'] = offset
-            # Update mini preview
-            try:
-                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    top_pct = float(self.top_percent_var.get())/100.0
-                    bottom_pct = float(self.bottom_percent_var.get())/100.0
-                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    self.mini_canvas.update_idletasks()
-            except Exception:
-                pass
-            # Also refresh TikTok preview to show caption at exact final position
-            try:
-                self.on_tiktok_preview_refresh()
-            except Exception:
-                pass
+
+            # Cancel any pending debounced preview update (shared with slider)
+            pending = getattr(self, '_caption_pos_debounce_id', None)
+            if pending is not None:
+                self.after_cancel(pending)
+                self._caption_pos_debounce_id = None
+
+            # Schedule the heavy preview update after a short delay (debounce)
+            self._caption_pos_debounce_id = self.after(80, self._do_caption_position_update)
         except Exception:
             pass
 
     def on_caption_font_size_changed(self, val):
-        """Callback when caption font size slider changes."""
+        """Callback when caption font size slider changes (debounced)."""
         try:
-            # val comes as string; set global and update label
+            # val comes as string; set global and update label immediately (lightweight)
             try:
                 size = int(float(val))
             except Exception:
@@ -7716,33 +7722,15 @@ class App:
                     self.caption_font_size_label.config(text=f"{size}px")
             except Exception:
                 pass
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[FONT-SIZE-CHANGE] Font size changed to: {size}px\n")
-                self.log_widget.config(state='disabled')
-                self.log_widget.see('end')
-            except Exception:
-                pass
-            
-            # Update mini preview to show new font size - FORCE REDRAW
-            try:
-                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    # Redraw the mini preview with updated caption
-                    top_pct = float(self.top_percent_var.get())/100.0
-                    bottom_pct = float(self.bottom_percent_var.get())/100.0
-                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    # Use centralized redraw method that includes caption indicator
-                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    # Force canvas update
-                    self.mini_canvas.update_idletasks()
-                    
-            except Exception as e:
-                try:
-                    self.log_widget.config(state='normal')
-                    self.log_widget.insert('end', f"[FONT-SIZE-UPDATE-ERR] {e}\n")
-                    self.log_widget.config(state='disabled')
-                except Exception:
-                    pass
+
+            # Cancel any pending debounced preview update
+            pending = getattr(self, '_font_size_debounce_id', None)
+            if pending is not None:
+                self.after_cancel(pending)
+                self._font_size_debounce_id = None
+
+            # Schedule the heavy preview update after a short delay (debounce)
+            self._font_size_debounce_id = self.after(80, self._do_font_size_preview_update)
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -7750,6 +7738,36 @@ class App:
                 self.log_widget.config(state='disabled')
             except Exception:
                 pass
+
+    def _do_font_size_preview_update(self):
+        """Deferred font size preview update (called after debounce delay)."""
+        self._font_size_debounce_id = None
+        try:
+            size = globals().get('CAPTION_FONT_SIZE', 56)
+            try:
+                self.log_widget.config(state='normal')
+                self.log_widget.insert('end', f"[FONT-SIZE-CHANGE] Font size changed to: {size}px\n")
+                self.log_widget.config(state='disabled')
+                self.log_widget.see('end')
+            except Exception:
+                pass
+
+            # Update mini preview to show new font size
+            try:
+                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
+                    top_pct = float(self.top_percent_var.get())/100.0
+                    bottom_pct = float(self.bottom_percent_var.get())/100.0
+                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
+                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
+            except Exception as e:
+                try:
+                    self.log_widget.config(state='normal')
+                    self.log_widget.insert('end', f"[FONT-SIZE-UPDATE-ERR] {e}\n")
+                    self.log_widget.config(state='disabled')
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def on_words_per_caption_changed(self, *args):
         """Callback when words per caption spinbox changes."""
