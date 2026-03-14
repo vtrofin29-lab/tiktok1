@@ -9271,11 +9271,11 @@ class App:
             # Display in TikTok preview canvas — must run on main thread.
             # Use root.after(0, ...) so this is safe from both main and worker threads.
             photo = ImageTk.PhotoImage(preview_canvas)
-            def _apply_preview(ph=photo):
+            def _apply_preview(photo_image=photo):
                 try:
                     self.tiktok_preview_canvas.delete("all")
-                    self.tiktok_preview_canvas.create_image(90, 160, image=ph)
-                    self.tiktok_preview_image_ref = ph  # Keep reference
+                    self.tiktok_preview_canvas.create_image(90, 160, image=photo_image)
+                    self.tiktok_preview_image_ref = photo_image  # Keep reference
                 except Exception:
                     pass
             self.root.after(0, _apply_preview)
@@ -9293,6 +9293,10 @@ class App:
         from slider handlers (font size, Y offset) causes the slider to freeze
         after 1-2 changes. This method spawns a daemon thread and skips if a
         previous refresh is still running.
+        
+        Note: This is always called from the Tkinter main thread (via after()
+        debounce), so the is_alive() check-and-set is not racy in practice.
+        Same pattern as _mini_update_worker_async.
         """
         t = getattr(self, '_tiktok_preview_thread', None)
         if t is not None and t.is_alive():
