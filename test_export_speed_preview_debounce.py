@@ -112,10 +112,10 @@ def test_font_size_handler_still_sets_global():
 
 
 def test_font_size_deferred_calls_tiktok_preview():
-    """Deferred font size update must call on_tiktok_preview_refresh (like position does)."""
+    """Deferred font size update must call _refresh_tiktok_preview_async (async to avoid UI freeze)."""
     src = _get_method_source("_do_font_size_preview_update")
-    assert "on_tiktok_preview_refresh" in src, \
-        "_do_font_size_preview_update must call on_tiktok_preview_refresh to update TikTok preview"
+    assert "_refresh_tiktok_preview_async" in src, \
+        "_do_font_size_preview_update must call _refresh_tiktok_preview_async to update TikTok preview"
 
 
 def test_font_size_handler_does_not_call_tiktok_preview_directly():
@@ -158,10 +158,10 @@ def test_caption_position_handler_does_not_call_tiktok_preview_directly():
 
 
 def test_caption_position_deferred_calls_tiktok_preview():
-    """Deferred position update must call on_tiktok_preview_refresh."""
+    """Deferred position update must call _refresh_tiktok_preview_async (async to avoid UI freeze)."""
     src = _get_method_source("_do_caption_position_update")
-    assert "on_tiktok_preview_refresh" in src, \
-        "_do_caption_position_update must call on_tiktok_preview_refresh"
+    assert "_refresh_tiktok_preview_async" in src, \
+        "_do_caption_position_update must call _refresh_tiktok_preview_async"
 
 
 # ── Spinbox Debounce Tests ──────────────────────────────────────
@@ -197,4 +197,59 @@ def test_spinbox_does_not_call_tiktok_preview_directly():
     src = _get_method_source("_on_caption_y_spinbox_changed")
     assert "on_tiktok_preview_refresh" not in src, \
         "_on_caption_y_spinbox_changed must not call on_tiktok_preview_refresh directly"
+
+
+# ── Async TikTok Preview Tests ─────────────────────────────────
+
+def test_refresh_tiktok_preview_async_method_exists():
+    """_refresh_tiktok_preview_async method must exist."""
+    src = _get_full_source()
+    assert "def _refresh_tiktok_preview_async(self)" in src, \
+        "TikTokApp must have _refresh_tiktok_preview_async method"
+
+
+def test_refresh_tiktok_preview_async_uses_thread():
+    """_refresh_tiktok_preview_async must use threading.Thread for non-blocking preview."""
+    src = _get_method_source("_refresh_tiktok_preview_async")
+    assert "threading.Thread" in src, \
+        "_refresh_tiktok_preview_async must use threading.Thread"
+    assert "daemon=True" in src, \
+        "_refresh_tiktok_preview_async thread must be daemon"
+
+
+def test_refresh_tiktok_preview_async_skips_if_running():
+    """_refresh_tiktok_preview_async must skip if previous refresh is still running."""
+    src = _get_method_source("_refresh_tiktok_preview_async")
+    assert "is_alive()" in src, \
+        "_refresh_tiktok_preview_async must check if thread is_alive() to skip duplicate updates"
+
+
+def test_tiktok_preview_refresh_uses_root_after_for_canvas():
+    """on_tiktok_preview_refresh must schedule canvas update on main thread via root.after."""
+    src = _get_method_source("on_tiktok_preview_refresh")
+    assert "root.after(0" in src, \
+        "on_tiktok_preview_refresh must use root.after(0, ...) for thread-safe canvas update"
+
+
+def test_font_size_deferred_does_not_call_sync_preview():
+    """Deferred font size update must NOT call on_tiktok_preview_refresh synchronously."""
+    src = _get_method_source("_do_font_size_preview_update")
+    assert "on_tiktok_preview_refresh" not in src, \
+        "_do_font_size_preview_update must not call on_tiktok_preview_refresh (sync); use _refresh_tiktok_preview_async"
+
+
+def test_caption_position_deferred_does_not_call_sync_preview():
+    """Deferred position update must NOT call on_tiktok_preview_refresh synchronously."""
+    src = _get_method_source("_do_caption_position_update")
+    assert "on_tiktok_preview_refresh" not in src, \
+        "_do_caption_position_update must not call on_tiktok_preview_refresh (sync); use _refresh_tiktok_preview_async"
+
+
+# ── CapCut Metadata Tests ──────────────────────────────────────
+
+def test_capcut_metadata_in_ffmpeg_export():
+    """FFmpeg export must include CapCut metadata in the final command."""
+    src = _get_full_source()
+    assert '"-metadata", "comment=Footage shot on CapCut"' in src, \
+        "FFmpeg export must add CapCut metadata: -metadata comment=Footage shot on CapCut"
 

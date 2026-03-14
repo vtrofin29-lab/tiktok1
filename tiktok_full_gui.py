@@ -3898,6 +3898,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             ])
         
         cmd.extend([
+            "-metadata", "comment=Footage shot on CapCut",
             "-movflags", "+faststart",
             output_path
         ])
@@ -7667,9 +7668,9 @@ class App:
                 except Exception:
                     pass
 
-            # Also refresh TikTok preview to show caption at exact final position
+            # Refresh TikTok preview in background thread to avoid blocking the UI.
             try:
-                self.on_tiktok_preview_refresh()
+                self._refresh_tiktok_preview_async()
             except Exception:
                 pass
         except Exception as e:
@@ -7767,9 +7768,11 @@ class App:
                 except Exception:
                     pass
 
-            # Also refresh TikTok preview to show caption at exact final font size
+            # Refresh TikTok preview in background thread to avoid blocking the UI.
+            # Opening MoviePy VideoFileClip is heavy; running it on the main thread
+            # would freeze the slider after 1-2 changes.
             try:
-                self.on_tiktok_preview_refresh()
+                self._refresh_tiktok_preview_async()
             except Exception:
                 pass
         except Exception:
@@ -9129,7 +9132,12 @@ class App:
         self.on_tiktok_preview_refresh()
     
     def on_tiktok_preview_refresh(self):
-        """Refresh the TikTok format preview with current settings"""
+        """Refresh the TikTok format preview with current settings.
+        
+        Safe to call from any thread: heavy work (MoviePy frame extraction,
+        PIL rendering) runs inline, then the lightweight Tkinter canvas update
+        is scheduled on the main thread via root.after().
+        """
         try:
             if not self.video_var.get() or not os.path.isfile(self.video_var.get()):
                 return
@@ -9260,16 +9268,42 @@ class App:
             # Scale down to preview size (180x320)
             preview_canvas = canvas.resize((180, 320), Image.Resampling.LANCZOS)
             
-            # Display in TikTok preview canvas
+            # Display in TikTok preview canvas — must run on main thread.
+            # Use root.after(0, ...) so this is safe from both main and worker threads.
             photo = ImageTk.PhotoImage(preview_canvas)
-            self.tiktok_preview_canvas.delete("all")
-            self.tiktok_preview_canvas.create_image(90, 160, image=photo)
-            self.tiktok_preview_image_ref = photo  # Keep reference
+            def _apply_preview(ph=photo):
+                try:
+                    self.tiktok_preview_canvas.delete("all")
+                    self.tiktok_preview_canvas.create_image(90, 160, image=ph)
+                    self.tiktok_preview_image_ref = ph  # Keep reference
+                except Exception:
+                    pass
+            self.root.after(0, _apply_preview)
             
         except Exception as e:
             print(f"TikTok preview error: {e}")
             import traceback
             traceback.print_exc()
+
+    def _refresh_tiktok_preview_async(self):
+        """Run TikTok preview refresh in a background thread to avoid blocking UI.
+        
+        on_tiktok_preview_refresh() opens a MoviePy VideoFileClip each call,
+        which is heavy and blocks the main thread. Running it synchronously
+        from slider handlers (font size, Y offset) causes the slider to freeze
+        after 1-2 changes. This method spawns a daemon thread and skips if a
+        previous refresh is still running.
+        """
+        t = getattr(self, '_tiktok_preview_thread', None)
+        if t is not None and t.is_alive():
+            return  # previous refresh still running, skip
+        def _worker():
+            try:
+                self.on_tiktok_preview_refresh()
+            except Exception:
+                pass
+        self._tiktok_preview_thread = threading.Thread(target=_worker, daemon=True)
+        self._tiktok_preview_thread.start()
 
     def on_font_selected(self, event=None):
         try:
