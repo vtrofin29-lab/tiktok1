@@ -111,6 +111,20 @@ def test_font_size_handler_still_sets_global():
         "on_caption_font_size_changed must still set CAPTION_FONT_SIZE global"
 
 
+def test_font_size_deferred_calls_tiktok_preview():
+    """Deferred font size update must call on_tiktok_preview_refresh (like position does)."""
+    src = _get_method_source("_do_font_size_preview_update")
+    assert "on_tiktok_preview_refresh" in src, \
+        "_do_font_size_preview_update must call on_tiktok_preview_refresh to update TikTok preview"
+
+
+def test_font_size_handler_does_not_call_tiktok_preview_directly():
+    """Font size handler must NOT call on_tiktok_preview_refresh directly (deferred via debounce)."""
+    src = _get_method_source("on_caption_font_size_changed")
+    assert "on_tiktok_preview_refresh" not in src, \
+        "on_caption_font_size_changed must not call on_tiktok_preview_refresh directly (deferred)"
+
+
 # ── Caption Position Debounce Tests ─────────────────────────────
 
 def test_caption_position_handler_does_not_call_update_idletasks():

@@ -7766,6 +7766,12 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
+
+            # Also refresh TikTok preview to show caption at exact final font size
+            try:
+                self.on_tiktok_preview_refresh()
+            except Exception:
+                pass
         except Exception:
             pass
 
