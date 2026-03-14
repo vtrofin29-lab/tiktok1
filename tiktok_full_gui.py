@@ -202,9 +202,182 @@ def translate_text(text, target_language='en', log=None):
             log(f"[TRANSLATE ERROR] Failed to translate: {e}")
         return text
 
+
+def _openai_translate_segments(segments, target_language='en', log=None):
+    """
+    Translate caption segments using OpenAI GPT-4o-mini for natural,
+    context-aware translations that avoid repetition.
+    
+    Sends all segments as numbered lines so the model can see full context
+    and produce natural translations (e.g. using pronouns, "the same", etc.
+    instead of repeating identical phrases).
+    
+    Args:
+        segments: List of caption segments with 'text' keys
+        target_language: Target language code
+        log: Optional logging function
+    
+    Returns:
+        List of translated text strings (same order as input segments),
+        or None if translation fails (caller should fall back).
+    """
+    api_key = globals().get('OPENAI_API_KEY')
+    if not api_key:
+        return None
+    
+    if not REQUESTS_AVAILABLE:
+        if log:
+            log("[OpenAI TRANSLATE] requests library not available")
+        return None
+    
+    import requests as _requests
+    
+    # Build numbered lines from segment texts
+    lines = []
+    for i, seg in enumerate(segments):
+        text = seg.get("text", "").strip()
+        if text:
+            lines.append(f"{i+1}. {text}")
+        else:
+            lines.append(f"{i+1}. ")
+    
+    numbered_text = "\n".join(lines)
+    
+    # Language name mapping for clearer prompts
+    lang_names = {
+        'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+        'it': 'Italian', 'pt': 'Portuguese', 'ro': 'Romanian', 'ru': 'Russian',
+        'zh-cn': 'Chinese (Simplified)', 'ja': 'Japanese', 'ko': 'Korean',
+        'zh': 'Chinese', 'ar': 'Arabic', 'hi': 'Hindi', 'tr': 'Turkish',
+        'pl': 'Polish', 'nl': 'Dutch', 'sv': 'Swedish', 'da': 'Danish',
+    }
+    lang_name = lang_names.get(target_language, target_language)
+    
+    # Use custom prompt if set, otherwise use default
+    custom = globals().get('TRANSLATION_CUSTOM_PROMPT', '').strip()
+    if custom:
+        # Replace {language} placeholder with actual target language name
+        system_prompt = custom.replace('{language}', lang_name)
+        # Always append output format rules so OpenAI returns numbered lines
+        system_prompt += (
+            f"\n\nREGULI FORMAT IEȘIRE:\n"
+            f"1. Returnează DOAR traducerile numerotate, una pe linie, în formatul: '1. text tradus'\n"
+            f"2. Păstrează același număr de linii ca în original.\n"
+            f"3. Poți adăuga cuvinte pentru ca povestea să aibă sens și logică.\n"
+            f"4. NU traduce cuvânt cu cuvânt — folosește un limbaj natural și coerent."
+        )
+    else:
+        system_prompt = (
+            f"You are a professional subtitle translator. Translate the following numbered lines to {lang_name}.\n"
+            f"REGULI IMPORTANTE:\n"
+            f"1. Returnează DOAR traducerile numerotate, una pe linie, în formatul: '1. text tradus'\n"
+            f"2. Folosește un limbaj natural și curgător — EVITĂ repetițiile. Dacă două linii consecutive spun lucruri similare, "
+            f"folosește pronume, 'la fel', 'de asemenea', 'și el/ea' etc. în loc să repeți cuvinte.\n"
+            f"   Exemplu: În loc de 'El avea 20 de ani' apoi 'Ea avea 20 de ani', "
+            f"traduce ca 'El avea 20 de ani' apoi 'Și ea la fel'.\n"
+            f"3. Poți adăuga cuvinte pentru ca povestea să aibă sens și logică — NU traduce cuvânt cu cuvânt.\n"
+            f"4. Păstrează traducerile concise — sunt subtitrări video cu timp limitat pe ecran.\n"
+            f"5. Păstrează sensul și tonul emoțional al originalului.\n"
+            f"6. Păstrează același număr de linii ca în original."
+        )
+    
+    if log:
+        log(f"[OpenAI TRANSLATE] Sending {len(segments)} segments to GPT-4o-mini for {lang_name} translation...")
+        if custom:
+            log(f"[OpenAI TRANSLATE] Using CUSTOM prompt: {custom[:120]}{'...' if len(custom) > 120 else ''}")
+        else:
+            log(f"[OpenAI TRANSLATE] Using default subtitle translator prompt")
+    
+    import time as _time
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = _requests.post(
+                'https://api.openai.com/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': 'gpt-4o-mini',
+                    'temperature': 0.3,
+                    'messages': [
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': numbered_text}
+                    ]
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 429:
+                wait = 2 ** attempt
+                if log:
+                    log(f"[OpenAI TRANSLATE] Rate limited (429). Retry {attempt+1}/{max_retries} in {wait}s...")
+                    if attempt == 0:
+                        log("[OpenAI TRANSLATE] TIP: If this persists, add billing credit at https://platform.openai.com/settings/organization/billing")
+                _time.sleep(wait)
+                continue
+            
+            if response.status_code != 200:
+                if log:
+                    log(f"[OpenAI TRANSLATE ERROR] API returned {response.status_code}: {response.text[:200]}")
+                return None
+            
+            data = response.json()
+            reply = data['choices'][0]['message']['content'].strip()
+            
+            # Parse numbered lines from response
+            result_lines = reply.split('\n')
+            translated_texts = [''] * len(segments)
+            
+            import re
+            for line in result_lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # Match "1. text" or "1) text" or just "1 text"
+                m = re.match(r'^(\d+)[.\)]\s*(.*)', line)
+                if m:
+                    idx = int(m.group(1)) - 1  # Convert 1-based to 0-based
+                    if 0 <= idx < len(segments):
+                        translated_texts[idx] = m.group(2).strip()
+            
+            # Verify we got translations for most segments
+            filled = sum(1 for t in translated_texts if t)
+            if filled < len(segments) * 0.5:
+                if log:
+                    log(f"[OpenAI TRANSLATE WARNING] Only {filled}/{len(segments)} lines parsed, falling back")
+                return None
+            
+            # Fill any missing translations with originals
+            for i in range(len(segments)):
+                if not translated_texts[i]:
+                    translated_texts[i] = segments[i].get("text", "").strip()
+            
+            if log:
+                log(f"[OpenAI TRANSLATE] Successfully translated {filled}/{len(segments)} segments")
+            
+            return translated_texts
+            
+        except Exception as e:
+            if log:
+                log(f"[OpenAI TRANSLATE ERROR] {e}")
+            return None
+    
+    # All retries exhausted (429 on every attempt)
+    if log:
+        log("[OpenAI TRANSLATE ERROR] All retries failed (rate limited). Add billing credit at https://platform.openai.com/settings/organization/billing")
+    return None
+
+
 def translate_segments(segments, target_language='en', log=None):
     """
     Translate all caption segments to target language.
+    
+    Uses OpenAI GPT-4o-mini when OPENAI_API_KEY is set for natural,
+    context-aware translations that avoid repetition.
+    Falls back to googletrans batch translation (with ||| separator
+    for context), then per-segment translation as last resort.
     
     Args:
         segments: List of caption segments from Whisper
@@ -214,19 +387,77 @@ def translate_segments(segments, target_language='en', log=None):
     Returns:
         List of segments with translated text
     """
-    if not TRANSLATION_AVAILABLE or target_language == 'none':
+    if target_language == 'none':
+        return segments
+    
+    if not segments:
         return segments
     
     if log:
         log(f"[TRANSLATE] Translating {len(segments)} segments to {target_language}...")
     
+    # --- Strategy 1: OpenAI contextual translation (best quality) ---
+    api_key = globals().get('OPENAI_API_KEY')
+    if api_key and REQUESTS_AVAILABLE:
+        if log:
+            log(f"[TRANSLATE] Using OpenAI GPT-4o-mini (API key: ...{api_key[-4:]})")
+            log(f"[TRANSLATE] Check API usage at: https://platform.openai.com/usage")
+        openai_results = _openai_translate_segments(segments, target_language, log=log)
+        if openai_results:
+            translated = []
+            for i, seg in enumerate(segments):
+                new_seg = seg.copy()
+                new_seg["original_text"] = seg.get("text", "")
+                new_seg["text"] = openai_results[i]
+                translated.append(new_seg)
+            if log:
+                log("[TRANSLATE] ✓ OpenAI GPT-4o-mini translation complete!")
+            return translated
+        if log:
+            log("[TRANSLATE] ⚠ OpenAI translation failed — falling back to googletrans...")
+            log("[TRANSLATE] Check logs above for details (429=needs billing credit, other=see error)")
+    elif not api_key and log:
+        log("[TRANSLATE] No OpenAI API key set - using googletrans (free, lower quality)")
+    
+    if not TRANSLATION_AVAILABLE:
+        if log:
+            log("[TRANSLATE] googletrans not available - skipping translation")
+        return segments
+    
+    # --- Strategy 2: Batch googletrans with ||| separator for context ---
+    try:
+        texts = [seg.get("text", "").strip() for seg in segments]
+        batch_text = " ||| ".join(texts)
+        
+        translator = Translator()
+        result = translator.translate(batch_text, dest=target_language)
+        
+        if result and result.text:
+            parts = result.text.split("|||")
+            if len(parts) >= len(segments):
+                translated = []
+                for i, seg in enumerate(segments):
+                    new_seg = seg.copy()
+                    new_seg["original_text"] = seg.get("text", "")
+                    new_seg["text"] = parts[i].strip()
+                    translated.append(new_seg)
+                if log:
+                    log("[TRANSLATE] Batch translation complete!")
+                return _reduce_translation_repetition(translated, log=log)
+            else:
+                if log:
+                    log(f"[TRANSLATE] Batch split mismatch ({len(parts)} vs {len(segments)}), falling back to per-segment")
+    except Exception as e:
+        if log:
+            log(f"[TRANSLATE] Batch translation failed ({e}), falling back to per-segment")
+    
+    # --- Strategy 3: Per-segment fallback ---
     translated = []
     for i, seg in enumerate(segments):
         try:
             original_text = seg.get("text", "")
             translated_text = translate_text(original_text, target_language, log=None)
             
-            # Create new segment with translated text
             new_seg = seg.copy()
             new_seg["text"] = translated_text
             new_seg["original_text"] = original_text
@@ -239,9 +470,220 @@ def translate_segments(segments, target_language='en', log=None):
     if log:
         log(f"[TRANSLATE] Translation complete!")
     
-    return translated
+    return _reduce_translation_repetition(translated, log=log)
+
+
+def _reduce_translation_repetition(segments, log=None):
+    """
+    Post-process translated segments to reduce repetitive phrasing.
+    
+    When consecutive segments share substantial text, replaces the
+    repeated portion with shorter references (e.g., 'la fel', 'the same',
+    'de asemenea', etc.) based on target language detection.
+    
+    This is used for the googletrans path which lacks contextual awareness.
+    OpenAI translations already handle this via the system prompt.
+    """
+    if not segments or len(segments) < 2:
+        return segments
+    
+    import re
+    
+    for i in range(1, len(segments)):
+        prev_text = segments[i - 1].get("text", "").strip()
+        curr_text = segments[i].get("text", "").strip()
+        
+        if not prev_text or not curr_text:
+            continue
+        
+        # Normalize for comparison: lowercase, strip punctuation
+        def _normalize(t):
+            return re.sub(r'[^\w\s]', '', t.lower()).strip()
+        
+        prev_norm = _normalize(prev_text)
+        curr_norm = _normalize(curr_text)
+        
+        # Skip very short segments (less than 4 words)
+        prev_words = prev_norm.split()
+        curr_words = curr_norm.split()
+        if len(curr_words) < 4 or len(prev_words) < 4:
+            continue
+        
+        # Check if segments are very similar (>70% word overlap)
+        prev_set = set(prev_words)
+        curr_set = set(curr_words)
+        if not prev_set or not curr_set:
+            continue
+        overlap = len(prev_set & curr_set) / max(len(prev_set), len(curr_set))
+        
+        if overlap < 0.7:
+            continue
+        
+        # Find the differing words between segments
+        # Try to identify what changed (e.g., "el" -> "ea", "he" -> "she")
+        diff_words = []
+        for w in curr_words:
+            if w not in prev_set:
+                diff_words.append(w)
+        
+        if not diff_words:
+            # Segments are essentially identical - use "la fel" / "the same"
+            segments[i]["text"] = _build_short_reference(curr_text, prev_text, diff_words=[])
+        elif len(diff_words) <= 2:
+            # Only 1-2 words differ - build a concise reference
+            segments[i]["text"] = _build_short_reference(curr_text, prev_text, diff_words=diff_words)
+        # else: too many differences, keep original
+    
+    if log:
+        log("[TRANSLATE] Applied anti-repetition post-processing")
+    
+    return segments
+
+
+def _build_short_reference(curr_text, prev_text, diff_words):
+    """
+    Build a shorter version of curr_text that references prev_text.
+    
+    Examples:
+    - "He was 20" / "She was 20" -> "She, too" or "She la fel"
+    - "El avea 20 de ani" / "Ea avea 20 de ani" -> "Ea la fel"
+    """
+    import re
+    
+    # Detect language heuristics based on common words (word boundary matching)
+    words_set = set(re.findall(r'\b\w+\b', curr_text.lower()))
+    
+    # Romanian detection
+    ro_markers = {'și', 'este', 'avea', 'ani', 'de', 'la', 'că', 'pentru'}
+    is_romanian = len(words_set & ro_markers) >= 2
+    
+    # Spanish detection
+    es_markers = {'ella', 'también', 'tenía', 'años', 'pero', 'como'}
+    is_spanish = not is_romanian and len(words_set & es_markers) >= 2
+    
+    # French detection
+    fr_markers = {'elle', 'aussi', 'avait', 'mais', 'comme', 'les'}
+    is_french = not is_romanian and not is_spanish and len(words_set & fr_markers) >= 2
+    
+    # German detection
+    de_markers = {'sie', 'auch', 'hatte', 'aber', 'wie', 'und'}
+    is_german = not is_romanian and not is_spanish and not is_french and len(words_set & de_markers) >= 2
+    
+    if not diff_words:
+        # Identical segments
+        if is_romanian:
+            return "La fel"
+        elif is_spanish:
+            return "Lo mismo"
+        elif is_french:
+            return "Pareil"
+        elif is_german:
+            return "Genauso"
+        else:
+            return "The same"
+    
+    # Build reference with the differing subject + short connector
+    subject = " ".join(diff_words)
+    
+    if is_romanian:
+        return f"{subject.capitalize()} la fel"
+    elif is_spanish:
+        return f"{subject.capitalize()} también"
+    elif is_french:
+        return f"{subject.capitalize()} aussi"
+    elif is_german:
+        return f"{subject.capitalize()} auch"
+    else:
+        return f"{subject.capitalize()} too"
+
 
 # ----------------- AI VOICE REPLACEMENT FUNCTIONS -----------------
+
+def _openai_tts_generate(text, language='en', output_path=None, log=None):
+    """
+    Generate Text-to-Speech audio using OpenAI's TTS API (/v1/audio/speech).
+    Uses the same OPENAI_API_KEY that is used for translations.
+    
+    Args:
+        text: Text to convert to speech
+        language: Language code (used to select voice)
+        output_path: Path to save audio file (temp file if None)
+        log: Optional logging function
+    
+    Returns:
+        Path to generated audio file or None if failed
+    """
+    api_key = globals().get('OPENAI_API_KEY')
+    if not api_key:
+        return None
+    
+    if not REQUESTS_AVAILABLE:
+        if log:
+            log("[OpenAI TTS] requests library not available")
+        return None
+    
+    if not text or not text.strip():
+        return None
+    
+    try:
+        import requests as _requests
+        
+        if output_path is None:
+            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='openai_tts_')
+            os.close(fd)
+        
+        # Select voice based on language — all OpenAI TTS voices are multilingual,
+        # but some voice tones suit certain language groups better (cosmetic preference)
+        voice_map = {
+            'en': 'alloy',   'es': 'nova',    'fr': 'shimmer',
+            'de': 'onyx',    'it': 'nova',    'pt': 'nova',
+            'ro': 'alloy',   'ru': 'onyx',    'zh': 'nova',
+            'zh-cn': 'nova', 'ja': 'shimmer', 'ko': 'shimmer',
+            'ar': 'onyx',    'hi': 'alloy',   'tr': 'onyx',
+            'pl': 'alloy',   'nl': 'alloy',   'sv': 'shimmer',
+            'da': 'shimmer',
+        }
+        voice = voice_map.get(language, 'alloy')
+        
+        if log:
+            log(f"[OpenAI TTS] Generating speech with voice '{voice}' ({len(text)} chars)...")
+        
+        response = _requests.post(
+            'https://api.openai.com/v1/audio/speech',
+            headers={
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            },
+            json={
+                'model': 'tts-1',
+                'input': text,
+                'voice': voice,
+                'response_format': 'mp3'
+            },
+            timeout=120
+        )
+        
+        if response.status_code == 200:
+            with open(output_path, 'wb') as f:
+                f.write(response.content)
+            if log:
+                log(f"[OpenAI TTS] ✓ Generated audio: {output_path} ({len(response.content)} bytes)")
+            return output_path
+        elif response.status_code == 429:
+            if log:
+                log("[OpenAI TTS] ⚠ Rate limited (429) — will fall back to other TTS engines")
+                log("[OpenAI TTS] TIP: Add billing credit at https://platform.openai.com/settings/organization/billing")
+            return None
+        else:
+            if log:
+                err_text = response.text[:300]
+                log(f"[OpenAI TTS ERROR] API returned {response.status_code}: {err_text}")
+            return None
+    except Exception as e:
+        if log:
+            log(f"[OpenAI TTS ERROR] {e}")
+        return None
+
 
 def generate_tts_with_genaipro(text, language='en', output_path=None, api_key=None, log=None):
     """
@@ -873,9 +1315,22 @@ def map_timestamps_after_silence_removal(segments, silence_map, log=None):
     
     return mapped_segments
 
+def _get_genaipro_api_key():
+    """Return GenAI Pro API key from tts_config.json, or None if unavailable."""
+    try:
+        config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                key = config.get("api_key", "").strip()
+                return key if key else None
+    except Exception:
+        pass
+    return None
+
 def generate_tts_audio(text, language='en', output_path=None, log=None):
     """
-    Generate Text-to-Speech audio from text using GenAI Pro (if API key available) or gTTS (fallback).
+    Generate Text-to-Speech audio using GenAI Pro exclusively.
     
     Args:
         text: Text to convert to speech
@@ -886,62 +1341,34 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    # Try to load API key from config
-    api_key = None
-    try:
-        config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
-        if os.path.exists(config_path):
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-                api_key = config.get("api_key", "").strip()
-    except Exception:
-        pass
-    
-    # Try GenAI Pro first if API key is available
-    if api_key:
-        if log:
-            log("="*60)
-            log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
-            log(f"[TTS] Using GenAI Pro API for high-quality synthesis")
-            log(f"[TTS] Text length: {len(text)} characters")
-            log(f"[TTS] Language: {language}")
-            log("="*60)
-        result = generate_tts_with_genaipro(text, language, output_path, api_key, log)
-        if result:
-            if log:
-                log("="*60)
-                log("[TTS] ✅ AI VOICE GENERATION COMPLETE!")
-                log(f"[TTS] Audio file ready: {result}")
-                log("="*60)
-            return result
-        if log:
-            log("[TTS] ⚠️  GenAI Pro failed, falling back to gTTS...")
-    
-    # Fallback to gTTS
-    if not TTS_AVAILABLE:
-        if log:
-            log("[TTS] gTTS not available - skipping voice generation")
-        return None
-    
     if not text or not text.strip():
         return None
     
-    try:
-        if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix='.mp3', prefix='tts_')
-            os.close(fd)
-        
-        tts = gTTS(text=text, lang=language, slow=False)
-        tts.save(output_path)
-        
+    api_key = _get_genaipro_api_key()
+    if not api_key:
         if log:
-            log(f"[TTS/gTTS] Generated audio: {output_path} (length: {len(text)} chars)")
-        
-        return output_path
-    except Exception as e:
-        if log:
-            log(f"[TTS ERROR] Failed to generate audio: {e}")
+            log("[TTS] ❌ No GenAI Pro API key found in tts_config.json")
         return None
+    
+    if log:
+        log("="*60)
+        log("[TTS] 🎙️  STARTING AI VOICE GENERATION")
+        log(f"[TTS] Using GenAI Pro API for high-quality synthesis")
+        log(f"[TTS] Text length: {len(text)} characters")
+        log(f"[TTS] Language: {language}")
+        log("="*60)
+    result = generate_tts_with_genaipro(text, language, output_path, api_key, log)
+    if result:
+        if log:
+            log("="*60)
+            log("[TTS] ✅ AI VOICE GENERATION COMPLETE!")
+            log(f"[TTS] Audio file ready: {result}")
+            log("="*60)
+        return result
+    
+    if log:
+        log("[TTS] ❌ GenAI Pro TTS failed. No voice generated.")
+    return None
 
 def replace_voice_with_tts(caption_segments, language='en', log=None):
     """
@@ -955,9 +1382,10 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    if not TTS_AVAILABLE:
+    # Check if GenAI Pro TTS is available
+    if not _get_genaipro_api_key():
         if log:
-            log("[TTS] gTTS not available - cannot replace voice")
+            log("[TTS] ⚠️  No GenAI Pro API key found in tts_config.json")
         return None
     
     if log:
@@ -999,8 +1427,17 @@ CROP_BOTTOM_RATIO = 0.35
 # If the width-scaled foreground would be shorter than this, it scales up more (zooms in, clips sides).
 MIN_FG_HEIGHT_RATIO = 0.35  # Foreground fills at least 35% of canvas height (672px on 1920px canvas)
 
-VOICE_GAIN = 1.5  # Default: 1.5x louder for better voice clarity
-MUSIC_GAIN = 0.15  # Default: 0.15x quieter for subtle background music
+VOICE_GAIN = 5.0  # Default: 5.0x — applied as FFmpeg output volume (not in MoviePy, to prevent clipping)
+MUSIC_GAIN = 0.25  # Default: 0.25x quieter for subtle background music (applied in MoviePy for voice:music ratio)
+
+def _gain_to_db_str(gain):
+    """Convert linear gain multiplier to dB string (CapCut-style display)."""
+    if gain <= 0:
+        return "Mute"
+    db = 20.0 * math.log10(gain)
+    if db >= 0:
+        return f"+{db:.1f} dB"
+    return f"{db:.1f} dB"
 CAPTION_FONT_PREFERRED = "Bangers"
 CAPTION_FONT_SIZE = 56
 
@@ -1123,6 +1560,8 @@ TRANS_TO_TTS_LANG = {'zh-cn': 'zh', 'zh-tw': 'zh'}
 TTS_ENGINE = 'gtts'  # Options: 'gtts' (free, basic), 'elevenlabs', 'openai', 'azure'
 ELEVENLABS_API_KEY = None
 OPENAI_API_KEY = None
+TRANSLATION_CUSTOM_PROMPT = ""  # User-defined prompt for OpenAI translation; {language} is auto-replaced
+STOP_REQUESTED = False
 AZURE_SPEECH_KEY = None
 AZURE_SPEECH_REGION = None
 
@@ -3034,6 +3473,33 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if keep_ratio < 0.99:
             bg_crop_part = f"crop=iw:ih*{keep_ratio:.4f}:0:ih*{crop_top_ratio:.4f},"
             log_fn(f"[EXPORT]   Background crop: top={crop_top_ratio*100:.1f}%, bottom={crop_bottom_ratio*100:.1f}% (keeping {keep_ratio*100:.1f}%)")
+
+        # ── Extra background crop when spot blur is active ──
+        # When spot blur is enabled, the background (blurred version of same video)
+        # still shows the content the spot blur is trying to hide. To prevent this,
+        # crop the background to exclude the vertical range of the spot blur area,
+        # keeping the larger portion (above or below), then zoom in to fill the frame.
+        _blur_ov = effect_settings or {}
+        if _blur_ov.get('blur_overlay_enabled', False):
+            _by_pct = float(_blur_ov.get('blur_overlay_y', 10))
+            _bh_pct = float(_blur_ov.get('blur_overlay_h', 15))
+            _blur_top = _by_pct / 100.0           # top edge of blur area (fraction)
+            _blur_bottom = (_by_pct + _bh_pct) / 100.0  # bottom edge (fraction)
+            # Portion above vs below the blur area
+            _above = _blur_top                     # fraction of video above blur
+            _below = 1.0 - _blur_bottom            # fraction of video below blur
+            if _above >= _below and _above > 0.15:
+                # Keep the portion above the blur area
+                bg_crop_part = f"crop=iw:ih*{_above:.4f}:0:0,"
+                log_fn(f"[EXPORT]   Background spot-blur crop: keeping top {_above*100:.1f}% (above blur at y={_by_pct:.0f}%)")
+            elif _below > 0.15:
+                # Keep the portion below the blur area
+                bg_crop_part = f"crop=iw:ih*{_below:.4f}:0:ih*{_blur_bottom:.4f},"
+                log_fn(f"[EXPORT]   Background spot-blur crop: keeping bottom {_below*100:.1f}% (below blur at y+h={_blur_bottom*100:.0f}%)")
+            else:
+                # Blur area is too large to crop around – keep default crop
+                log_fn(f"[EXPORT]   Background spot-blur crop: blur area too large ({_bh_pct:.0f}%), using default crop")
+
         if gpu_filters and USE_HARDWARE_DECODING and not needs_stream_loop:
             # GPU-accelerated decode + CPU boxblur: identical quality to CPU-only path.
             # GPU handles fast decode via -hwaccel cuda, then hwdownload transfers frames
@@ -3062,47 +3528,11 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
                 f"scale={bg_encode_w}:{bg_encode_h},setsar=1:1"
             )
         
-        # ── Spot blur on background ──
-        # If spot blur is enabled, also apply it to the blurred background so that
-        # the covered area is hidden on both the foreground and background layers.
-        # This requires -filter_complex (split → crop+boxblur → overlay).
-        # Coordinates are relative to bg_encode resolution (may be half of video_width
-        # for 4K to reduce GPU load).
+        # ── Spot blur on background ── DISABLED ──
+        # The background is already fully blurred (boxblur), so applying an
+        # additional spot-blur rectangle creates a visible double-blur artifact.
+        # The foreground spot blur is sufficient to hide the target area.
         bg_spot_blur = ""
-        bg_blur_ov = effect_settings or {}
-        if bg_blur_ov.get('blur_overlay_enabled', False):
-            bx_pct = float(bg_blur_ov.get('blur_overlay_x', 10))
-            by_pct = float(bg_blur_ov.get('blur_overlay_y', 10))
-            bw_pct = float(bg_blur_ov.get('blur_overlay_w', 20))
-            bh_pct = float(bg_blur_ov.get('blur_overlay_h', 15))
-            b_intensity = int(bg_blur_ov.get('blur_overlay_intensity', 20))
-            # Background fills the entire canvas after crop+scale, so coordinates
-            # are relative to the encode resolution. The crop removes the same
-            # top/bottom as the foreground, so Y must be adjusted for the crop.
-            bg_keep = max(0.01, 1.0 - crop_top_ratio - crop_bottom_ratio)
-            bg_bx = max(0, int(bg_encode_w * bx_pct / 100.0)) & ~1
-            bg_by = max(0, int(bg_encode_h * (by_pct / 100.0 - crop_top_ratio) / bg_keep)) & ~1
-            bg_bw = max(2, int(bg_encode_w * bw_pct / 100.0)) & ~1
-            bg_bh = max(2, int(bg_encode_h * bh_pct / (100.0 * bg_keep))) & ~1
-            if bg_bx + bg_bw > bg_encode_w:
-                bg_bw = (bg_encode_w - bg_bx) & ~1
-            if bg_by + bg_bh > bg_encode_h:
-                bg_bh = (bg_encode_h - bg_by) & ~1
-            bg_b_blur = max(2, b_intensity)
-            # Clamp boxblur radius to respect YUV420p chroma plane limits.
-            # For YUV420p, chroma is half luma in both dimensions. FFmpeg requires
-            # boxblur radius <= min(chroma_w, chroma_h) / 2 = min(crop_w, crop_h) / 4.
-            safe_blur_limit = max(2, min(bg_bw, bg_bh) // 4)
-            if bg_b_blur > safe_blur_limit:
-                log_fn(f"[EXPORT] ⚠️ Spot blur radius {bg_b_blur} clamped to {safe_blur_limit} (crop {bg_bw}x{bg_bh} limit)")
-                bg_b_blur = safe_blur_limit
-            bg_spot_blur = (
-                f",format=yuv420p,split[_bgm][_bgc];"
-                f"[_bgc]crop={bg_bw}:{bg_bh}:{bg_bx}:{bg_by},"
-                f"boxblur={bg_b_blur}:2[_bgb];"
-                f"[_bgm][_bgb]overlay={bg_bx}:{bg_by}"
-            )
-            log_fn(f"[EXPORT] ✓ Background spot blur: pos=({bg_bx},{bg_by}) size={bg_bw}x{bg_bh} blur={bg_b_blur}")
 
         bg_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
         # GPU hardware decoding for background pre-render.
@@ -3114,14 +3544,13 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if needs_stream_loop:
             bg_cmd.extend(["-stream_loop", "-1"])
         # Add filter threading for CPU filter processing.
-        # GPU path: GPU handles decode, CPU handles crop + scale + boxblur.
-        # When GPU is active, use half CPU cores to keep CPU at ~50-60%.
+        # Use all available CPU cores for maximum throughput.
         total_cores = os.cpu_count() or 4
         if use_gpu:
-            cpu_threads = max(2, min(total_cores // 2, 8))
+            cpu_threads = max(2, total_cores // 2)
         else:
-            cpu_threads = min(total_cores, 8)
-        bg_cmd.extend(["-filter_threads", str(cpu_threads)])
+            cpu_threads = total_cores
+        bg_cmd.extend(["-filter_threads", str(cpu_threads), "-filter_complex_threads", str(cpu_threads)])
         # When spot blur is enabled on the background, we need -filter_complex
         # because the split→crop→overlay graph requires named streams.
         if bg_spot_blur:
@@ -3134,7 +3563,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         if use_gpu:
             bg_cmd.extend(["-c:v", nvenc_codec, "-preset", "p1", "-rc", "constqp", "-qp", "30", "-b:v", "0", "-multipass", "0"])
         else:
-            bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26"])
+            bg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-threads", "0"])
         
         # Limit bg to same duration as output
         bg_duration_limit = None
@@ -3416,18 +3845,15 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
         cmd.extend(["-i", audio_path])
         
         # Use multiple threads for CPU filter processing (captions, effects, etc.).
-        # Limit to ~half CPU cores when GPU is active to keep CPU at 50-60% and let GPU
-        # handle encoding + overlay. This prevents CPU from saturating all cores while
-        # the GPU encoder waits, providing a better CPU/GPU balance.
+        # Use all available CPU cores for maximum throughput.
         if not use_gpu_overlay:
             total_cores = os.cpu_count() or 4
             if use_gpu:
-                # GPU active: use half the cores for filters, rest of CPU headroom for
-                # decoding, OS tasks, etc. GPU handles encoding + overlay.
-                cpu_threads = max(2, min(total_cores // 2, 8))
+                # GPU active: use half the cores for filters, GPU handles encoding.
+                cpu_threads = max(2, total_cores // 2)
             else:
                 # CPU-only: use all available cores for maximum throughput.
-                cpu_threads = min(total_cores, 8)
+                cpu_threads = total_cores
             cmd.extend(["-filter_threads", str(cpu_threads), "-filter_complex_threads", str(cpu_threads)])
             log_fn(f"[EXPORT] ✓ CPU filter threading: {cpu_threads} threads")
         
@@ -3472,6 +3898,7 @@ def _export_with_ffmpeg_filters(bg_path, fg_path, caption_segments, audio_path, 
             ])
         
         cmd.extend([
+            "-metadata", "comment=Footage shot on CapCut",
             "-movflags", "+faststart",
             output_path
         ])
@@ -3821,6 +4248,9 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
     MAX_FFMPEG_RETRIES = 2
     last_ffmpeg_error = None
     for ffmpeg_attempt in range(MAX_FFMPEG_RETRIES):
+        if globals().get('STOP_REQUESTED', False):
+            log("[STOP] ⛔ Processing stopped by user.")
+            return False
         try:
             import tempfile
             # On second attempt, force CPU-only mode as fallback
@@ -4043,7 +4473,7 @@ def compose_final_video_with_static_blurred_bg(video_clip, audio_clip, caption_s
         for codec in codec_try_order:
             for attempt in range(MAX_ATTEMPTS_PER_CODEC):
                 ffmpeg_params = _make_ffmpeg_params_for_codec(codec)
-                threads_setting = 4  # Use 4 threads for better performance (was 0/auto)
+                threads_setting = os.cpu_count() or 4  # Use all CPU cores for maximum export speed
                 # Log GPU usage status for user clarity
                 gpu_status = "GPU (NVENC)" if codec in ("h264_nvenc", "hevc_nvenc") else "CPU (libx264)"
                 log(f"[EXPORT] Starting export with {gpu_status}")
@@ -4202,6 +4632,10 @@ def make_music_match_duration(music_clip, target_duration, log):
 def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None):
     def log(s):
         q.put(str(s))
+    def _check_stop():
+        if globals().get('STOP_REQUESTED', False):
+            log("[STOP] ⛔ Processing stopped by user.")
+            raise InterruptedError("Stop requested by user")
     old_stdout, old_stderr = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = QueueWriter(q)
     temp_fg = None
@@ -4295,6 +4729,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             return
 
         # Load video first to get dimensions
+        _check_stop()
         original_clip = VideoFileClip(video_path)
         cropped = crop_precise_top_bottom_return_cropped(original_clip, log, top_ratio=custom_top_ratio, bottom_ratio=custom_bottom_ratio)
 
@@ -4431,6 +4866,7 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             # If AI voice is enabled, we'll transcribe from the TTS audio later
             if not use_ai_voice:
                 log("[CAPTION] Transcribing captions from original voice...")
+                _check_stop()
                 caption_segments = transcribe_captions(
                     voice_path, 
                     log, 
@@ -4665,6 +5101,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
             log(f"Job finished successfully. Output: {output_path}")
         else:
             log("Job finished with errors.")
+    except InterruptedError:
+        log("[STOP] ⛔ Job was stopped by user.")
     except Exception as e:
         q.put(f"Exception: {e}")
         import traceback
@@ -4880,7 +5318,7 @@ def _submit_voice_for_job(job, job_index, total_jobs, q):
     The dict contains:
         - needs_polling: True if GenAI Pro task was submitted (needs polling later)
         - task_id, headers: GenAI Pro task info (only if needs_polling)
-        - tts_audio_path: Path to already-generated TTS audio (only if NOT needs_polling, e.g. gTTS)
+        - tts_audio_path: Path to already-generated TTS audio (only if NOT needs_polling)
         - caption_segments: Transcribed caption segments
         - tts_language: Language used for TTS
         - silence_threshold_ms: Silence threshold for post-processing
@@ -4974,28 +5412,9 @@ def _submit_voice_for_job(job, job_index, total_jobs, q):
                     'silence_threshold_ms': silence_threshold_ms,
                     'full_text': full_text,
                 }
-            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ⚠️ GenAI Pro failed, trying gTTS...")
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ GenAI Pro submission failed")
 
-        # Fallback: gTTS (synchronous but fast)
-        if TTS_AVAILABLE:
-            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] Generating voice with gTTS...")
-            fd, tts_path = tempfile.mkstemp(suffix='.mp3', prefix=f'tts_submit_{job_index}_')
-            os.close(fd)
-            try:
-                tts_obj = gTTS(text=full_text, lang=tts_language, slow=False)
-                tts_obj.save(tts_path)
-                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ✅ gTTS voice generated")
-                return {
-                    'needs_polling': False,
-                    'tts_audio_path': tts_path,
-                    'caption_segments': caption_segments,
-                    'tts_language': tts_language,
-                    'silence_threshold_ms': silence_threshold_ms,
-                }
-            except Exception as e:
-                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ gTTS failed: {e}")
-
-        log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ All TTS methods failed")
+        log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ Voice generation failed — please check your GenAI Pro API key in tts_config.json")
         return None
 
     except Exception as e:
@@ -5039,21 +5458,7 @@ def _complete_voice_for_job(submission, job_index, total_jobs, q):
             )
             if not tts_audio_path:
                 log(f"[VOICE COMPLETE {job_index}/{total_jobs}] ❌ GenAI Pro failed")
-                # Try gTTS fallback
-                full_text = submission.get('full_text', '')
-                if not full_text:
-                    full_text = " ".join([seg.get("text", "") for seg in submission.get('caption_segments', [])])
-                if full_text and TTS_AVAILABLE:
-                    log(f"[VOICE COMPLETE {job_index}/{total_jobs}] Trying gTTS fallback...")
-                    fd, tts_audio_path = tempfile.mkstemp(suffix='.mp3', prefix=f'tts_fallback_{job_index}_')
-                    os.close(fd)
-                    try:
-                        tts_obj = gTTS(text=full_text, lang=submission.get('tts_language', 'en'), slow=False)
-                        tts_obj.save(tts_audio_path)
-                    except Exception:
-                        tts_audio_path = None
-                if not tts_audio_path:
-                    return None
+                return None
         else:
             tts_audio_path = submission.get('tts_audio_path')
 
@@ -5720,18 +6125,18 @@ class App:
         # --- Voice Volume Control ---
         ttk.Label(left_frame, text="Voice volume:").grid(row=row, column=0, sticky="e")
         self.voice_gain_var = tk.DoubleVar(value=VOICE_GAIN)
-        self.voice_gain_scale = tk.Scale(left_frame, from_=0.0, to=3.0, resolution=0.1, orient='horizontal', length=120, showvalue=0, variable=self.voice_gain_var, command=self.on_voice_gain_changed)
+        self.voice_gain_scale = tk.Scale(left_frame, from_=0.0, to=20.0, resolution=0.1, orient='horizontal', length=120, showvalue=0, variable=self.voice_gain_var, command=self.on_voice_gain_changed)
         self.voice_gain_scale.grid(row=row, column=1, padx=(6,0))
-        self.voice_gain_label = ttk.Label(left_frame, text=f"{self.voice_gain_var.get():.1f}x")
+        self.voice_gain_label = ttk.Label(left_frame, text=_gain_to_db_str(self.voice_gain_var.get()))
         self.voice_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
         # --- Music Volume Control ---
         ttk.Label(left_frame, text="Music volume:").grid(row=row, column=0, sticky="e")
         self.music_gain_var = tk.DoubleVar(value=MUSIC_GAIN)
-        self.music_gain_scale = tk.Scale(left_frame, from_=0.0, to=2.0, resolution=0.05, orient='horizontal', length=120, showvalue=0, variable=self.music_gain_var, command=self.on_music_gain_changed)
+        self.music_gain_scale = tk.Scale(left_frame, from_=0.0, to=5.0, resolution=0.05, orient='horizontal', length=120, showvalue=0, variable=self.music_gain_var, command=self.on_music_gain_changed)
         self.music_gain_scale.grid(row=row, column=1, padx=(6,0))
-        self.music_gain_label = ttk.Label(left_frame, text=f"{self.music_gain_var.get():.2f}x")
+        self.music_gain_label = ttk.Label(left_frame, text=_gain_to_db_str(self.music_gain_var.get()))
         self.music_gain_label.grid(row=row, column=2, sticky='w', padx=(4,0))
         row += 1
 
@@ -5754,6 +6159,46 @@ class App:
         language_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
         language_combo.bind('<<ComboboxSelected>>', self.on_language_selected)
         ttk.Label(left_frame, text="(for captions)").grid(row=row, column=2, sticky='w', padx=(4,0))
+        row += 1
+
+        # OpenAI API Key for natural contextual translations
+        ttk.Label(left_frame, text="OpenAI Key:").grid(row=row, column=0, sticky="e")
+        openai_frame = ttk.Frame(left_frame)
+        openai_frame.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        # Try to load saved OpenAI key from config file
+        saved_openai_key = ""
+        try:
+            openai_config_path = os.path.join(os.path.dirname(__file__), "openai_config.json")
+            if os.path.exists(openai_config_path):
+                with open(openai_config_path, 'r') as f:
+                    openai_cfg = json.load(f)
+                    saved_openai_key = openai_cfg.get("openai_api_key", "")
+                    if saved_openai_key:
+                        globals()['OPENAI_API_KEY'] = saved_openai_key
+                        print("[OpenAI] API key loaded from openai_config.json")
+                        print("[OpenAI] NOTE: API calls do NOT appear on chat.openai.com")
+                        print("[OpenAI] Check your API usage at: https://platform.openai.com/usage")
+        except Exception:
+            pass
+        self.openai_key_var = tk.StringVar(value=saved_openai_key)
+        self.openai_key_entry = ttk.Entry(openai_frame, textvariable=self.openai_key_var, show="*", width=22)
+        self.openai_key_entry.pack(side="left", fill="x", expand=True)
+        ttk.Button(openai_frame, text="Set", style='Bordered.TButton', command=self._apply_openai_key, width=4).pack(side="left", padx=(4,0))
+        ttk.Button(openai_frame, text="Save", style='Bordered.TButton', command=self._save_openai_key, width=5).pack(side="left", padx=(4,0))
+        ttk.Button(openai_frame, text="Verify", style='Bordered.TButton', command=self._verify_openai_key, width=6).pack(side="left", padx=(4,0))
+        row += 1
+
+        # Custom translation prompt (uses {language} placeholder for selected target language)
+        ttk.Label(left_frame, text="Prompt:").grid(row=row, column=0, sticky="ne")
+        prompt_frame = ttk.Frame(left_frame)
+        prompt_frame.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
+        self.translation_prompt_var = tk.StringVar(value=TRANSLATION_CUSTOM_PROMPT)
+        self.translation_prompt_entry = ttk.Entry(prompt_frame, textvariable=self.translation_prompt_var, width=30)
+        self.translation_prompt_entry.pack(side="left", fill="x", expand=True)
+        ttk.Button(prompt_frame, text="Set", style='Bordered.TButton', command=self._apply_translation_prompt, width=4).pack(side="left", padx=(4,0))
+        row += 1
+        prompt_hint = ttk.Label(left_frame, text="  Use {language} for auto target lang", font=('Segoe UI', 7))
+        prompt_hint.grid(row=row, column=1, columnspan=2, sticky='w', padx=(6,0))
         row += 1
 
         self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
@@ -6155,6 +6600,8 @@ class App:
         bottom_controls.grid(row=row, column=0, columnspan=3, sticky="we")
         self.run_single_btn = ttk.Button(bottom_controls, text="▶ Run (Single)", style='Success.TButton', command=self.on_run_single)
         self.run_single_btn.pack(side="left", padx=4)
+        self.stop_btn = ttk.Button(bottom_controls, text="⏹ Stop", style='Danger.TButton', command=self._on_stop)
+        self.stop_btn.pack(side="left", padx=4)
         ttk.Button(bottom_controls, text="Toggle Fullscreen", style='Info.TButton', command=self.toggle_fullscreen).pack(side="left", padx=4)
         ttk.Button(bottom_controls, text="Quit", style='Danger.TButton', command=root.quit).pack(side="left", padx=4)
 
@@ -6570,22 +7017,22 @@ class App:
                 pass
 
     def on_voice_gain_changed(self, val):
-        """Callback when voice volume slider changes"""
+        """Callback when voice volume slider changes — displays dB like CapCut"""
         try:
             gain = float(val)
             globals()['VOICE_GAIN'] = gain
             if hasattr(self, 'voice_gain_label') and self.voice_gain_label:
-                self.voice_gain_label.config(text=f"{gain:.1f}x")
+                self.voice_gain_label.config(text=_gain_to_db_str(gain))
         except Exception:
             pass
 
     def on_music_gain_changed(self, val):
-        """Callback when music volume slider changes"""
+        """Callback when music volume slider changes — displays dB like CapCut"""
         try:
             gain = float(val)
             globals()['MUSIC_GAIN'] = gain
             if hasattr(self, 'music_gain_label') and self.music_gain_label:
-                self.music_gain_label.config(text=f"{gain:.2f}x")
+                self.music_gain_label.config(text=_gain_to_db_str(gain))
         except Exception:
             pass
     
@@ -6603,6 +7050,136 @@ class App:
                 globals()['TRANSLATION_ENABLED'] = False
         except Exception as e:
             print(f"Translation toggle error: {e}")
+    
+    def _apply_openai_key(self):
+        """Apply the OpenAI API key from the GUI entry field."""
+        try:
+            key = self.openai_key_var.get().strip()
+            if key:
+                globals()['OPENAI_API_KEY'] = key
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] API key set - contextual translations enabled")
+                    self.log("[OpenAI] Use 'Verify' button to test your key")
+                    self.log("[OpenAI] API usage visible at: https://platform.openai.com/usage")
+            else:
+                globals()['OPENAI_API_KEY'] = None
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] API key cleared - using googletrans")
+        except Exception as e:
+            print(f"OpenAI key apply error: {e}")
+
+    def _save_openai_key(self):
+        """Save the OpenAI API key to a config file and apply it."""
+        try:
+            key = self.openai_key_var.get().strip()
+            if not key:
+                messagebox.showwarning("No API Key", "Please enter an OpenAI API key.")
+                return
+            # Apply the key first
+            globals()['OPENAI_API_KEY'] = key
+            # Save to config file
+            config_path = os.path.join(os.path.dirname(__file__), "openai_config.json")
+            config = {"openai_api_key": key}
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(config, f)
+                # Restrict file permissions to owner only (API key security)
+                try:
+                    os.chmod(config_path, 0o600)
+                except Exception:
+                    pass  # Windows doesn't support chmod the same way
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] API key saved and activated")
+                messagebox.showinfo("API Key Saved", "OpenAI API key saved successfully!")
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save OpenAI API key: {e}")
+        except Exception as e:
+            print(f"Save OpenAI key error: {e}")
+
+    def _verify_openai_key(self):
+        """Verify the OpenAI API key works by making a small test API call."""
+        try:
+            key = self.openai_key_var.get().strip()
+            if not key:
+                messagebox.showwarning("No API Key", "Please enter an OpenAI API key first.")
+                return
+            if not REQUESTS_AVAILABLE:
+                messagebox.showerror("Missing Library", "The 'requests' library is required. Install with: pip install requests")
+                return
+            import requests as _requests
+            if hasattr(self, 'log'):
+                self.log("[OpenAI] Verifying API key...")
+            response = _requests.post(
+                'https://api.openai.com/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {key}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': 'gpt-4o-mini',
+                    'temperature': 0,
+                    'max_tokens': 10,
+                    'messages': [
+                        {'role': 'user', 'content': 'Say OK'}
+                    ]
+                },
+                timeout=15
+            )
+            if response.status_code == 200:
+                globals()['OPENAI_API_KEY'] = key
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] ✓ API key is VALID - translations will use GPT-4o-mini")
+                    self.log("[OpenAI] NOTE: OpenAI is used ONLY for translation, NOT for voice generation (TTS)")
+                    self.log("[OpenAI] NOTE: API usage is visible at https://platform.openai.com/usage")
+                    self.log("[OpenAI] API calls do NOT appear on chat.openai.com (that is a different product)")
+                messagebox.showinfo("API Key Valid",
+                    "✓ Your OpenAI API key is working!\n\n"
+                    "• Translations will use GPT-4o-mini\n"
+                    "• Voice generation uses GenAI Pro (NOT OpenAI)\n\n"
+                    "IMPORTANT: API calls do NOT appear on chat.openai.com.\n"
+                    "Check your API usage at:\nhttps://platform.openai.com/usage")
+            elif response.status_code == 401:
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] ✗ API key is INVALID or expired")
+                messagebox.showerror("Invalid API Key",
+                    "✗ Your OpenAI API key is invalid or expired.\n\n"
+                    "Please check your key at:\nhttps://platform.openai.com/api-keys")
+            elif response.status_code == 429:
+                if hasattr(self, 'log'):
+                    self.log("[OpenAI] ✗ Rate limit or quota exceeded (HTTP 429)")
+                    self.log("[OpenAI] FIX: Go to https://platform.openai.com/settings/organization/billing")
+                    self.log("[OpenAI] and add at least $5 prepaid credit. Free-tier keys have no quota.")
+                messagebox.showwarning("Billing Credit Required",
+                    "Your API key is valid but has no billing credit.\n\n"
+                    "Even brand-new keys need prepaid credit to work.\n"
+                    "OpenAI free-tier keys have $0 quota by default.\n\n"
+                    "FIX: Add at least $5 credit at:\n"
+                    "https://platform.openai.com/settings/organization/billing\n\n"
+                    "After adding credit, click 'Verify' again.")
+            else:
+                err_text = response.text[:200] + ('...' if len(response.text) > 200 else '')
+                if hasattr(self, 'log'):
+                    self.log(f"[OpenAI] ✗ API returned status {response.status_code}: {err_text}")
+                messagebox.showerror("API Error",
+                    f"API returned status {response.status_code}.\n\n{err_text}")
+        except Exception as e:
+            if hasattr(self, 'log'):
+                self.log(f"[OpenAI] ✗ Verification failed: {e}")
+            messagebox.showerror("Connection Error",
+                f"Could not connect to OpenAI API:\n{e}")
+
+    def _apply_translation_prompt(self):
+        """Apply the custom translation prompt from the GUI entry field."""
+        try:
+            prompt = self.translation_prompt_var.get().strip()
+            globals()['TRANSLATION_CUSTOM_PROMPT'] = prompt
+            if hasattr(self, 'log'):
+                if prompt:
+                    self.log(f"[Translation] Custom prompt set: {prompt[:60]}...")
+                else:
+                    self.log("[Translation] Custom prompt cleared - using default")
+        except Exception as e:
+            print(f"Translation prompt apply error: {e}")
     
     def on_language_selected(self, event=None):
         """Callback when target language is selected. Auto-syncs TTS language when TTS is enabled."""
@@ -6623,13 +7200,15 @@ class App:
         try:
             enabled = self.use_ai_voice_var.get()
             globals()['USE_AI_VOICE_REPLACEMENT'] = enabled
-            if enabled and not TTS_AVAILABLE:
-                messagebox.showwarning(
-                    "TTS Unavailable",
-                    "Text-to-Speech library (gTTS) is not installed.\nPlease install it with: pip install gtts"
-                )
-                self.use_ai_voice_var.set(False)
-                globals()['USE_AI_VOICE_REPLACEMENT'] = False
+            if enabled:
+                if not _get_genaipro_api_key():
+                    messagebox.showwarning(
+                        "No TTS Engine Available",
+                        "GenAI Pro API key not found.\n"
+                        "Please configure tts_config.json with a valid API key."
+                    )
+                    self.use_ai_voice_var.set(False)
+                    globals()['USE_AI_VOICE_REPLACEMENT'] = False
         except Exception as e:
             print(f"AI voice toggle error: {e}")
     
@@ -6810,7 +7389,7 @@ class App:
                 globals()['IS_4K_MODE'] = True
                 # Sync caption font size slider and label with 4K value
                 if hasattr(self, 'caption_font_size_scale'):
-                    self.caption_font_size_scale.config(from_=40, to=240)
+                    self.caption_font_size_scale.config(from_=40, to=800)
                 if hasattr(self, 'caption_font_size_var'):
                     self.caption_font_size_var.set(112)
                 if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
@@ -7038,7 +7617,7 @@ class App:
                 pass
 
     def on_caption_position_changed(self, val):
-        """Callback when caption vertical position slider changes."""
+        """Callback when caption vertical position slider changes (debounced)."""
         try:
             # val comes as string; set global and update label
             try:
@@ -7049,6 +7628,23 @@ class App:
                 except Exception:
                     offset = 0
             globals()['CAPTION_Y_OFFSET'] = offset
+
+            # Cancel any pending debounced preview update
+            pending = getattr(self, '_caption_pos_debounce_id', None)
+            if pending is not None:
+                self.after_cancel(pending)
+                self._caption_pos_debounce_id = None
+
+            # Schedule the heavy preview update after a short delay (debounce)
+            self._caption_pos_debounce_id = self.after(80, self._do_caption_position_update)
+        except Exception:
+            pass
+
+    def _do_caption_position_update(self):
+        """Deferred caption position preview update (called after debounce delay)."""
+        self._caption_pos_debounce_id = None
+        try:
+            offset = globals().get('CAPTION_Y_OFFSET', 0)
             try:
                 self.log_widget.config(state='normal')
                 self.log_widget.insert('end', f"[CAPTION-POS-CHANGE] Y offset changed to: {offset}px\n")
@@ -7056,19 +7652,14 @@ class App:
                 self.log_widget.see('end')
             except Exception:
                 pass
-            
-            # Update mini preview to show new caption position - FORCE REDRAW
+
+            # Update mini preview to show new caption position
             try:
                 if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    # Redraw the mini preview with updated caption indicator
                     top_pct = float(self.top_percent_var.get())/100.0
                     bottom_pct = float(self.bottom_percent_var.get())/100.0
                     composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    # Use centralized redraw method that ALWAYS includes caption indicator
                     self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    # Force canvas update
-                    self.mini_canvas.update_idletasks()
-                    
             except Exception as e:
                 try:
                     self.log_widget.config(state='normal')
@@ -7076,10 +7667,10 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
-            
-            # Also refresh TikTok preview to show caption at exact final position
+
+            # Refresh TikTok preview in background thread to avoid blocking the UI.
             try:
-                self.on_tiktok_preview_refresh()
+                self._refresh_tiktok_preview_async()
             except Exception:
                 pass
         except Exception as e:
@@ -7099,28 +7690,22 @@ class App:
             offset = max(min_val, min(200, offset))
             self.caption_y_offset_var.set(offset)
             globals()['CAPTION_Y_OFFSET'] = offset
-            # Update mini preview
-            try:
-                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    top_pct = float(self.top_percent_var.get())/100.0
-                    bottom_pct = float(self.bottom_percent_var.get())/100.0
-                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    self.mini_canvas.update_idletasks()
-            except Exception:
-                pass
-            # Also refresh TikTok preview to show caption at exact final position
-            try:
-                self.on_tiktok_preview_refresh()
-            except Exception:
-                pass
+
+            # Cancel any pending debounced preview update (shared with slider)
+            pending = getattr(self, '_caption_pos_debounce_id', None)
+            if pending is not None:
+                self.after_cancel(pending)
+                self._caption_pos_debounce_id = None
+
+            # Schedule the heavy preview update after a short delay (debounce)
+            self._caption_pos_debounce_id = self.after(80, self._do_caption_position_update)
         except Exception:
             pass
 
     def on_caption_font_size_changed(self, val):
-        """Callback when caption font size slider changes."""
+        """Callback when caption font size slider changes (debounced)."""
         try:
-            # val comes as string; set global and update label
+            # val comes as string; set global and update label immediately (lightweight)
             try:
                 size = int(float(val))
             except Exception:
@@ -7129,7 +7714,7 @@ class App:
                 except Exception:
                     size = 56
             # Clamp to valid range (scaled for 4K)
-            max_size = 240 if globals().get('IS_4K_MODE', False) else 120
+            max_size = 800 if globals().get('IS_4K_MODE', False) else 120
             min_size = 40 if globals().get('IS_4K_MODE', False) else 20
             size = max(min_size, min(max_size, size))
             globals()['CAPTION_FONT_SIZE'] = size
@@ -7138,33 +7723,15 @@ class App:
                     self.caption_font_size_label.config(text=f"{size}px")
             except Exception:
                 pass
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[FONT-SIZE-CHANGE] Font size changed to: {size}px\n")
-                self.log_widget.config(state='disabled')
-                self.log_widget.see('end')
-            except Exception:
-                pass
-            
-            # Update mini preview to show new font size - FORCE REDRAW
-            try:
-                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    # Redraw the mini preview with updated caption
-                    top_pct = float(self.top_percent_var.get())/100.0
-                    bottom_pct = float(self.bottom_percent_var.get())/100.0
-                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    # Use centralized redraw method that includes caption indicator
-                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    # Force canvas update
-                    self.mini_canvas.update_idletasks()
-                    
-            except Exception as e:
-                try:
-                    self.log_widget.config(state='normal')
-                    self.log_widget.insert('end', f"[FONT-SIZE-UPDATE-ERR] {e}\n")
-                    self.log_widget.config(state='disabled')
-                except Exception:
-                    pass
+
+            # Cancel any pending debounced preview update
+            pending = getattr(self, '_font_size_debounce_id', None)
+            if pending is not None:
+                self.after_cancel(pending)
+                self._font_size_debounce_id = None
+
+            # Schedule the heavy preview update after a short delay (debounce)
+            self._font_size_debounce_id = self.after(80, self._do_font_size_preview_update)
         except Exception as e:
             try:
                 self.log_widget.config(state='normal')
@@ -7173,74 +7740,11 @@ class App:
             except Exception:
                 pass
 
-    def on_words_per_caption_changed(self, *args):
-        """Callback when words per caption spinbox changes."""
+    def _do_font_size_preview_update(self):
+        """Deferred font size preview update (called after debounce delay)."""
+        self._font_size_debounce_id = None
         try:
-            # Get the new value from spinbox
-            try:
-                words = self.words_per_caption_var.get()
-            except Exception:
-                words = 2
-            # Clamp to valid range
-            words = max(1, min(3, words))
-            
-            # Update the global WORDS_PER_GROUP
-            globals()['WORDS_PER_GROUP'] = words
-            
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[WORDS-PER-CAPTION] Changed to: {words} words\n")
-                self.log_widget.config(state='disabled')
-                self.log_widget.see('end')
-            except Exception:
-                pass
-            
-            # Update mini preview to show new sample text - FORCE REDRAW
-            try:
-                if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    # Redraw the mini preview with updated caption
-                    top_pct = float(self.top_percent_var.get())/100.0
-                    bottom_pct = float(self.bottom_percent_var.get())/100.0
-                    composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    # Use centralized redraw method that includes caption indicator
-                    self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    # Force canvas update
-                    self.mini_canvas.update_idletasks()
-                    
-            except Exception as e:
-                try:
-                    self.log_widget.config(state='normal')
-                    self.log_widget.insert('end', f"[WORDS-UPDATE-ERR] {e}\n")
-                    self.log_widget.config(state='disabled')
-                except Exception:
-                    pass
-        except Exception as e:
-            try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[WORDS-ERR] {e}\n")
-                self.log_widget.config(state='disabled')
-            except Exception:
-                pass
-
-    def on_caption_font_size_changed(self, val):
-        """Callback when caption font size slider changes."""
-        try:
-            # val comes as string; set global and update label
-            try:
-                size = int(float(val))
-            except Exception:
-                try:
-                    size = int(val)
-                except Exception:
-                    size = 56
-            # Clamp to valid range
-            size = max(20, min(120, size))
-            globals()['CAPTION_FONT_SIZE'] = size
-            try:
-                if hasattr(self, 'caption_font_size_label') and self.caption_font_size_label:
-                    self.caption_font_size_label.config(text=f"{size}px")
-            except Exception:
-                pass
+            size = globals().get('CAPTION_FONT_SIZE', 56)
             try:
                 self.log_widget.config(state='normal')
                 self.log_widget.insert('end', f"[FONT-SIZE-CHANGE] Font size changed to: {size}px\n")
@@ -7248,19 +7752,14 @@ class App:
                 self.log_widget.see('end')
             except Exception:
                 pass
-            
-            # Update mini preview to show new font size - FORCE REDRAW
+
+            # Update mini preview to show new font size
             try:
                 if hasattr(self, 'mini_base_img') and self.mini_base_img is not None:
-                    # Redraw the mini preview with updated caption
                     top_pct = float(self.top_percent_var.get())/100.0
                     bottom_pct = float(self.bottom_percent_var.get())/100.0
                     composed = overlay_crop_on_image(self.mini_base_img, top_pct, bottom_pct)
-                    # Use centralized redraw method that includes caption indicator
                     self._redraw_mini_canvas_with_caption_indicator(composed, top_pct, bottom_pct)
-                    # Force canvas update
-                    self.mini_canvas.update_idletasks()
-                    
             except Exception as e:
                 try:
                     self.log_widget.config(state='normal')
@@ -7268,13 +7767,16 @@ class App:
                     self.log_widget.config(state='disabled')
                 except Exception:
                     pass
-        except Exception as e:
+
+            # Refresh TikTok preview in background thread to avoid blocking the UI.
+            # Opening MoviePy VideoFileClip is heavy; running it on the main thread
+            # would freeze the slider after 1-2 changes.
             try:
-                self.log_widget.config(state='normal')
-                self.log_widget.insert('end', f"[FONT-SIZE-ERR] {e}\n")
-                self.log_widget.config(state='disabled')
+                self._refresh_tiktok_preview_async()
             except Exception:
                 pass
+        except Exception:
+            pass
 
     def on_words_per_caption_changed(self, *args):
         """Callback when words per caption spinbox changes."""
@@ -8031,8 +8533,20 @@ class App:
         except Exception as e:
             messagebox.showerror("Error loading job", str(e))
 
+    def _on_stop(self):
+        """Stop the current processing job."""
+        globals()['STOP_REQUESTED'] = True
+        try:
+            self.log_widget.config(state='normal')
+            self.log_widget.insert('end', "[STOP] Stop requested — finishing current step…\n")
+            self.log_widget.see('end')
+            self.log_widget.config(state='disabled')
+        except Exception:
+            pass
+
     def on_run_single(self):
         try:
+            globals()['STOP_REQUESTED'] = False
             video = self.video_var.get().strip()
             voice = self.voice_var.get().strip()
             music = self.music_var.get().strip()
@@ -8618,7 +9132,12 @@ class App:
         self.on_tiktok_preview_refresh()
     
     def on_tiktok_preview_refresh(self):
-        """Refresh the TikTok format preview with current settings"""
+        """Refresh the TikTok format preview with current settings.
+        
+        Safe to call from any thread: heavy work (MoviePy frame extraction,
+        PIL rendering) runs inline, then the lightweight Tkinter canvas update
+        is scheduled on the main thread via root.after().
+        """
         try:
             if not self.video_var.get() or not os.path.isfile(self.video_var.get()):
                 return
@@ -8749,16 +9268,46 @@ class App:
             # Scale down to preview size (180x320)
             preview_canvas = canvas.resize((180, 320), Image.Resampling.LANCZOS)
             
-            # Display in TikTok preview canvas
+            # Display in TikTok preview canvas — must run on main thread.
+            # Use root.after(0, ...) so this is safe from both main and worker threads.
             photo = ImageTk.PhotoImage(preview_canvas)
-            self.tiktok_preview_canvas.delete("all")
-            self.tiktok_preview_canvas.create_image(90, 160, image=photo)
-            self.tiktok_preview_image_ref = photo  # Keep reference
+            def _apply_preview(photo_image=photo):
+                try:
+                    self.tiktok_preview_canvas.delete("all")
+                    self.tiktok_preview_canvas.create_image(90, 160, image=photo_image)
+                    self.tiktok_preview_image_ref = photo_image  # Keep reference
+                except Exception:
+                    pass
+            self.root.after(0, _apply_preview)
             
         except Exception as e:
             print(f"TikTok preview error: {e}")
             import traceback
             traceback.print_exc()
+
+    def _refresh_tiktok_preview_async(self):
+        """Run TikTok preview refresh in a background thread to avoid blocking UI.
+        
+        on_tiktok_preview_refresh() opens a MoviePy VideoFileClip each call,
+        which is heavy and blocks the main thread. Running it synchronously
+        from slider handlers (font size, Y offset) causes the slider to freeze
+        after 1-2 changes. This method spawns a daemon thread and skips if a
+        previous refresh is still running.
+        
+        Note: This is always called from the Tkinter main thread (via after()
+        debounce), so the is_alive() check-and-set is not racy in practice.
+        Same pattern as _mini_update_worker_async.
+        """
+        t = getattr(self, '_tiktok_preview_thread', None)
+        if t is not None and t.is_alive():
+            return  # previous refresh still running, skip
+        def _worker():
+            try:
+                self.on_tiktok_preview_refresh()
+            except Exception:
+                pass
+        self._tiktok_preview_thread = threading.Thread(target=_worker, daemon=True)
+        self._tiktok_preview_thread.start()
 
     def on_font_selected(self, event=None):
         try:
@@ -8893,6 +9442,8 @@ class App:
                 # Translation/TTS settings
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get(),
+                "translation_custom_prompt": self.translation_prompt_var.get() if hasattr(self, 'translation_prompt_var') else "",
+                "openai_api_key": self.openai_key_var.get().strip() if hasattr(self, 'openai_key_var') else "",
                 "use_ai_voice": self.use_ai_voice_var.get(),
                 "tts_language": self.tts_language_var.get(),
                 "tts_voice": self.tts_voice_var.get(),
@@ -8986,10 +9537,22 @@ class App:
             # Apply audio settings
             self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
             self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            # var.set() doesn't trigger Scale callbacks, so sync globals + dB labels manually
+            self.on_voice_gain_changed(str(self.voice_gain_var.get()))
+            self.on_music_gain_changed(str(self.music_gain_var.get()))
             
             # Apply translation/TTS settings
             self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
             self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            if hasattr(self, 'translation_prompt_var'):
+                saved_prompt = preset_data.get("translation_custom_prompt", "")
+                self.translation_prompt_var.set(saved_prompt)
+                globals()['TRANSLATION_CUSTOM_PROMPT'] = saved_prompt
+            if hasattr(self, 'openai_key_var'):
+                saved_key = preset_data.get("openai_api_key", "")
+                if saved_key:
+                    self.openai_key_var.set(saved_key)
+                    globals()['OPENAI_API_KEY'] = saved_key
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
@@ -9089,10 +9652,22 @@ class App:
             # Apply audio settings
             self.voice_gain_var.set(preset_data.get("voice_gain", VOICE_GAIN))
             self.music_gain_var.set(preset_data.get("music_gain", MUSIC_GAIN))
+            # var.set() doesn't trigger Scale callbacks, so sync globals + dB labels manually
+            self.on_voice_gain_changed(str(self.voice_gain_var.get()))
+            self.on_music_gain_changed(str(self.music_gain_var.get()))
             
             # Apply translation/TTS settings
             self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
             self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
+            if hasattr(self, 'translation_prompt_var'):
+                saved_prompt = preset_data.get("translation_custom_prompt", "")
+                self.translation_prompt_var.set(saved_prompt)
+                globals()['TRANSLATION_CUSTOM_PROMPT'] = saved_prompt
+            if hasattr(self, 'openai_key_var'):
+                saved_key = preset_data.get("openai_api_key", "")
+                if saved_key:
+                    self.openai_key_var.set(saved_key)
+                    globals()['OPENAI_API_KEY'] = saved_key
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
@@ -9180,6 +9755,9 @@ class App:
             # Reset audio settings
             self.voice_gain_var.set(VOICE_GAIN)
             self.music_gain_var.set(MUSIC_GAIN)
+            # var.set() doesn't trigger Scale callbacks, so sync globals + dB labels manually
+            self.on_voice_gain_changed(str(self.voice_gain_var.get()))
+            self.on_music_gain_changed(str(self.music_gain_var.get()))
             
             # Reset translation/TTS settings
             self.translation_enabled_var.set(TRANSLATION_ENABLED)

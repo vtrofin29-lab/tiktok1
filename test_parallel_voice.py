@@ -107,9 +107,9 @@ def test_submit_voice_for_job_exists():
             assert "needs_polling" in src, (
                 "_submit_voice_for_job must return needs_polling flag"
             )
-            # Must have gTTS fallback
-            assert "gTTS" in src, (
-                "_submit_voice_for_job must fall back to gTTS"
+            # Must use GenAI Pro (not gTTS)
+            assert "_submit_genaipro_task" in src or "genaipro" in src.lower(), (
+                "_submit_voice_for_job must use GenAI Pro for voice generation"
             )
             print("✓ _submit_voice_for_job exists (non-blocking submission)")
             return
