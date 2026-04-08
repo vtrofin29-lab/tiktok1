@@ -943,7 +943,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
             log(f"[TTS ERROR] Failed to generate audio: {e}")
         return None
 
-def replace_voice_with_tts(caption_segments, language='en', log=None):
+def replace_voice_with_tts(caption_segments, language='en', log=None, custom_text=None):
     """
     Generate AI voice audio from caption segments.
     
@@ -951,6 +951,7 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
         caption_segments: List of caption segments with translated text
         language: Language code for TTS
         log: Optional logging function
+        custom_text: Optional custom text to use instead of caption segment text
     
     Returns:
         Path to generated audio file or None if failed
@@ -971,8 +972,13 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
         # 3. Add silence between segments to match original timing
         # Current approach works well when video speed is adjusted to match audio duration.
         
-        # Combine all segment texts
-        full_text = " ".join([seg.get("text", "") for seg in caption_segments])
+        # Use custom text if provided, otherwise combine segment texts
+        if custom_text:
+            full_text = custom_text
+            if log:
+                log(f"[TTS] Using custom TTS text ({len(full_text)} chars)")
+        else:
+            full_text = " ".join([seg.get("text", "") for seg in caption_segments])
         
         # Generate TTS audio
         output_path = generate_tts_audio(full_text, language=language, log=log)
@@ -4199,7 +4205,7 @@ def make_music_match_duration(music_clip, target_duration, log):
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(MUSIC_GAIN).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None, custom_tts_prompt=None):
     def log(s):
         q.put(str(s))
     old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -4529,6 +4535,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     log("[AI VOICE] 🎵 GENERATING AI VOICE REPLACEMENT")
                     log(f"[AI VOICE] Segments to synthesize: {len(caption_segments)}")
                     log(f"[AI VOICE] TTS language: {tts_language}")
+                    if custom_tts_prompt:
+                        log(f"[AI VOICE] ✓ Using custom TTS text: \"{custom_tts_prompt[:80]}{'...' if len(custom_tts_prompt) > 80 else ''}\"")
                     if translation_enabled and target_language and target_language != 'none':
                         log(f"[AI VOICE] ✓ Using translated text ({target_language}) for TTS")
                     log("━"*60)
@@ -4537,7 +4545,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     tts_audio_path = replace_voice_with_tts(
                         caption_segments, 
                         language=tts_language,
-                        log=log
+                        log=log,
+                        custom_text=custom_tts_prompt if custom_tts_prompt else None
                     )
                     if tts_audio_path:
                         # Replace voice_clip with TTS audio
@@ -4762,6 +4771,7 @@ def _prepare_voice_for_job(job, job_index, total_jobs, q):
     translation_enabled = job.get("translation_enabled", False)
     tts_language = job.get("tts_language", 'en')
     silence_threshold_ms = job.get("silence_threshold_ms", 300)
+    custom_tts_prompt = job.get("custom_tts_prompt", "").strip()
     
     # Auto-sync TTS language with translation target language
     if translation_enabled and use_ai_voice and target_language and target_language != 'none':
@@ -4812,7 +4822,8 @@ def _prepare_voice_for_job(job, job_index, total_jobs, q):
         tts_audio_path = replace_voice_with_tts(
             caption_segments,
             language=tts_language,
-            log=log
+            log=log,
+            custom_text=custom_tts_prompt if custom_tts_prompt else None
         )
         
         if not tts_audio_path:
@@ -4900,6 +4911,7 @@ def _submit_voice_for_job(job, job_index, total_jobs, q):
     translation_enabled = job.get("translation_enabled", False)
     tts_language = job.get("tts_language", 'en')
     silence_threshold_ms = job.get("silence_threshold_ms", 300)
+    custom_tts_prompt = job.get("custom_tts_prompt", "").strip()
 
     if translation_enabled and use_ai_voice and target_language and target_language != 'none':
         tts_lang_synced = TRANS_TO_TTS_LANG.get(target_language, target_language)
@@ -4945,7 +4957,12 @@ def _submit_voice_for_job(job, job_index, total_jobs, q):
         log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ✓ Got {len(caption_segments)} segments")
 
         # Step 3: Submit TTS (non-blocking for GenAI Pro)
-        full_text = " ".join([seg.get("text", "") for seg in caption_segments])
+        # Use custom TTS prompt if provided, otherwise use transcribed text
+        if custom_tts_prompt:
+            full_text = custom_tts_prompt
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] Using custom TTS text ({len(full_text)} chars)")
+        else:
+            full_text = " ".join([seg.get("text", "") for seg in caption_segments])
 
         # Try GenAI Pro API key
         api_key = None
@@ -5163,7 +5180,8 @@ def _run_video_job(job, job_index, total_jobs, q, pre_generated_voice=None):
                        caption_stroke_width=job.get("caption_stroke_width"),
                        caption_font_size=job.get("caption_font_size"),
                        caption_y_offset=job.get("caption_y_offset"),
-                       pre_generated_voice=pre_generated_voice)
+                       pre_generated_voice=pre_generated_voice,
+                       custom_tts_prompt=job.get("custom_tts_prompt", ""))
     log(f"===== END JOB {job_index} =====\n")
 
 
@@ -5759,6 +5777,13 @@ class App:
         self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
         ttk.Checkbutton(left_frame, text="Replace voice with AI (TTS)", variable=self.use_ai_voice_var,
                        command=self.on_ai_voice_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
+        # Custom TTS prompt — overrides Whisper transcription when non-empty
+        ttk.Label(left_frame, text="Custom TTS text:").grid(row=row, column=0, sticky="e")
+        self.custom_tts_prompt_var = tk.StringVar(value="")
+        self.custom_tts_prompt_entry = ttk.Entry(left_frame, textvariable=self.custom_tts_prompt_var, width=30)
+        self.custom_tts_prompt_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
         row += 1
 
         ttk.Label(left_frame, text="TTS language:").grid(row=row, column=0, sticky="e")
@@ -7716,6 +7741,9 @@ class App:
         # AI and translation settings
         if job.get("use_ai_voice"):
             info_parts.append("AI-TTS")
+        if job.get("custom_tts_prompt"):
+            prompt_preview = job["custom_tts_prompt"][:30]
+            info_parts.append(f"TTS-text:\"{prompt_preview}...\"" if len(job["custom_tts_prompt"]) > 30 else f"TTS-text:\"{prompt_preview}\"")
         if job.get("translation_enabled"):
             lang = job.get("target_language", "?")
             info_parts.append(f"Translate:{lang}")
@@ -7820,6 +7848,7 @@ class App:
                 "dim_factor": globals().get('DIM_FACTOR', 1.0),
                 # AI and caption settings
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "custom_tts_prompt": self.custom_tts_prompt_var.get().strip(),
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -7922,6 +7951,7 @@ class App:
             
             # Load AI and translation settings
             self.use_ai_voice_var.set(job.get("use_ai_voice", False))
+            self.custom_tts_prompt_var.set(job.get("custom_tts_prompt", ""))
             self.translation_enabled_var.set(job.get("translation_enabled", False))
             if hasattr(self, 'target_language_var'):
                 self.target_language_var.set(job.get("target_language", "none"))
@@ -8066,6 +8096,7 @@ class App:
                    "dim_factor": globals().get('DIM_FACTOR', 1.0),
                    # AI and caption settings
                    "use_ai_voice": self.use_ai_voice_var.get(),
+                   "custom_tts_prompt": self.custom_tts_prompt_var.get().strip(),
                    "translation_enabled": self.translation_enabled_var.get(),
                    "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                    "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -8115,7 +8146,7 @@ class App:
                 'blur_overlay_intensity': job.get("blur_overlay_intensity", 20)
             }
             # Run in background thread so GUI remains responsive
-            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en'), "caption_text_color": job.get("caption_text_color"), "caption_stroke_color": job.get("caption_stroke_color"), "caption_stroke_width": job.get("caption_stroke_width"), "caption_font_size": job.get("caption_font_size"), "caption_y_offset": job.get("caption_y_offset")}, daemon=True)
+            t = threading.Thread(target=process_single_job, args=(job["video"], job["voice"], job["music"], job["output"], q, job.get("font")), kwargs={"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en'), "caption_text_color": job.get("caption_text_color"), "caption_stroke_color": job.get("caption_stroke_color"), "caption_stroke_width": job.get("caption_stroke_width"), "caption_font_size": job.get("caption_font_size"), "caption_y_offset": job.get("caption_y_offset"), "custom_tts_prompt": job.get("custom_tts_prompt", "")}, daemon=True)
             t.start()
             try:
                 self.log_widget.config(state='normal')
@@ -8134,7 +8165,8 @@ class App:
         translation_enabled = self.translation_enabled_var.get()
         tts_language = self.tts_language_var.get()
         silence_threshold_ms = self.silence_threshold_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms)
+        custom_tts_prompt = self.custom_tts_prompt_var.get().strip()
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms, custom_tts_prompt=custom_tts_prompt)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
@@ -8894,6 +8926,7 @@ class App:
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get(),
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "custom_tts_prompt": self.custom_tts_prompt_var.get().strip(),
                 "tts_language": self.tts_language_var.get(),
                 "tts_voice": self.tts_voice_var.get(),
                 "silence_threshold": self.silence_threshold_var.get(),
@@ -8991,6 +9024,7 @@ class App:
             self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
             self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            self.custom_tts_prompt_var.set(preset_data.get("custom_tts_prompt", ""))
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
             self.silence_threshold_var.set(preset_data.get("silence_threshold", 300))
@@ -9094,6 +9128,7 @@ class App:
             self.translation_enabled_var.set(preset_data.get("translation_enabled", TRANSLATION_ENABLED))
             self.target_language_var.set(preset_data.get("target_language", TARGET_LANGUAGE))
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            self.custom_tts_prompt_var.set(preset_data.get("custom_tts_prompt", ""))
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             self.tts_voice_var.set(preset_data.get("tts_voice", 'Auto (Default)'))
             self.silence_threshold_var.set(preset_data.get("silence_threshold", 300))
@@ -9185,6 +9220,7 @@ class App:
             self.translation_enabled_var.set(TRANSLATION_ENABLED)
             self.target_language_var.set(TARGET_LANGUAGE)
             self.use_ai_voice_var.set(USE_AI_VOICE_REPLACEMENT)
+            self.custom_tts_prompt_var.set("")
             self.tts_language_var.set(TTS_LANGUAGE)
             self.tts_voice_var.set('Auto (Default)')
             self.silence_threshold_var.set(300)
